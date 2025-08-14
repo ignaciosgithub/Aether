@@ -1,6 +1,39 @@
 use aether_codegen::CodeGenerator;
+
 use aether_frontend::ast::*;
 use aether_backend_aarch64::AArch64Codegen;
+
+#[test]
+fn println_string_call_aarch64() {
+    let func_ret = Function {
+        name: "ret_str".to_string(),
+        params: vec![],
+        ret: Type::String,
+        body: vec![
+            Stmt::Return(Expr::Lit(Value::String("HelloExpr".to_string()))),
+        ],
+        is_pub: false,
+        is_threaded: false,
+    };
+    let main = Function {
+        name: "main".to_string(),
+        params: vec![],
+        ret: Type::I32,
+        body: vec![
+            Stmt::PrintExpr(Expr::Call("ret_str".to_string(), vec![])),
+            Stmt::Return(Expr::Lit(Value::Int(0))),
+        ],
+        is_pub: true,
+        is_threaded: false,
+    };
+    let module = Module { items: vec![Item::Function(main.clone()), Item::Function(func_ret.clone())] };
+    let mut cg = AArch64Codegen::new_linux();
+    let asm = cg.generate(&module).expect("codegen ok");
+    assert!(asm.contains("bl ret_str"));
+    assert!(asm.contains("mov x2, x1"));
+    assert!(asm.contains("mov x1, x0"));
+    assert!(asm.contains("mov x8, #64"));
+}
 
 fn build_module_with_println_and_return() -> Module {
     let func = Function {

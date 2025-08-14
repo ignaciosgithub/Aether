@@ -72,6 +72,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
         let mut prints: Vec<(String, usize)> = Vec::new();
         let mut calls: Vec<(String, Vec<Expr>)> = Vec::new();
         let mut main_ret_call: Option<(String, Vec<Expr>)> = None;
+        let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         for item in &module.items {
             let func = match item {
@@ -100,6 +101,9 @@ impl CodeGenerator for X86_64LinuxCodegen {
                         Stmt::Expr(Expr::Call(name, args)) => {
                             calls.push((name.clone(), args.clone()));
                         }
+                        Stmt::PrintExpr(Expr::Call(name, args)) => {
+                            main_print_calls.push((name.clone(), args.clone()));
+                        }
                         _ => {}
                     }
                 }
@@ -116,6 +120,38 @@ r#"
         .text
 _start:
 "#);
+                if !main_print_calls.is_empty() {
+                    out.push_str(
+r#"
+        .section .rodata
+.LSNL:
+        .byte 10
+
+        .text
+"#);
+                }
+
+                for (name, args) in &main_print_calls {
+                    if args.is_empty() {
+                        out.push_str(
+r#"        sub $8, %rsp
+"#);
+                        out.push_str(&format!("        call {}\n", name));
+                        out.push_str(
+r#"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+"#);
+                    }
+                }
                 let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
                 if let Some((ref name, ref args)) = main_ret_call {
                     if !args.is_empty() {
@@ -354,7 +390,111 @@ r#"        push %rbx
                                                 }
                                             }
                                         }
-                                        if !handled {
+                                    }
+                                    Expr::Call(name, args) => {
+                                        if args.is_empty() {
+                                            out.push_str(
+"        sub $8, %rsp
+");
+                                            out.push_str(&format!("        call {}\n", name));
+                                            out.push_str(
+"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                            out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                            need_nl = true;
+                                        }
+                                    }
+                                    Expr::IfElse { cond, then_expr, else_expr } => {
+                                        if let Some(cv) = eval_int_expr(cond) {
+                                            let chosen = if cv != 0 { then_expr } else { else_expr };
+                                            match &**chosen {
+                                                Expr::Lit(Value::String(s)) => {
+                                                    let mut bytes = s.clone().into_bytes();
+                                                    bytes.push(b'\n');
+                                                    let len = s.as_bytes().len() + 1;
+                                                    let lbl = format!(".LSP_{}_{}", func.name, fi);
+                                                    out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", lbl, len));
+                                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                    fi += 1;
+                                                }
+                                                Expr::Var(name) => {
+                                                    let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                    let mut slot = 0usize;
+                                                    for p in &func.params {
+                                                        if p.name == *name {
+                                                            if let Type::String = p.ty {
+                                                                if slot + 1 < regs.len() {
+                                                                    let ptr_reg = regs[slot];
+                                                                    let len_reg = regs[slot + 1];
+                                                                    out.push_str(&format!(
+"        mov {len}, %rdx
+        mov {ptr}, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+", len=len_reg, ptr=ptr_reg));
+                                                                    out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                                    need_nl = true;
+                                                                }
+                                                            }
+                                                            break;
+                                                        } else {
+                                                            match p.ty {
+                                                                Type::String => slot += 2,
+                                                                _ => slot += 1,
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Expr::Call(name, args) => {
+                                                    if args.is_empty() {
+                                                        out.push_str(
+"        sub $8, %rsp
+");
+                                                        out.push_str(&format!("        call {}\n", name));
+                                                        out.push_str(
+"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                                        out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                        need_nl = true;
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
                                         }
                                     }
                                     _ => {}
@@ -367,6 +507,19 @@ r#"        push %rbx
                                 if let Some(fv) = eval_f64_expr(expr) {
                                     ret_f = Some(fv);
                                 }
+                                if let Expr::Lit(Value::String(s)) = expr {
+                                    let bytes = s.clone().into_bytes();
+                                    let len = bytes.len();
+                                    let lbl = format!(".LSRET_{}_{}", func.name, fi);
+                                    out.push_str(&format!(
+"        leaq {0}(%rip), %rax
+        mov ${1}, %rdx
+        ret
+", lbl, len));
+                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                    fi += 1;
+                                }
+
                             }
                             _ => {}
                         }
@@ -432,6 +585,15 @@ r#"        sub rsp, 40
         mov rbx, rax
 "#);
                 }
+                if prints.is_empty() && !main_print_calls.is_empty() {
+                    out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                }
                 if let Some((ref name, ref args)) = main_ret_call {
                     if !args.is_empty() {
                         if let Expr::Lit(Value::Int(v0)) = &args[0] {
@@ -482,6 +644,25 @@ r#"        add rsp, 32
 r#"        lea rax, [rip+LC0]
         movsd xmm0, qword ptr [rax]
 "#);
+                }
+                for (name, args) in &main_print_calls {
+                    if args.is_empty() {
+                        out.push_str(
+r#"        sub rsp, 32
+"#);
+                        out.push_str(&format!("        call {}\n", name));
+                        out.push_str(
+r#"        add rsp, 32
+        sub rsp, 40
+        mov rdx, rax
+        mov r8d, edx
+        mov rcx, rbx
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                    }
                 }
                 if !prints.is_empty() {
                     for (idx, (_s, len)) in prints.iter().enumerate() {
@@ -624,16 +805,23 @@ r#"        sub rsp, 40
                                                     if slot + 1 < regs.len() {
                                                         let ptr_reg = regs[slot];
                                                         let len_reg = regs[slot + 1];
+                                                        let len32 = match len_reg {
+                                                            "rcx" => "ecx",
+                                                            "rdx" => "edx",
+                                                            "r8" => "r8d",
+                                                            "r9" => "r9d",
+                                                            _ => "edx",
+                                                        };
                                                         out.push_str(&format!(
 r#"        sub rsp, 40
         mov rdx, {ptr}
-        mov r8d, {len}d
+        mov r8d, {len}
         mov rcx, rbx
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
-"#, ptr=ptr_reg, len=len_reg));
+"#, ptr=ptr_reg, len=len32));
                                                         need_nl = true;
                                                         out.push_str(
 r#"        sub rsp, 40
@@ -659,6 +847,144 @@ r#"        sub rsp, 40
                                         if !handled {
                                         }
                                     }
+                                    Expr::Call(name, args) => {
+                                        if args.is_empty() {
+                                            out.push_str(
+r#"        sub rsp, 32
+"#);
+                                            out.push_str(&format!("        call {}\n", name));
+                                            out.push_str(
+r#"        add rsp, 32
+"#);
+                                            out.push_str(
+r#"        sub rsp, 40
+        mov rdx, rax
+        mov r8d, edx
+        mov rcx, rbx
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                            need_nl = true;
+                                            out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                        }
+                                    }
+                                    Expr::IfElse { cond, then_expr, else_expr } => {
+                                        if let Some(cv) = eval_int_expr(cond) {
+                                            let chosen = if cv != 0 { then_expr } else { else_expr };
+                                            match &**chosen {
+                                                Expr::Lit(Value::String(s)) => {
+                                                    let mut bytes = s.clone().into_bytes();
+                                                    bytes.push(b'\n');
+                                                    let len = s.as_bytes().len() + 1;
+                                                    let lbl = format!("LSF_{}_{}", func.name, fi);
+                                                    out.push_str(&format!(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+{}]
+        mov r8d, {}
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#, lbl, len));
+                                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                    fi += 1;
+                                                }
+                                                Expr::Var(name) => {
+                                                    let regs = ["rcx","rdx","r8","r9"];
+                                                    let mut slot = 0usize;
+                                                    for p in &func.params {
+                                                        if p.name == *name {
+                                                            if let Type::String = p.ty {
+                                                                if slot + 1 < regs.len() {
+                                                                    let ptr_reg = regs[slot];
+                                                                    let len_reg = regs[slot + 1];
+                                                                    let len32 = match len_reg {
+                                                                        "rcx" => "ecx",
+                                                                        "rdx" => "edx",
+                                                                        "r8" => "r8d",
+                                                                        "r9" => "r9d",
+                                                                        _ => "edx",
+                                                                    };
+                                                                    out.push_str(&format!(
+r#"        sub rsp, 40
+        mov rdx, {ptr}
+        mov r8d, {len}
+        mov rcx, rbx
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#, ptr=ptr_reg, len=len32));
+                                                                    need_nl = true;
+                                                                    out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                                }
+                                                            }
+                                                            break;
+                                                        } else {
+                                                            match p.ty {
+                                                                Type::String => slot += 2,
+                                                                _ => slot += 1,
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Expr::Call(name, args) => {
+                                                    if args.is_empty() {
+                                                        out.push_str(
+r#"        sub rsp, 32
+"#);
+                                                        out.push_str(&format!("        call {}\n", name));
+                                                        out.push_str(
+r#"        add rsp, 32
+"#);
+                                                        out.push_str(
+r#"        sub rsp, 40
+        mov rdx, rax
+        mov r8d, edx
+        mov rcx, rbx
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                        need_nl = true;
+                                                        out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -669,6 +995,19 @@ r#"        sub rsp, 40
                                 if let Some(fv) = eval_f64_expr(expr) {
                                     ret_f = Some(fv);
                                 }
+                                if let Expr::Lit(Value::String(s)) = expr {
+                                    let bytes = s.clone().into_bytes();
+                                    let len = bytes.len();
+                                    let lbl = format!("LSRET_{}_{}", func.name, fi);
+                                    out.push_str(&format!(
+"        lea rax, [rip+{0}]
+        mov rdx, {1}
+        ret
+", lbl, len));
+                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                    fi += 1;
+                                }
+
                             }
                             _ => {}
                         }

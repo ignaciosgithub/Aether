@@ -92,7 +92,6 @@ impl<'a> Parser<'a> {
                     let e = self.parse_expr()?;
                     match e {
                         Expr::Lit(v) => elems.push(v),
-                        _ => return Err(anyhow!("only literal elements in list for now")),
                     }
                     if self.eat_kind(&TokenKind::RBracket) {
                         break;

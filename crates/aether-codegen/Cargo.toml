@@ -1,0 +1,9 @@
+[package]
+name = "aether-codegen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+aether-frontend = { path = "../aether-frontend" }

@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "crates/aether-frontend",
+    "crates/aether-codegen",
+    "crates/aether-backend-x86_64",
+    "crates/aether-backend-aarch64",
+    "crates/aetherc",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["Ignacio <isavigualco@gmail.com>", "Contributors"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"

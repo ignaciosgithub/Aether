@@ -1,0 +1,14 @@
+[package]
+name = "aetherc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+env_logger = { workspace = true }
+log = { workspace = true }
+aether-frontend = { path = "../aether-frontend" }
+aether-codegen = { path = "../aether-codegen" }
+aether-backend-x86_64 = { path = "../aether-backend-x86_64" }
+aether-backend-aarch64 = { path = "../aether-backend-aarch64" }

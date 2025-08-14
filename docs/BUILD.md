@@ -53,6 +53,12 @@ x86_64 Linux
 - ./scripts/assemble_link.sh x86_64-linux out/linux/println.s out/linux/println
 - ./out/linux/println  # should print two lines
 
+x86_64 Windows (cross-link)
+- cargo run -p aetherc -- examples/println.ae --arch x86_64 --os windows -o out/windows/println.s
+- ./scripts/assemble_link.sh x86_64-windows out/windows/println.s out/windows/println.exe
+- # Optional on Linux host (requires wine):
+- # wine ./out/windows/println.exe
+
 AArch64 Linux (cross-link)
 - cargo run -p aetherc -- examples/println.ae --arch aarch64 --os linux -o out/aarch64/println.s
 - ./scripts/assemble_link.sh aarch64-linux out/aarch64/println.s out/aarch64/println

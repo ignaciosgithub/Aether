@@ -16,7 +16,7 @@ case "$TARGET" in
     clang -nostartfiles -static -o "$OUT" "$ASM" -fuse-ld=lld
     ;;
   x86_64-windows)
-    x86_64-w64-mingw32-gcc -nostartfiles -o "$OUT" "$ASM"
+    x86_64-w64-mingw32-gcc -nostartfiles -o "$OUT" "$ASM" -lkernel32
     ;;
   aarch64-linux)
     aarch64-linux-gnu-gcc -nostartfiles -static -o "$OUT" "$ASM"

@@ -189,7 +189,72 @@ r#"        leaq .LC0(%rip), %rax
                 Ok(out.trim_start().to_string())
             }
             TargetOs::Windows => {
-                if let Some(fv) = f64_ret {
+                if !prints.is_empty() {
+                    let mut out = String::new();
+                    out.push_str(
+r#"
+        .intel_syntax noprefix
+        .extern GetStdHandle
+        .extern WriteFile
+        .global main
+        .text
+main:
+        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                    for (idx, (_s, len)) in prints.iter().enumerate() {
+                        out.push_str(&format!(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LS{}]
+        mov r8d, {}
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#, idx, len));
+                    }
+                    if let Some(fv) = f64_ret {
+                        let bits = fv.to_bits();
+                        let lo = bits as u32;
+                        let hi = (bits >> 32) as u32;
+                        out.push_str(
+r#"        lea rax, [rip+LC0]
+        movsd xmm0, qword ptr [rax]
+"#);
+                        out.push_str(
+r#"        xor eax, eax
+        ret
+"#);
+                        out.push_str(
+"\n        .data\nLC0:\n");
+                        out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                    } else {
+                        out.push_str(
+r#"        xor eax, eax
+        ret
+"#);
+                        out.push_str("\n        .data\n");
+                    }
+                    for (idx, (s, _len)) in prints.iter().enumerate() {
+                        out.push_str(&format!("LS{}:\n        .ascii \"", idx));
+                        for b in s.as_bytes() {
+                            let ch = *b as char;
+                            match ch {
+                                '\n' => out.push_str("\\n"),
+                                '\t' => out.push_str("\\t"),
+                                '\"' => out.push_str("\\\""),
+                                '\\' => out.push_str("\\\\"),
+                                _ => out.push(ch),
+                            }
+                        }
+                        out.push_str("\"\n");
+                    }
+                    Ok(out.trim_start().to_string())
+                } else if let Some(fv) = f64_ret {
                     let bits = fv.to_bits();
                     let lo = bits as u32;
                     let hi = (bits >> 32) as u32;

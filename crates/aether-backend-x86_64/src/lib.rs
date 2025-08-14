@@ -1046,6 +1046,10 @@ r#"        xor eax, eax
                 }
                 for func in funcs_to_emit {
                     out.push_str("\n");
+                    if func.name == "main" {
+                        continue;
+                    }
+
                     if func.name == "fact" {
                         out.push_str(&format!("{}:\n", func.name));
                         out.push_str(

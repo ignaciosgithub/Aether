@@ -99,6 +99,19 @@ impl CodeGenerator for AArch64Codegen {
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
                             main_print_calls.push((name.clone(), args.clone()));
                         }
+                        Stmt::PrintExpr(e) => {
+                            if let Expr::IfElse { cond, then_expr, else_expr } = e {
+                                if let Some(cv) = eval_int_expr(cond) {
+                                    let chosen = if cv != 0 { then_expr } else { else_expr };
+                                    if let Expr::Lit(Value::String(s)) = &**chosen {
+                                        let mut bytes = s.clone().into_bytes();
+                                        bytes.push(b'\n');
+                                        prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                    }
+                                }
+                            }
+                        }
+
                         _ => {}
                     }
                 }

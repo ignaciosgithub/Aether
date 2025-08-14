@@ -235,18 +235,18 @@ r#"        leaq .LC0(%rip), %rax
                         out.push_str(&format!("{}:\n", func.name));
                         out.push_str(
 r#"        push %rbx
-        cmpl $1, %edi
+        cmpq $1, %rdi
         jg .Lrec
         movl $1, %eax
         pop %rbx
         ret
 .Lrec:
-        movl %edi, %ebx
-        leal -1(%rdi), %edi
+        mov %rdi, %rbx
+        leaq -1(%rdi), %rdi
         sub $8, %rsp
         call fact
         add $8, %rsp
-        imull %ebx, %eax
+        imul %rbx, %rax
         pop %rbx
         ret
 "#);

@@ -32,7 +32,9 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
                 BinOpKind::Div => {
                     if rv == 0 { None } else { Some(lv / rv) }
                 }
-                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
+                BinOpKind::Eq => Some(if lv == rv { 1 } else { 0 }),
+                BinOpKind::Lt => Some(if lv < rv { 1 } else { 0 }),
+                BinOpKind::Le => Some(if lv <= rv { 1 } else { 0 }),
             }
         }
         _ => None,
@@ -243,6 +245,17 @@ r#"        leaq .LC0(%rip), %rax
                     out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                     for (idx, (s, _len)) in prints.iter().enumerate() {
                         out.push_str(&format!(".LS{}:\n        .ascii \"", idx));
+                        for b in s.as_bytes() {
+                            let ch = *b as char;
+                            match ch {
+                                '\n' => out.push_str("\\n"),
+                                '\t' => out.push_str("\\t"),
+                                '\"' => out.push_str("\\\""),
+                                '\\' => out.push_str("\\\\"),
+                                _ => out.push(ch),
+                            }
+                        }
+                        out.push_str("\"\n");
                     }
                     for (lbl, s) in &call_arg_rodata {
                         out.push_str(&format!("{}:\n        .ascii \"", lbl));
@@ -285,6 +298,17 @@ r#"        leaq .LC0(%rip), %rax
                         out.push_str("\n        .section .rodata\n");
                         for (idx, (s, _len)) in prints.iter().enumerate() {
                             out.push_str(&format!(".LS{}:\n        .ascii \"", idx));
+                            for b in s.as_bytes() {
+                                let ch = *b as char;
+                                match ch {
+                                    '\n' => out.push_str("\\n"),
+                                    '\t' => out.push_str("\\t"),
+                                    '\"' => out.push_str("\\\""),
+                                    '\\' => out.push_str("\\\\"),
+                                    _ => out.push(ch),
+                                }
+                            }
+                            out.push_str("\"\n");
                         }
                         for (lbl, s) in &call_arg_rodata {
                             out.push_str(&format!("{}:\n        .ascii \"", lbl));

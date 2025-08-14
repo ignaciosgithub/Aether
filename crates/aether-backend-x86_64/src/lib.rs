@@ -67,53 +67,126 @@ impl CodeGenerator for X86_64LinuxCodegen {
     fn generate(&mut self, module: &Module) -> Result<String> {
         let mut exit_code: i64 = 0;
         let mut f64_ret: Option<f64> = None;
+        let mut prints: Vec<(String, usize)> = Vec::new();
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
             };
             if func.name == "main" {
                 for stmt in &func.body {
-                    if let Stmt::Return(expr) = stmt {
-                        if let Some(v) = eval_int_expr(expr) {
-                            exit_code = v.clamp(0, 255);
+                    match stmt {
+                        Stmt::Return(expr) => {
+                            if let Some(v) = eval_int_expr(expr) {
+                                exit_code = v.clamp(0, 255);
+                            }
+                            if let Some(fv) = eval_f64_expr(expr) {
+                                f64_ret = Some(fv);
+                            }
                         }
-                        if let Some(fv) = eval_f64_expr(expr) {
-                            f64_ret = Some(fv);
+                        Stmt::Println(s) => {
+                            let mut bytes = s.clone().into_bytes();
+                            bytes.push(b'\n');
+                            prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
                         }
+                        _ => {}
                     }
                 }
             }
         }
         match self.target.os {
             TargetOs::Linux => {
+                let mut out = String::new();
+                out.push_str(
+r#"
+        .global _start
+        .text
+_start:
+"#);
                 if let Some(fv) = f64_ret {
                     let bits = fv.to_bits();
+                    out.push_str(
+r#"        leaq .LC0(%rip), %rax
+        movsd (%rax), %xmm0
+"#);
                     let lo = bits as u32;
                     let hi = (bits >> 32) as u32;
-                    Ok(format!(r#"
+                    out.push_str(&format!("        mov $60, %rax\n        mov ${}, %rdi\n", exit_code));
+                    out.clear();
+                    out.push_str(
+r#"
         .global _start
         .text
 _start:
-        leaq .LC0(%rip), %rax
+"#);
+                    out.push_str(
+r#"        leaq .LC0(%rip), %rax
         movsd (%rax), %xmm0
-        mov $60, %rax
+"#);
+                    for (idx, (_s, len)) in prints.iter().enumerate() {
+                        out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LS{}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", idx, len));
+                    }
+                    out.push_str(&format!(
+"        mov $60, %rax
         mov ${}, %rdi
         syscall
-        .section .rodata
-.LC0:
-        .long {}
-        .long {}
-        "#, exit_code, lo, hi).trim_start().to_string())
+", exit_code));
+                    out.push_str(
+"\n        .section .rodata\n.LC0:\n");
+                    out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                    for (idx, (s, _len)) in prints.iter().enumerate() {
+                        out.push_str(&format!(".LS{}:\n        .ascii \"", idx));
+                        for b in s.as_bytes() {
+                            let ch = *b as char;
+                            match ch {
+                                '\n' => out.push_str("\\n"),
+                                '\t' => out.push_str("\\t"),
+                                '\"' => out.push_str("\\\""),
+                                '\\' => out.push_str("\\\\"),
+                                _ => out.push(ch),
+                            }
+                        }
+                        out.push_str("\"\n");
+                    }
                 } else {
-                    Ok(format!(r#"
-        .global _start
-        .text
-_start:
-        mov $60, %rax
+                    for (idx, (_s, len)) in prints.iter().enumerate() {
+                        out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LS{}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", idx, len));
+                    }
+                    out.push_str(&format!(
+"        mov $60, %rax
         mov ${}, %rdi
         syscall
-"#, exit_code).trim_start().to_string())
+", exit_code));
+                    if !prints.is_empty() {
+                        out.push_str("\n        .section .rodata\n");
+                        for (idx, (s, _len)) in prints.iter().enumerate() {
+                            out.push_str(&format!(".LS{}:\n        .ascii \"", idx));
+                            for b in s.as_bytes() {
+                                let ch = *b as char;
+                                match ch {
+                                    '\n' => out.push_str("\\n"),
+                                    '\t' => out.push_str("\\t"),
+                                    '\"' => out.push_str("\\\""),
+                                    '\\' => out.push_str("\\\\"),
+                                    _ => out.push(ch),
+                                }
+                            }
+                            out.push_str("\"\n");
+                        }
+                    }
                 }
+                Ok(out.trim_start().to_string())
             }
             TargetOs::Windows => {
                 if let Some(fv) = f64_ret {

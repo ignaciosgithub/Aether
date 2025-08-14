@@ -1,0 +1,5 @@
+pub func main() -> i32 {
+    println("Hello from Aether println!");
+    println("Line 2");
+    return 0;
+}

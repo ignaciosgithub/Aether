@@ -97,15 +97,17 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt> {
         if self.eat_kind(&TokenKind::Println) {
             self.expect(&TokenKind::LParen)?;
-            let s = if let Some(TokenKind::String(val)) = self.peek().map(|t| t.kind.clone()) {
+            if let Some(TokenKind::String(val)) = self.peek().map(|t| t.kind.clone()) {
                 self.pos += 1;
-                val
+                self.expect(&TokenKind::RParen)?;
+                self.expect(&TokenKind::Semicolon)?;
+                return Ok(Stmt::Println(val));
             } else {
-                return Err(anyhow!("expected string literal"));
-            };
-            self.expect(&TokenKind::RParen)?;
-            self.expect(&TokenKind::Semicolon)?;
-            return Ok(Stmt::Println(s));
+                let expr = self.parse_expr()?;
+                self.expect(&TokenKind::RParen)?;
+                self.expect(&TokenKind::Semicolon)?;
+                return Ok(Stmt::PrintExpr(expr));
+            }
         }
         if self.eat_kind(&TokenKind::Return) {
             let expr = self.parse_expr()?;

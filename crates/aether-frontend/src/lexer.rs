@@ -96,7 +96,7 @@ impl Lexer {
                     "list" => TokenKind::List,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
-                    "string" => TokenKind::StringType,
+                    "string" | "String" => TokenKind::StringType,
                     _ => TokenKind::Ident(s.to_string()),
                 };
                 toks.push(Token { kind });

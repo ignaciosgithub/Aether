@@ -42,6 +42,7 @@ pub enum Stmt {
     Return(Expr),
     Expr(Expr),
     Println(String),
+    PrintExpr(Expr),
 }
 
 #[derive(Debug, Clone)]

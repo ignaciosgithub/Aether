@@ -1,6 +1,6 @@
 use anyhow::Result;
 use aether_codegen::{CodeGenerator, Target, TargetArch, TargetOs};
-use aether_frontend::ast::{Module, Item, Stmt, Expr, Value, BinOpKind};
+use aether_frontend::ast::{Module, Item, Stmt, Expr, Value, BinOpKind, Type};
 
 pub struct X86_64LinuxCodegen {
     target: Target,
@@ -229,6 +229,8 @@ r#"        leaq .LC0(%rip), %rax
                     }
                 }
                 out.push_str("\n        .text\n");
+                let mut func_rodata: Vec<(String, String)> = Vec::new();
+                let mut need_nl = bool::from(false);
                 for func in other_funcs {
                     out.push_str("\n");
                     if func.name == "fact" {
@@ -256,14 +258,74 @@ r#"        push %rbx
                     out.push_str(&format!("{}:\n", func.name));
                     let mut ret_i: i64 = 0;
                     let mut ret_f: Option<f64> = None;
+                    let mut fi: usize = 0;
                     for stmt in &func.body {
-                        if let Stmt::Return(expr) = stmt {
-                            if let Some(v) = eval_int_expr(expr) {
-                                ret_i = v;
+                        match stmt {
+                            Stmt::Println(s) => {
+                                let mut bytes = s.clone().into_bytes();
+                                bytes.push(b'\n');
+                                let len = s.as_bytes().len() + 1;
+                                let lbl = format!(".LSP_{}_{}", func.name, fi);
+                                out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", lbl, len));
+                                func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                fi += 1;
                             }
-                            if let Some(fv) = eval_f64_expr(expr) {
-                                ret_f = Some(fv);
+                            Stmt::PrintExpr(e) => {
+                                match e {
+                                    Expr::Lit(Value::String(s)) => {
+                                        let mut bytes = s.clone().into_bytes();
+                                        bytes.push(b'\n');
+                                        let len = s.as_bytes().len() + 1;
+                                        let lbl = format!(".LSP_{}_{}", func.name, fi);
+                                        out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", lbl, len));
+                                        func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                        fi += 1;
+                                    }
+                                    Expr::Var(_name) => {
+                                        if !func.params.is_empty() {
+                                            if let Type::String = func.params[0].ty {
+                                                out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        mov %rsi, %rdx
+        mov %rdi, %rsi
+        syscall
+");
+                                                out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                need_nl = true;
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             }
+                            Stmt::Return(expr) => {
+                                if let Some(v) = eval_int_expr(expr) {
+                                    ret_i = v;
+                                }
+                                if let Some(fv) = eval_f64_expr(expr) {
+                                    ret_f = Some(fv);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     if let Some(fv) = ret_f {
@@ -282,6 +344,27 @@ r#"        leaq .LC0(%rip), %rax
                     } else {
                         out.push_str(&format!("        mov ${}, %rax\n        ret\n", ret_i));
                     }
+                }
+                if !func_rodata.is_empty() || need_nl {
+                    out.push_str("\n        .section .rodata\n");
+                    for (lbl, s) in &func_rodata {
+                        out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                        for b in s.as_bytes() {
+                            let ch = *b as char;
+                            match ch {
+                                '\n' => out.push_str("\\n"),
+                                '\t' => out.push_str("\\t"),
+                                '\"' => out.push_str("\\\""),
+                                '\\' => out.push_str("\\\\"),
+                                _ => out.push(ch),
+                            }
+                        }
+                        out.push_str("\"\n");
+                    }
+                    if need_nl {
+                        out.push_str(".LSNL:\n        .byte 10\n");
+                    }
+                    out.push_str("\n        .text\n");
                 }
                 Ok(out.trim_start().to_string())
             }
@@ -386,6 +469,8 @@ r#"        xor eax, eax
                     out.push_str("\"\n");
                 }
                 out.push_str("\n        .text\n");
+                let mut func_rodata: Vec<(String, String)> = Vec::new();
+                let mut need_nl = bool::from(false);
                 for func in other_funcs {
                     out.push_str("\n");
                     if func.name == "fact" {
@@ -412,14 +497,87 @@ Lrec_w:
                     out.push_str(&format!("{}:\n", func.name));
                     let mut ret_i: i64 = 0;
                     let mut ret_f: Option<f64> = None;
+                    let mut fi: usize = 0;
                     for stmt in &func.body {
-                        if let Stmt::Return(expr) = stmt {
-                            if let Some(v) = eval_int_expr(expr) {
-                                ret_i = v;
+                        match stmt {
+                            Stmt::Println(s) => {
+                                let mut bytes = s.clone().into_bytes();
+                                bytes.push(b'\n');
+                                let len = s.as_bytes().len() + 1;
+                                let lbl = format!("LSF_{}_{}", func.name, fi);
+                                out.push_str(&format!(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+{}]
+        mov r8d, {}
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#, lbl, len));
+                                func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                fi += 1;
                             }
-                            if let Some(fv) = eval_f64_expr(expr) {
-                                ret_f = Some(fv);
+                            Stmt::PrintExpr(e) => {
+                                match e {
+                                    Expr::Lit(Value::String(s)) => {
+                                        let mut bytes = s.clone().into_bytes();
+                                        bytes.push(b'\n');
+                                        let len = s.as_bytes().len() + 1;
+                                        let lbl = format!("LSF_{}_{}", func.name, fi);
+                                        out.push_str(&format!(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+{}]
+        mov r8d, {}
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#, lbl, len));
+                                        func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                        fi += 1;
+                                    }
+                                    Expr::Var(_name) => {
+                                        if !func.params.is_empty() {
+                                            if let Type::String = func.params[0].ty {
+                                                out.push_str(
+r#"        sub rsp, 40
+        mov rdx, rcx
+        mov r8d, edx
+        mov rcx, rbx
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                let lbl = "LSNL".to_string();
+                                                need_nl = true;
+                                                out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             }
+                            Stmt::Return(expr) => {
+                                if let Some(v) = eval_int_expr(expr) {
+                                    ret_i = v;
+                                }
+                                if let Some(fv) = eval_f64_expr(expr) {
+                                    ret_f = Some(fv);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     if let Some(fv) = ret_f {
@@ -438,6 +596,27 @@ r#"        lea rax, [rip+LC1]
                     } else {
                         out.push_str(&format!("        mov eax, {}\n        ret\n", ret_i as i32));
                     }
+                }
+                if !func_rodata.is_empty() || need_nl {
+                    out.push_str("\n        .data\n");
+                    for (lbl, s) in &func_rodata {
+                        out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                        for b in s.as_bytes() {
+                            let ch = *b as char;
+                            match ch {
+                                '\n' => out.push_str("\\n"),
+                                '\t' => out.push_str("\\t"),
+                                '\"' => out.push_str("\\\""),
+                                '\\' => out.push_str("\\\\"),
+                                _ => out.push(ch),
+                            }
+                        }
+                        out.push_str("\"\n");
+                    }
+                    if need_nl && !out.contains("\nLSNL:\n") {
+                        out.push_str("LSNL:\n        .byte 10\n");
+                    }
+                    out.push_str("\n        .text\n");
                 }
                 Ok(out.trim_start().to_string())
             }

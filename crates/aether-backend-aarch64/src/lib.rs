@@ -182,6 +182,7 @@ r#"        adrp x1, .LC0
                 }
             }
         }
+        out.push_str("\n        .text\n");
         for func in other_funcs {
             out.push_str("\n");
             out.push_str(&format!("{}:\n", func.name));

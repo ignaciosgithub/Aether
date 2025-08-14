@@ -113,7 +113,13 @@ r#"
 _start:
 "#);
                 for name in &calls {
+                    out.push_str(
+r#"        sub $8, %rsp
+"#);
                     out.push_str(&format!("        call {}\n", name));
+                    out.push_str(
+r#"        add $8, %rsp
+"#);
                 }
                 if let Some(fv) = f64_ret {
                     let bits = fv.to_bits();
@@ -187,6 +193,7 @@ r#"        leaq .LC0(%rip), %rax
                         }
                     }
                 }
+                out.push_str("\n        .text\n");
                 for func in other_funcs {
                     out.push_str("\n");
                     out.push_str(&format!("{}:\n", func.name));
@@ -300,6 +307,7 @@ r#"        xor eax, eax
                     }
                     out.push_str("\"\n");
                 }
+                out.push_str("\n        .text\n");
                 for func in other_funcs {
                     out.push_str("\n");
                     out.push_str(&format!("{}:\n", func.name));

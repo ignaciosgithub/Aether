@@ -1,0 +1,10 @@
+[package]
+name = "aether-backend-aarch64"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+aether-frontend = { path = "../aether-frontend" }
+aether-codegen = { path = "../aether-codegen" }

@@ -12,8 +12,11 @@ impl<'a> Parser<'a> {
     pub fn parse(toks: &'a [Token]) -> Result<Module> {
         let mut p = Parser { toks, pos: 0 };
         let mut items = Vec::new();
-        if let Some(func) = p.parse_function()? {
-            items.push(Item::Function(func));
+        loop {
+            match p.parse_function()? {
+                Some(func) => items.push(Item::Function(func)),
+                None => break,
+            }
         }
         Ok(Module { items })
     }
@@ -154,6 +157,13 @@ impl<'a> Parser<'a> {
                 }
             }
             return Ok(Expr::Lit(Value::List(elems)));
+        }
+        if let Some(TokenKind::Ident(name)) = self.peek().map(|t| t.kind.clone()) {
+            if self.toks.get(self.pos + 1).map(|t| t.kind.clone()) == Some(TokenKind::LParen) {
+                self.pos += 2;
+                self.expect(&TokenKind::RParen)?;
+                return Ok(Expr::Call(name, vec![]));
+            }
         }
         let kind = self.peek().ok_or_else(|| anyhow!("unexpected eof"))?.kind.clone();
         match kind {

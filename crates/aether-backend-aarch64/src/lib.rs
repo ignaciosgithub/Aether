@@ -63,6 +63,8 @@ impl CodeGenerator for AArch64Codegen {
         let mut exit_code: i64 = 0;
         let mut f64_ret: Option<f64> = None;
         let mut prints: Vec<(String, usize)> = Vec::new();
+        let mut calls: Vec<String> = Vec::new();
+        let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
@@ -77,15 +79,23 @@ impl CodeGenerator for AArch64Codegen {
                             if let Some(fv) = eval_f64_expr(expr) {
                                 f64_ret = Some(fv);
                             }
+                            if let Expr::Call(name, _) = expr {
+                                calls.push(name.clone());
+                            }
                         }
                         Stmt::Println(s) => {
                             let mut bytes = s.clone().into_bytes();
                             bytes.push(b'\n');
                             prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
                         }
+                        Stmt::Expr(Expr::Call(name, _)) => {
+                            calls.push(name.clone());
+                        }
                         _ => {}
                     }
                 }
+            } else {
+                other_funcs.push(func);
             }
         }
         let mut out = String::new();
@@ -95,6 +105,9 @@ r#"
         .text
 _start:
 "#);
+        for name in &calls {
+            out.push_str(&format!("        bl {}\n", name));
+        }
         if let Some(fv) = f64_ret {
             let bits = fv.to_bits();
             out.push_str(
@@ -167,6 +180,40 @@ r#"        adrp x1, .LC0
                     }
                     out.push_str("\"\n");
                 }
+            }
+        }
+        out.push_str("\n        .text\n");
+        for func in other_funcs {
+            out.push_str("\n");
+            out.push_str(&format!("{}:\n", func.name));
+            let mut ret_i: i64 = 0;
+            let mut ret_f: Option<f64> = None;
+            for stmt in &func.body {
+                if let Stmt::Return(expr) = stmt {
+                    if let Some(v) = eval_int_expr(expr) {
+                        ret_i = v;
+                    }
+                    if let Some(fv) = eval_f64_expr(expr) {
+                        ret_f = Some(fv);
+                    }
+                }
+            }
+            if let Some(fv) = ret_f {
+                let bits = fv.to_bits();
+                out.push_str(
+r#"        adrp x1, .LC1
+        add x1, x1, :lo12:.LC1
+        ldr d0, [x1]
+        ret
+"#);
+                let lo = bits as u32;
+                let hi = (bits >> 32) as u32;
+                if !out.contains("\n.LC1:\n") {
+                    out.push_str("\n        .section .rodata\n.LC1:\n");
+                    out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                }
+            } else {
+                out.push_str(&format!("        mov x0, #{}\n        ret\n", ret_i));
             }
         }
         Ok(out.trim_start().to_string())

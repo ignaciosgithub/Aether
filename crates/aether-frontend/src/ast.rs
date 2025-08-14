@@ -64,4 +64,5 @@ pub enum BinOpKind {
 pub enum Expr {
     Lit(Value),
     BinOp(Box<Expr>, BinOpKind, Box<Expr>),
+    Call(String, Vec<Expr>),
 }

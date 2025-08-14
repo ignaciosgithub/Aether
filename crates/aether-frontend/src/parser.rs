@@ -85,6 +85,47 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr> {
+        self.parse_add_sub()
+    }
+
+    fn parse_add_sub(&mut self) -> Result<Expr> {
+        let mut node = self.parse_mul_div()?;
+        loop {
+            if self.eat_kind(&TokenKind::Plus) {
+                let rhs = self.parse_mul_div()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Add, Box::new(rhs));
+            } else if self.eat_kind(&TokenKind::Minus) {
+                let rhs = self.parse_mul_div()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Sub, Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_mul_div(&mut self) -> Result<Expr> {
+        let mut node = self.parse_primary()?;
+        loop {
+            if self.eat_kind(&TokenKind::Star) {
+                let rhs = self.parse_primary()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Mul, Box::new(rhs));
+            } else if self.eat_kind(&TokenKind::Slash) {
+                let rhs = self.parse_primary()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Div, Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr> {
+        if self.eat_kind(&TokenKind::LParen) {
+            let e = self.parse_expr()?;
+            self.expect(&TokenKind::RParen)?;
+            return Ok(e);
+        }
         if self.eat_kind(&TokenKind::LBracket) {
             let mut elems = Vec::new();
             if !self.eat_kind(&TokenKind::RBracket) {
@@ -92,6 +133,7 @@ impl<'a> Parser<'a> {
                     let e = self.parse_expr()?;
                     match e {
                         Expr::Lit(v) => elems.push(v),
+                        _ => return Err(anyhow!("only literal elements in list for now")),
                     }
                     if self.eat_kind(&TokenKind::RBracket) {
                         break;

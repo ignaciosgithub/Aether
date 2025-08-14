@@ -52,6 +52,15 @@ pub enum Value {
 }
 
 #[derive(Debug, Clone)]
+pub enum BinOpKind {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr {
     Lit(Value),
+    BinOp(Box<Expr>, BinOpKind, Box<Expr>),
 }

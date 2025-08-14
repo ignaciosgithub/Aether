@@ -32,3 +32,16 @@ Assemble and link
 Notes
 - If target cannot be determined, default behavior in codegen is to x86_64-windows-gnu.
 - For running PE on Linux, use wine. For AArch64 binaries, use qemu-aarch64-static if needed.
+Float example (generate and link)
+
+x86_64 Linux
+- cargo run -p aetherc -- examples/float_return.ae --arch x86_64 --os linux -o out/linux/float.s
+- ./scripts/assemble_link.sh x86_64-linux out/linux/float.s out/linux/float
+
+x86_64 Windows (cross-link)
+- cargo run -p aetherc -- examples/float_return.ae --arch x86_64 --os windows -o out/windows/float.s
+- ./scripts/assemble_link.sh x86_64-windows out/windows/float.s out/windows/float.exe
+
+AArch64 Linux (cross-link)
+- cargo run -p aetherc -- examples/float_return.ae --arch aarch64 --os linux -o out/aarch64/float.s
+- ./scripts/assemble_link.sh aarch64-linux out/aarch64/float.s out/aarch64/float

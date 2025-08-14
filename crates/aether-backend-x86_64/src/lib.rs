@@ -148,6 +148,8 @@ r#"
 "#);
                 }
 
+                let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
+
                 for (name, args) in &main_print_calls {
                     if args.is_empty() {
                         out.push_str(
@@ -167,9 +169,53 @@ r#"        add $8, %rsp
         mov $1, %rdx
         syscall
 "#);
+                    } else {
+                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                        let mut islot = 0usize;
+                        for (aidx, a) in args.iter().enumerate() {
+                            match a {
+                                Expr::Lit(Value::Int(v)) => {
+                                    if islot < regs.len() {
+                                        let dst = regs[islot];
+                                        out.push_str(&format!("        mov ${}, {}\n", v, dst));
+                                        islot += 1;
+                                    }
+                                }
+                                Expr::Lit(Value::String(s)) => {
+                                    if islot + 1 < regs.len() {
+                                        let mut bytes = s.clone().into_bytes();
+                                        let len = bytes.len();
+                                        let lbl = format!(".LSARG{}_{}", 0, aidx);
+                                        out.push_str(&format!(
+"        leaq {}(%rip), {}
+        mov ${}, {}
+", lbl, regs[islot], len, regs[islot+1]));
+                                        call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                        islot += 2;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        out.push_str(
+r#"        sub $8, %rsp
+"#);
+                        out.push_str(&format!("        call {}\n", name));
+                        out.push_str(
+r#"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+"#);
                     }
                 }
-                let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
                 if let Some((ref name, ref args)) = main_ret_call {
                     if !args.is_empty() {
                         let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];

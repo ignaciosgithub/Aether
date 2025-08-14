@@ -318,25 +318,43 @@ r#"        push %rbx
                                         func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                         fi += 1;
                                     }
-                                    Expr::Var(_name) => {
-                                        if !func.params.is_empty() {
-                                            if let Type::String = func.params[0].ty {
-                                                out.push_str(
-"        mov %rsi, %rdx
-        mov %rdi, %rsi
+                                    Expr::Var(name) => {
+                                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                        let mut slot = 0usize;
+                                        let mut handled = false;
+                                        for p in &func.params {
+                                            if p.name == *name {
+                                                if let Type::String = p.ty {
+                                                    if slot + 1 < regs.len() {
+                                                        let ptr_reg = regs[slot];
+                                                        let len_reg = regs[slot + 1];
+                                                        out.push_str(&format!(
+"        mov {len}, %rdx
+        mov {ptr}, %rsi
         mov $1, %rax
         mov $1, %rdi
         syscall
-");
-                                                out.push_str(
+", len=len_reg, ptr=ptr_reg));
+                                                        out.push_str(
 "        mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
         mov $1, %rdx
         syscall
 ");
-                                                need_nl = true;
+                                                        need_nl = true;
+                                                    }
+                                                    handled = true;
+                                                }
+                                                break;
+                                            } else {
+                                                match p.ty {
+                                                    Type::String => slot += 2,
+                                                    _ => slot += 1,
+                                                }
                                             }
+                                        }
+                                        if !handled {
                                         }
                                     }
                                     _ => {}
@@ -596,22 +614,28 @@ r#"        sub rsp, 40
                                         func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                         fi += 1;
                                     }
-                                    Expr::Var(_name) => {
-                                        if !func.params.is_empty() {
-                                            if let Type::String = func.params[0].ty {
-                                                out.push_str(
+                                    Expr::Var(name) => {
+                                        let regs = ["rcx","rdx","r8","r9"];
+                                        let mut slot = 0usize;
+                                        let mut handled = false;
+                                        for p in &func.params {
+                                            if p.name == *name {
+                                                if let Type::String = p.ty {
+                                                    if slot + 1 < regs.len() {
+                                                        let ptr_reg = regs[slot];
+                                                        let len_reg = regs[slot + 1];
+                                                        out.push_str(&format!(
 r#"        sub rsp, 40
-        mov rdx, rcx
-        mov r8d, edx
+        mov rdx, {ptr}
+        mov r8d, {len}d
         mov rcx, rbx
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
-"#);
-                                                let lbl = "LSNL".to_string();
-                                                need_nl = true;
-                                                out.push_str(
+"#, ptr=ptr_reg, len=len_reg));
+                                                        need_nl = true;
+                                                        out.push_str(
 r#"        sub rsp, 40
         mov rcx, rbx
         lea rdx, [rip+LSNL]
@@ -621,7 +645,18 @@ r#"        sub rsp, 40
         call WriteFile
         add rsp, 40
 "#);
+                                                    }
+                                                    handled = true;
+                                                }
+                                                break;
+                                            } else {
+                                                match p.ty {
+                                                    Type::String => slot += 2,
+                                                    _ => slot += 1,
+                                                }
                                             }
+                                        }
+                                        if !handled {
                                         }
                                     }
                                     _ => {}

@@ -291,17 +291,24 @@ r#"        adrp x1, .LC0
                                 func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                 fi += 1;
                             }
-                            Expr::Var(_name) => {
-                                if !func.params.is_empty() {
-                                    if let Type::String = func.params[0].ty {
-                                        out.push_str(
-"        mov x2, x1
-        mov x1, x0
+                            Expr::Var(name) => {
+                                let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                                let mut slot = 0usize;
+                                let mut handled = false;
+                                for p in &func.params {
+                                    if p.name == *name {
+                                        if let Type::String = p.ty {
+                                            if slot + 1 < regs.len() {
+                                                let ptr_reg = regs[slot];
+                                                let len_reg = regs[slot + 1];
+                                                out.push_str(&format!(
+"        mov x2, {len}
+        mov x1, {ptr}
         mov x0, #1
         mov x8, #64
         svc #0
-");
-                                        out.push_str(
+", len=len_reg, ptr=ptr_reg));
+                                                out.push_str(
 "        mov x8, #64
         mov x0, #1
         adrp x1, .LSNL
@@ -309,8 +316,19 @@ r#"        adrp x1, .LC0
         mov x2, #1
         svc #0
 ");
-                                        need_nl = true;
+                                                need_nl = true;
+                                            }
+                                            handled = true;
+                                        }
+                                        break;
+                                    } else {
+                                        match p.ty {
+                                            Type::String => slot += 2,
+                                            _ => slot += 1,
+                                        }
                                     }
+                                }
+                                if !handled {
                                 }
                             }
                             _ => {}

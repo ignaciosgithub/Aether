@@ -16,6 +16,10 @@ pub enum TokenKind {
     Comma,
     Colon,
     Semicolon,
+    Plus,
+    Minus,
+    Star,
+    Slash,
     Return,
     Func,
     Pub,
@@ -115,6 +119,10 @@ impl Lexer {
                     i += 2;
                     TokenKind::Arrow
                 }
+                '+' => { i += 1; TokenKind::Plus }
+                '-' => { i += 1; TokenKind::Minus }
+                '*' => { i += 1; TokenKind::Star }
+                '/' => { i += 1; TokenKind::Slash }
                 '(' => {
                     i += 1;
                     TokenKind::LParen

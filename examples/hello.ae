@@ -1,3 +1,4 @@
 pub func main() -> void {
-    return 0;
+    // arithmetic demo: (5 + 7) * 3 - 4 / 2 == 34
+    return (5 + 7) * 3 - 4 / 2;
 }

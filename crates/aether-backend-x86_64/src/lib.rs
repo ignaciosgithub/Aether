@@ -305,7 +305,12 @@ r#"        sub rsp, 40
         mov rbx, rax
 "#);
                 }
-                for name in &calls {
+                if let Some((ref name, ref args)) = main_ret_call {
+                    if !args.is_empty() {
+                        if let Expr::Lit(Value::Int(v0)) = &args[0] {
+                            out.push_str(&format!("        mov ecx, {}\n", *v0 as i32));
+                        }
+                    }
                     out.push_str(
 r#"        sub rsp, 32
 "#);
@@ -313,6 +318,16 @@ r#"        sub rsp, 32
                     out.push_str(
 r#"        add rsp, 32
 "#);
+                } else {
+                    for name in &calls {
+                        out.push_str(
+r#"        sub rsp, 32
+"#);
+                        out.push_str(&format!("        call {}\n", name));
+                        out.push_str(
+r#"        add rsp, 32
+"#);
+                    }
                 }
                 if let Some(fv) = f64_ret {
                     let bits = fv.to_bits();
@@ -337,10 +352,16 @@ r#"        sub rsp, 40
 "#, idx, len));
                     }
                 }
-                out.push_str(
+                if main_ret_call.is_some() {
+                    out.push_str(
+r#"        ret
+"#);
+                } else {
+                    out.push_str(
 r#"        xor eax, eax
         ret
 "#);
+                }
                 if let Some(fv) = f64_ret {
                     let bits = fv.to_bits();
                     let lo = bits as u32;
@@ -368,6 +389,7 @@ r#"        xor eax, eax
                 for func in other_funcs {
                     out.push_str("\n");
                     if func.name == "fact" {
+                        out.push_str(&format!("{}:\n", func.name));
                         out.push_str(
 r#"        push rbx
         cmp ecx, 1

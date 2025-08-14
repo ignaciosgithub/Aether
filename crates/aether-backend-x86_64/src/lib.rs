@@ -698,6 +698,14 @@ r#"        add rsp, 32
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
 "#);
                     }
                 }
@@ -733,6 +741,9 @@ r#"        xor eax, eax
                     out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                 } else {
                     out.push_str("\n        .data\n");
+                }
+                if !main_print_calls.is_empty() {
+                    out.push_str("LSNL:\n        .byte 10\n");
                 }
                 for (lbl, s) in &call_arg_data {
                     out.push_str(&format!("{}:\n        .ascii \"", lbl));

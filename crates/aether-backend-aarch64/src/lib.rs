@@ -137,6 +137,12 @@ _start:
         mov x0, #1
         mov x8, #64
         svc #0
+        mov x8, #64
+        mov x0, #1
+        adrp x1, .LSNL
+        add x1, x1, :lo12:.LSNL
+        mov x2, #1
+        svc #0
 ");
             }
         }
@@ -218,6 +224,9 @@ r#"        adrp x1, .LC0
                     }
                 }
                 out.push_str("\"\n");
+            }
+            if !main_print_calls.is_empty() {
+                out.push_str(".LSNL:\n        .byte 10\n");
             }
             for (lbl, s) in &call_arg_rodata {
                 out.push_str(&format!("{}:\n        .ascii \"", lbl));

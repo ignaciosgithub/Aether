@@ -84,3 +84,36 @@ fn aarch64_float_return_sets_d0() {
     let asm = cg.generate(&module).expect("codegen ok");
     assert!(asm.contains("ldr d0, [x1]") || asm.contains("ldr d0, [x0]") || asm.contains("ldr d0"));
 }
+#[test]
+fn aarch64_multi_arg_call_places_ints_in_x0_x1() {
+    use aether_backend_aarch64::AArch64Codegen;
+    use aether_frontend::ast::*;
+    let callee = Function {
+        name: "bar".to_string(),
+        params: vec![
+            Param { name: "x".to_string(), ty: Type::I32 },
+            Param { name: "y".to_string(), ty: Type::I32 },
+        ],
+        ret: Type::String,
+        body: vec![Stmt::Return(Expr::Lit(Value::String("OK".to_string())))],
+        is_pub: false,
+        is_threaded: false,
+    };
+    let mainf = Function {
+        name: "main".to_string(),
+        params: vec![],
+        ret: Type::I32,
+        body: vec![
+            Stmt::PrintExpr(Expr::Call("bar".to_string(), vec![Expr::Lit(Value::Int(1)), Expr::Lit(Value::Int(2))])),
+            Stmt::Return(Expr::Lit(Value::Int(0))),
+        ],
+        is_pub: true,
+        is_threaded: false,
+    };
+    let module = Module { items: vec![Item::Function(mainf), Item::Function(callee)] };
+    let mut cg = AArch64Codegen::new_linux();
+    let asm = cg.generate(&module).expect("codegen ok");
+    assert!(asm.contains("mov x0, #1") || asm.contains("movz x0"));
+    assert!(asm.contains("mov x1, #2") || asm.contains("movz x1"));
+    assert!(asm.contains("bl bar"));
+}

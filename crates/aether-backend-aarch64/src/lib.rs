@@ -144,35 +144,100 @@ _start:
         mov x2, #1
         svc #0
 ");
+            } else {
+                let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                let mut islot = 0usize;
+                for a in args {
+                    match a {
+                        Expr::Lit(Value::Int(v)) => {
+                            if islot < regs.len() {
+                                let dst = regs[islot];
+                                out.push_str(&format!("        mov {}, #{}\n", dst, v));
+                                islot += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                out.push_str(&format!("        bl {}\n", name));
+                out.push_str(
+"        mov x2, x1
+        mov x1, x0
+        mov x0, #1
+        mov x8, #64
+        svc #0
+        mov x8, #64
+        mov x0, #1
+        adrp x1, .LSNL
+        add x1, x1, :lo12:.LSNL
+        mov x2, #1
+        svc #0
+");
             }
         }
         let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
         if let Some((ref name, ref args)) = main_ret_call {
             if !args.is_empty() {
-                if let Expr::Lit(Value::Int(v0)) = &args[0] {
-                    out.push_str(&format!("        mov x0, #{}\n", v0));
+                let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                let mut islot = 0usize;
+                for (aidx, a) in args.iter().enumerate() {
+                    match a {
+                        Expr::Lit(Value::Int(v)) => {
+                            if islot < regs.len() {
+                                let dst = regs[islot];
+                                out.push_str(&format!("        mov {}, #{}\n", dst, v));
+                                islot += 1;
+                            }
+                        }
+                        Expr::Lit(Value::String(s)) => {
+                            if islot + 1 < regs.len() {
+                                let mut bytes = s.clone().into_bytes();
+                                let len = bytes.len();
+                                let lbl = format!(".LSARG{}_{}", 0, aidx);
+                                out.push_str(&format!(
+"        adrp {0}, {1}
+        add {0}, {0}, :lo12:{1}
+        mov {2}, #{3}
+", regs[islot], lbl, regs[islot+1], len));
+                                call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                islot += 2;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             out.push_str(&format!("        bl {}\n", name));
         } else {
             for (cidx, (name, args)) in calls.iter().enumerate() {
                 if !args.is_empty() {
-                    match &args[0] {
-                        Expr::Lit(Value::Int(v0)) => {
-                            out.push_str(&format!("        mov x0, #{}\n", v0));
+                    let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                    let mut islot = 0usize;
+                    for (aidx, a) in args.iter().enumerate() {
+                        match a {
+                            Expr::Lit(Value::Int(v)) => {
+                                if islot < regs.len() {
+                                    let dst = regs[islot];
+                                    out.push_str(&format!("        mov {}, #{}\n", dst, v));
+                                    islot += 1;
+                                }
+                            }
+                            Expr::Lit(Value::String(s)) => {
+                                if islot + 1 < regs.len() {
+                                    let mut bytes = s.clone().into_bytes();
+                                    let len = bytes.len();
+                                    let lbl = format!(".LSARG{}_{}", cidx, aidx);
+                                    out.push_str(&format!(
+"        adrp {0}, {1}
+        add {0}, {0}, :lo12:{1}
+        mov {2}, #{3}
+", regs[islot], lbl, regs[islot+1], len));
+                                    call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                    islot += 2;
+                                }
+                            }
+                            _ => {}
                         }
-                        Expr::Lit(Value::String(s)) => {
-                            let mut bytes = s.clone().into_bytes();
-                            let len = bytes.len();
-                            let lbl = format!(".LSARG{}", cidx);
-                            out.push_str(&format!(
-"        adrp x0, {0}
-        add x0, x0, :lo12:{0}
-        mov x1, #{1}
-", lbl, len));
-                            call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
-                        }
-                        _ => {}
                     }
                 }
                 out.push_str(&format!("        bl {}\n", name));
@@ -389,15 +454,102 @@ r#"        adrp x1, .LC0
                                 }
                             }
                             Expr::IfElse { cond, then_expr, else_expr } => {
-                                if let Some(cv) = eval_int_expr(cond) {
-                                    let chosen = if cv != 0 { then_expr } else { else_expr };
-                                    match &**chosen {
-                                        Expr::Lit(Value::String(s)) => {
-                                            let mut bytes = s.clone().into_bytes();
-                                            bytes.push(b'\n');
-                                            let len = s.as_bytes().len() + 1;
-                                            let lbl = format!(".LSF_{}_{}", func.name, fi);
-                                            out.push_str(&format!(
+                                let then_lbl = format!(".LIF_THEN_{}_{}", func.name, fi);
+                                let else_lbl = format!(".LIF_ELSE_{}_{}", func.name, fi);
+                                let join_lbl = format!(".LIF_JOIN_{}_{}", func.name, fi);
+                                match &**cond {
+                                    Expr::BinOp(lhs, op, rhs) => {
+                                        let mut lhs_loaded = false;
+                                        let mut rhs_loaded = false;
+                                        match &**lhs {
+                                            Expr::Lit(Value::Int(v)) => {
+                                                out.push_str(&format!("        mov x10, #{}\n", v));
+                                                lhs_loaded = true;
+                                            }
+                                            Expr::Var(name) => {
+                                                let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                                                let mut slot = 0usize;
+                                                for p in &func.params {
+                                                    if p.name == *name {
+                                                        match p.ty {
+                                                            Type::String => {}
+                                                            _ => {
+                                                                if slot < regs.len() {
+                                                                    let src = regs[slot];
+                                                                    out.push_str(&format!("        mov x10, {}\n", src));
+                                                                    lhs_loaded = true;
+                                                                }
+                                                            }
+                                                        }
+                                                        break;
+                                                    } else {
+                                                        match p.ty {
+                                                            Type::String => slot += 2,
+                                                            _ => slot += 1,
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                        match &**rhs {
+                                            Expr::Lit(Value::Int(v)) => {
+                                                out.push_str(&format!("        mov x11, #{}\n", v));
+                                                rhs_loaded = true;
+                                            }
+                                            Expr::Var(name) => {
+                                                let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                                                let mut slot = 0usize;
+                                                for p in &func.params {
+                                                    if p.name == *name {
+                                                        match p.ty {
+                                                            Type::String => {}
+                                                            _ => {
+                                                                if slot < regs.len() {
+                                                                    let src = regs[slot];
+                                                                    out.push_str(&format!("        mov x11, {}\n", src));
+                                                                    rhs_loaded = true;
+                                                                }
+                                                            }
+                                                        }
+                                                        break;
+                                                    } else {
+                                                        match p.ty {
+                                                            Type::String => slot += 2,
+                                                            _ => slot += 1,
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                        if lhs_loaded && rhs_loaded {
+                                            out.push_str("        cmp x10, x11\n");
+                                            match op {
+                                                BinOpKind::Eq => {
+                                                    out.push_str(&format!("        b.eq {}\n", then_lbl));
+                                                    out.push_str(&format!("        b {}\n", else_lbl));
+                                                }
+                                                BinOpKind::Lt => {
+                                                    out.push_str(&format!("        b.lt {}\n", then_lbl));
+                                                    out.push_str(&format!("        b {}\n", else_lbl));
+                                                }
+                                                BinOpKind::Le => {
+                                                    out.push_str(&format!("        b.le {}\n", then_lbl));
+                                                    out.push_str(&format!("        b {}\n", else_lbl));
+                                                }
+                                                _ => {
+                                                    out.push_str(&format!("        b {}\n", else_lbl));
+                                                }
+                                            }
+                                            out.push_str(&format!("{}\n", then_lbl));
+                                            match &**then_expr {
+                                                Expr::Lit(Value::String(s)) => {
+                                                    let mut bytes = s.clone().into_bytes();
+                                                    bytes.push(b'\n');
+                                                    let len = s.as_bytes().len() + 1;
+                                                    let lbl = format!(".LSF_{}_{}", func.name, fi);
+                                                    out.push_str(&format!(
 "        mov x8, #64
         mov x0, #1
         adrp x1, {0}
@@ -405,26 +557,25 @@ r#"        adrp x1, .LC0
         mov x2, #{1}
         svc #0
 ", lbl, len));
-                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
-                                            fi += 1;
-                                        }
-                                        Expr::Var(name) => {
-                                            let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
-                                            let mut slot = 0usize;
-                                            for p in &func.params {
-                                                if p.name == *name {
-                                                    if let Type::String = p.ty {
-                                                        if slot + 1 < regs.len() {
-                                                            let ptr_reg = regs[slot];
-                                                            let len_reg = regs[slot + 1];
-                                                            out.push_str(&format!(
+                                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                }
+                                                Expr::Var(name) => {
+                                                    let regs_v = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                                                    let mut slot = 0usize;
+                                                    for p in &func.params {
+                                                        if p.name == *name {
+                                                            if let Type::String = p.ty {
+                                                                if slot + 1 < regs_v.len() {
+                                                                    let ptr_reg = regs_v[slot];
+                                                                    let len_reg = regs_v[slot + 1];
+                                                                    out.push_str(&format!(
 "        mov x2, {len}
         mov x1, {ptr}
         mov x0, #1
         mov x8, #64
         svc #0
 ", len=len_reg, ptr=ptr_reg));
-                                                            out.push_str(
+                                                                    out.push_str(
 "        mov x8, #64
         mov x0, #1
         adrp x1, .LSNL
@@ -432,29 +583,29 @@ r#"        adrp x1, .LC0
         mov x2, #1
         svc #0
 ");
-                                                            need_nl = true;
+                                                                    need_nl = true;
+                                                                }
+                                                            }
+                                                            break;
+                                                        } else {
+                                                            match p.ty {
+                                                                Type::String => slot += 2,
+                                                                _ => slot += 1,
+                                                            }
                                                         }
                                                     }
-                                                    break;
-                                                } else {
-                                                    match p.ty {
-                                                        Type::String => slot += 2,
-                                                        _ => slot += 1,
-                                                    }
                                                 }
-                                            }
-                                        }
-                                        Expr::Call(name, args) => {
-                                            if args.is_empty() {
-                                                out.push_str(&format!("        bl {}\n", name));
-                                                out.push_str(
+                                                Expr::Call(name,args) => {
+                                                    if args.is_empty() {
+                                                        out.push_str(&format!("        bl {}\n", name));
+                                                        out.push_str(
 "        mov x2, x1
         mov x1, x0
         mov x0, #1
         mov x8, #64
         svc #0
 ");
-                                                out.push_str(
+                                                        out.push_str(
 "        mov x8, #64
         mov x0, #1
         adrp x1, .LSNL
@@ -462,11 +613,93 @@ r#"        adrp x1, .LC0
         mov x2, #1
         svc #0
 ");
-                                                need_nl = true;
+                                                        need_nl = true;
+                                                    }
+                                                }
+                                                _ => {}
                                             }
+                                            out.push_str(&format!("        b {}\n", join_lbl));
+                                            out.push_str(&format!("{}\n", else_lbl));
+                                            match &**else_expr {
+                                                Expr::Lit(Value::String(s)) => {
+                                                    let mut bytes = s.clone().into_bytes();
+                                                    bytes.push(b'\n');
+                                                    let len = s.as_bytes().len() + 1;
+                                                    let lbl = format!(".LSF_{}_{}_else", func.name, fi);
+                                                    out.push_str(&format!(
+"        mov x8, #64
+        mov x0, #1
+        adrp x1, {0}
+        add x1, x1, :lo12:{0}
+        mov x2, #{1}
+        svc #0
+", lbl, len));
+                                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                }
+                                                Expr::Var(name) => {
+                                                    let regs_v = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                                                    let mut slot = 0usize;
+                                                    for p in &func.params {
+                                                        if p.name == *name {
+                                                            if let Type::String = p.ty {
+                                                                if slot + 1 < regs_v.len() {
+                                                                    let ptr_reg = regs_v[slot];
+                                                                    let len_reg = regs_v[slot + 1];
+                                                                    out.push_str(&format!(
+"        mov x2, {len}
+        mov x1, {ptr}
+        mov x0, #1
+        mov x8, #64
+        svc #0
+", len=len_reg, ptr=ptr_reg));
+                                                                    out.push_str(
+"        mov x8, #64
+        mov x0, #1
+        adrp x1, .LSNL
+        add x1, x1, :lo12:.LSNL
+        mov x2, #1
+        svc #0
+");
+                                                                    need_nl = true;
+                                                                }
+                                                            }
+                                                            break;
+                                                        } else {
+                                                            match p.ty {
+                                                                Type::String => slot += 2,
+                                                                _ => slot += 1,
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Expr::Call(name,args) => {
+                                                    if args.is_empty() {
+                                                        out.push_str(&format!("        bl {}\n", name));
+                                                        out.push_str(
+"        mov x2, x1
+        mov x1, x0
+        mov x0, #1
+        mov x8, #64
+        svc #0
+");
+                                                        out.push_str(
+"        mov x8, #64
+        mov x0, #1
+        adrp x1, .LSNL
+        add x1, x1, :lo12:.LSNL
+        mov x2, #1
+        svc #0
+");
+                                                        need_nl = true;
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                            out.push_str(&format!("{}\n", join_lbl));
+                                            fi += 1;
                                         }
-                                        _ => {}
                                     }
+                                    _ => {}
                                 }
                             }
                             _ => {}

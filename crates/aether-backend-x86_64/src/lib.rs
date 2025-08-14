@@ -157,8 +157,8 @@ r#"        leaq .LC0(%rip), %rax
                     }
                     if main_ret_call.is_some() {
                         out.push_str(
-"        mov $60, %rax
-        mov %eax, %edi
+"        mov %eax, %edi
+        mov $60, %rax
         syscall
 ");
                     } else {
@@ -199,8 +199,8 @@ r#"        leaq .LC0(%rip), %rax
                     }
                     if main_ret_call.is_some() {
                         out.push_str(
-"        mov $60, %rax
-        mov %eax, %edi
+"        mov %eax, %edi
+        mov $60, %rax
         syscall
 ");
                     } else {

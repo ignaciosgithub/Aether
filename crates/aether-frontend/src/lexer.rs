@@ -5,6 +5,7 @@ pub enum TokenKind {
     Ident(String),
     Int(String),
     Float(String),
+    String(String),
     Bool(bool),
     Arrow,
     LParen,
@@ -23,6 +24,7 @@ pub enum TokenKind {
     Return,
     Func,
     Pub,
+    Println,
     True,
     False,
     Void,
@@ -76,6 +78,7 @@ impl Lexer {
                     "return" => TokenKind::Return,
                     "func" => TokenKind::Func,
                     "pub" => TokenKind::Pub,
+                    "println" => TokenKind::Println,
                     "true" => TokenKind::True,
                     "false" => TokenKind::False,
                     "void" => TokenKind::Void,
@@ -112,6 +115,36 @@ impl Lexer {
                         TokenKind::Int(s.to_string())
                     },
                 });
+                continue;
+            }
+            if c == '\"' {
+                i += 1;
+                let mut s = String::new();
+                while i < bytes.len() {
+                    let ch = bytes[i] as char;
+                    if ch == '\\' {
+                        i += 1;
+                        if i >= bytes.len() { return Err(anyhow!("unterminated string")); }
+                        let esc = bytes[i] as char;
+                        match esc {
+                            'n' => s.push('\n'),
+                            't' => s.push('\t'),
+                            'r' => s.push('\r'),
+                            '\\' => s.push('\\'),
+                            '"' => s.push('"'),
+                            _ => s.push(esc),
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    if ch == '\"' {
+                        i += 1;
+                        break;
+                    }
+                    s.push(ch);
+                    i += 1;
+                }
+                toks.push(Token { kind: TokenKind::String(s) });
                 continue;
             }
             let kind = match c {

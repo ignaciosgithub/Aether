@@ -40,6 +40,7 @@ pub enum Type {
 pub enum Stmt {
     Return(Expr),
     Expr(Expr),
+    Println(String),
 }
 
 #[derive(Debug, Clone)]

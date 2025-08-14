@@ -27,6 +27,7 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
                 BinOpKind::Div => {
                     if rv == 0 { None } else { Some(lv / rv) }
                 }
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
             }
         }
         _ => None,
@@ -48,6 +49,7 @@ fn eval_f64_expr(expr: &Expr) -> Option<f64> {
                 BinOpKind::Div => {
                     if rv == 0.0 { None } else { Some(lv / rv) }
                 }
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
             }
         }
         _ => None,
@@ -64,6 +66,7 @@ impl CodeGenerator for AArch64Codegen {
         let mut f64_ret: Option<f64> = None;
         let mut prints: Vec<(String, usize)> = Vec::new();
         let mut calls: Vec<String> = Vec::new();
+        let mut main_ret_call: Option<(String, Vec<Expr>)> = None;
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         for item in &module.items {
             let func = match item {
@@ -79,8 +82,9 @@ impl CodeGenerator for AArch64Codegen {
                             if let Some(fv) = eval_f64_expr(expr) {
                                 f64_ret = Some(fv);
                             }
-                            if let Expr::Call(name, _) = expr {
+                            if let Expr::Call(name, args) = expr {
                                 calls.push(name.clone());
+                                main_ret_call = Some((name.clone(), args.clone()));
                             }
                         }
                         Stmt::Println(s) => {
@@ -105,8 +109,17 @@ r#"
         .text
 _start:
 "#);
-        for name in &calls {
+        if let Some((ref name, ref args)) = main_ret_call {
+            if !args.is_empty() {
+                if let Expr::Lit(Value::Int(v0)) = &args[0] {
+                    out.push_str(&format!("        mov x0, #{}\n", v0));
+                }
+            }
             out.push_str(&format!("        bl {}\n", name));
+        } else {
+            for name in &calls {
+                out.push_str(&format!("        bl {}\n", name));
+            }
         }
         if let Some(fv) = f64_ret {
             let bits = fv.to_bits();
@@ -125,11 +138,18 @@ r#"        adrp x1, .LC0
         svc #0
 ", idx, len));
             }
-            out.push_str(&format!(
+            if main_ret_call.is_some() {
+                out.push_str(
+"        mov x8, #93
+        svc #0
+");
+            } else {
+                out.push_str(&format!(
 "        mov x8, #93
         mov x0, #{}
         svc #0
 ", exit_code));
+            }
             let lo = bits as u32;
             let hi = (bits >> 32) as u32;
             out.push_str("\n        .section .rodata\n.LC0:\n");
@@ -159,11 +179,18 @@ r#"        adrp x1, .LC0
         svc #0
 ", idx, len));
             }
-            out.push_str(&format!(
+            if main_ret_call.is_some() {
+                out.push_str(
+"        mov x8, #93
+        svc #0
+");
+            } else {
+                out.push_str(&format!(
 "        mov x8, #93
         mov x0, #{}
         svc #0
 ", exit_code));
+            }
             if !prints.is_empty() {
                 out.push_str("\n        .section .rodata\n");
                 for (idx, (s, _len)) in prints.iter().enumerate() {

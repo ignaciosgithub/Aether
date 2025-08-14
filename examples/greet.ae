@@ -1,0 +1,8 @@
+pub func main() -> i32 {
+    greet("Aether");
+    return 0;
+}
+
+func greet(name: String) -> i32 {
+    return 0;
+}

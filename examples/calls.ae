@@ -1,0 +1,10 @@
+func foo() -> i32 { 
+    return 7;
+}
+
+pub func main() -> i32 {
+    println("In main before call");
+    foo();
+    println("After call");
+    return 0;
+}

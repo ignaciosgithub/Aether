@@ -322,10 +322,10 @@ r#"        push %rbx
                                         if !func.params.is_empty() {
                                             if let Type::String = func.params[0].ty {
                                                 out.push_str(
-"        mov $1, %rax
-        mov $1, %rdi
-        mov %rsi, %rdx
+"        mov %rsi, %rdx
         mov %rdi, %rsi
+        mov $1, %rax
+        mov $1, %rdi
         syscall
 ");
                                                 out.push_str(

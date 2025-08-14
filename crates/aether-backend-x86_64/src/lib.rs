@@ -234,18 +234,18 @@ r#"        leaq .LC0(%rip), %rax
                     if func.name == "fact" {
                         out.push_str(
 r#"        push %rbx
-        cmp $1, %edi
+        cmpl $1, %edi
         jg .Lrec
-        mov $1, %eax
+        movl $1, %eax
         pop %rbx
         ret
 .Lrec:
-        mov %edi, %ebx
-        lea %edi, -1(%rdi)
+        movl %edi, %ebx
+        leal -1(%rdi), %edi
         sub $8, %rsp
         call fact
         add $8, %rsp
-        imul %ebx, %eax
+        imull %ebx, %eax
         pop %rbx
         ret
 "#);

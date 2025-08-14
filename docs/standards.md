@@ -20,7 +20,7 @@ Core Language
 
 Numeric Types
 - Integers: i32, i64 (unsigned variants to come).
-- Floats: f32, f64 with IEEE-754 semantics; backend codegen maps to native FP regs/instructions.
+- Floats: f32, f64 with IEEE-754 semantics; backend codegen maps to native FP regs/instructions. Float return lowering is implemented for x86_64 (SysV/MS x64) and AArch64 (AAPCS64): results are placed in XMM0/V0.
 
 Collections
 - Lists: List[T] with contiguous storage. List[Any] enables heterogeneous lists via tagged values.

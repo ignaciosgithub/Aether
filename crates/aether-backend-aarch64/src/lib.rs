@@ -542,7 +542,7 @@ r#"        adrp x1, .LC0
                                                     out.push_str(&format!("        b {}\n", else_lbl));
                                                 }
                                             }
-                                            out.push_str(&format!("{}\n", then_lbl));
+                                            out.push_str(&format!("{}:\n", then_lbl));
                                             match &**then_expr {
                                                 Expr::Lit(Value::String(s)) => {
                                                     let mut bytes = s.clone().into_bytes();
@@ -619,7 +619,7 @@ r#"        adrp x1, .LC0
                                                 _ => {}
                                             }
                                             out.push_str(&format!("        b {}\n", join_lbl));
-                                            out.push_str(&format!("{}\n", else_lbl));
+                                            out.push_str(&format!("{}:\n", else_lbl));
                                             match &**else_expr {
                                                 Expr::Lit(Value::String(s)) => {
                                                     let mut bytes = s.clone().into_bytes();
@@ -695,7 +695,7 @@ r#"        adrp x1, .LC0
                                                 }
                                                 _ => {}
                                             }
-                                            out.push_str(&format!("{}\n", join_lbl));
+                                            out.push_str(&format!("{}:\n", join_lbl));
                                             fi += 1;
                                         }
                                     }

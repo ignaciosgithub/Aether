@@ -232,6 +232,7 @@ r#"        leaq .LC0(%rip), %rax
                 for func in other_funcs {
                     out.push_str("\n");
                     if func.name == "fact" {
+                        out.push_str(&format!("{}:\n", func.name));
                         out.push_str(
 r#"        push %rbx
         cmpl $1, %edi

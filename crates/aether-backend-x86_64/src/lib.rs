@@ -46,13 +46,14 @@ impl CodeGenerator for X86_64LinuxCodegen {
     fn generate(&mut self, module: &Module) -> Result<String> {
         let mut exit_code: i64 = 0;
         for item in &module.items {
-            if let Item::Function(func) = item {
-                if func.name == "main" {
-                    for stmt in &func.body {
-                        if let Stmt::Return(expr) = stmt {
-                            if let Some(v) = eval_int_expr(expr) {
-                                exit_code = v.clamp(0, 255);
-                            }
+            let func = match item {
+                Item::Function(f) => f,
+            };
+            if func.name == "main" {
+                for stmt in &func.body {
+                    if let Stmt::Return(expr) = stmt {
+                        if let Some(v) = eval_int_expr(expr) {
+                            exit_code = v.clamp(0, 255);
                         }
                     }
                 }

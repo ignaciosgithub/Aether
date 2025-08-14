@@ -51,3 +51,27 @@ fn windows_float_return_still_sets_xmm0() {
     let asm = cg.generate(&module).expect("codegen ok");
     assert!(asm.contains("movsd xmm0"));
 }
+#[test]
+fn windows_println_codegen_contains_winapi_calls_and_data() {
+    let func = Function {
+        name: "main".to_string(),
+        params: vec![],
+        ret: Type::I32,
+        body: vec![
+            Stmt::Println("Hello Win".to_string()),
+            Stmt::Return(Expr::Lit(Value::Int(0))),
+        ],
+        is_pub: true,
+        is_threaded: false,
+    };
+    let module = Module { items: vec![Item::Function(func)] };
+    let mut cg = X86_64LinuxCodegen::new_windows();
+    let asm = cg.generate(&module).expect("codegen ok");
+    assert!(asm.contains(".extern GetStdHandle"));
+    assert!(asm.contains(".extern WriteFile"));
+    assert!(asm.contains("call GetStdHandle"));
+    assert!(asm.contains("call WriteFile"));
+    assert!(asm.contains("sub rsp, 40"));
+    assert!(asm.contains(".data"));
+    assert!(asm.contains(".ascii"));
+}

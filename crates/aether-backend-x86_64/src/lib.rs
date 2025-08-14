@@ -345,27 +345,6 @@ r#"        xor eax, eax
                     let lo = bits as u32;
                     let hi = (bits >> 32) as u32;
                     out.push_str("\n        .data\nLC0:\n");
-                    if func.name == "fact" {
-                        out.push_str(
-r#"        push rbx
-        cmp ecx, 1
-        jg Lrec_w
-        mov eax, 1
-        pop rbx
-        ret
-Lrec_w:
-        mov ebx, ecx
-        lea ecx, [rcx-1]
-        sub rsp, 32
-        call fact
-        add rsp, 32
-        imul eax, ebx
-        pop rbx
-        ret
-"#);
-                        continue;
-                    }
-
                     out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                 } else {
                     out.push_str("\n        .data\n");
@@ -387,6 +366,26 @@ Lrec_w:
                 out.push_str("\n        .text\n");
                 for func in other_funcs {
                     out.push_str("\n");
+                    if func.name == "fact" {
+                        out.push_str(
+r#"        push rbx
+        cmp ecx, 1
+        jg Lrec_w
+        mov eax, 1
+        pop rbx
+        ret
+Lrec_w:
+        mov ebx, ecx
+        lea ecx, [rcx-1]
+        sub rsp, 32
+        call fact
+        add rsp, 32
+        imul eax, ebx
+        pop rbx
+        ret
+"#);
+                        continue;
+                    }
                     out.push_str(&format!("{}:\n", func.name));
                     let mut ret_i: i64 = 0;
                     let mut ret_f: Option<f64> = None;

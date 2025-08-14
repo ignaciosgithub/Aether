@@ -615,7 +615,7 @@ r#"        push %rbx
                                                     _ => {}
                                                 }
                                                 if lhs_loaded && rhs_loaded {
-                                                    out.push_str("        cmp %r10, %r11\n");
+                                                    out.push_str("        cmp %r11, %r10\n");
                                                     match op {
                                                         BinOpKind::Eq => {
                                                             out.push_str(&format!("        je {}\n", then_lbl));

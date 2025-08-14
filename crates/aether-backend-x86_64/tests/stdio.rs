@@ -171,7 +171,7 @@ fn linux_runtime_ifelse_branches_and_prints_once() {
     assert!(asm.contains(".LIF_THEN_main_0"));
     assert!(asm.contains(".LIF_ELSE_main_0"));
     assert!(asm.contains(".LIF_JOIN_main_0"));
-    assert!(asm.contains("cmp %r10, %r11"));
+    assert!(asm.contains("cmp %r11, %r10"));
     assert!(asm.contains("jl .LIF_THEN_main_0"));
     assert!(asm.contains("syscall"));
 }

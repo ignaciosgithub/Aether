@@ -65,7 +65,7 @@ impl CodeGenerator for AArch64Codegen {
         let mut exit_code: i64 = 0;
         let mut f64_ret: Option<f64> = None;
         let mut prints: Vec<(String, usize)> = Vec::new();
-        let mut calls: Vec<String> = Vec::new();
+        let mut calls: Vec<(String, Vec<Expr>)> = Vec::new();
         let mut main_ret_call: Option<(String, Vec<Expr>)> = None;
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         for item in &module.items {
@@ -83,7 +83,7 @@ impl CodeGenerator for AArch64Codegen {
                                 f64_ret = Some(fv);
                             }
                             if let Expr::Call(name, args) = expr {
-                                calls.push(name.clone());
+                                calls.push((name.clone(), args.clone()));
                                 main_ret_call = Some((name.clone(), args.clone()));
                             }
                         }
@@ -92,8 +92,8 @@ impl CodeGenerator for AArch64Codegen {
                             bytes.push(b'\n');
                             prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
                         }
-                        Stmt::Expr(Expr::Call(name, _)) => {
-                            calls.push(name.clone());
+                        Stmt::Expr(Expr::Call(name, args)) => {
+                            calls.push((name.clone(), args.clone()));
                         }
                         _ => {}
                     }
@@ -109,6 +109,7 @@ r#"
         .text
 _start:
 "#);
+        let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
         if let Some((ref name, ref args)) = main_ret_call {
             if !args.is_empty() {
                 if let Expr::Lit(Value::Int(v0)) = &args[0] {
@@ -117,7 +118,26 @@ _start:
             }
             out.push_str(&format!("        bl {}\n", name));
         } else {
-            for name in &calls {
+            for (cidx, (name, args)) in calls.iter().enumerate() {
+                if !args.is_empty() {
+                    match &args[0] {
+                        Expr::Lit(Value::Int(v0)) => {
+                            out.push_str(&format!("        mov x0, #{}\n", v0));
+                        }
+                        Expr::Lit(Value::String(s)) => {
+                            let mut bytes = s.clone().into_bytes();
+                            let len = bytes.len();
+                            let lbl = format!(".LSARG{}", cidx);
+                            out.push_str(&format!(
+"        adrp x0, {0}
+        add x0, x0, :lo12:{0}
+        mov x1, #{1}
+", lbl, len));
+                            call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                        }
+                        _ => {}
+                    }
+                }
                 out.push_str(&format!("        bl {}\n", name));
             }
         }
@@ -168,6 +188,20 @@ r#"        adrp x1, .LC0
                 }
                 out.push_str("\"\n");
             }
+            for (lbl, s) in &call_arg_rodata {
+                out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                for b in s.as_bytes() {
+                    let ch = *b as char;
+                    match ch {
+                        '\n' => out.push_str("\\n"),
+                        '\t' => out.push_str("\\t"),
+                        '\"' => out.push_str("\\\""),
+                        '\\' => out.push_str("\\\\"),
+                        _ => out.push(ch),
+                    }
+                }
+                out.push_str("\"\n");
+            }
         } else {
             for (idx, (_s, len)) in prints.iter().enumerate() {
                 out.push_str(&format!(
@@ -191,10 +225,13 @@ r#"        adrp x1, .LC0
         svc #0
 ", exit_code));
             }
-            if !prints.is_empty() {
+            if !prints.is_empty() || !call_arg_rodata.is_empty() {
                 out.push_str("\n        .section .rodata\n");
                 for (idx, (s, _len)) in prints.iter().enumerate() {
                     out.push_str(&format!(".LS{}:\n        .ascii \"", idx));
+                }
+                for (lbl, s) in &call_arg_rodata {
+                    out.push_str(&format!("{}:\n        .ascii \"", lbl));
                     for b in s.as_bytes() {
                         let ch = *b as char;
                         match ch {

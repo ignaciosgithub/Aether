@@ -27,7 +27,9 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
                 BinOpKind::Div => {
                     if rv == 0 { None } else { Some(lv / rv) }
                 }
-                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
+                BinOpKind::Eq => Some(if lv == rv { 1 } else { 0 }),
+                BinOpKind::Lt => Some(if lv < rv { 1 } else { 0 }),
+                BinOpKind::Le => Some(if lv <= rv { 1 } else { 0 }),
             }
         }
         _ => None,
@@ -68,6 +70,7 @@ impl CodeGenerator for AArch64Codegen {
         let mut calls: Vec<(String, Vec<Expr>)> = Vec::new();
         let mut main_ret_call: Option<(String, Vec<Expr>)> = None;
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
+        let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
@@ -95,6 +98,22 @@ impl CodeGenerator for AArch64Codegen {
                         Stmt::Expr(Expr::Call(name, args)) => {
                             calls.push((name.clone(), args.clone()));
                         }
+                        Stmt::PrintExpr(Expr::Call(name, args)) => {
+                            main_print_calls.push((name.clone(), args.clone()));
+                        }
+                        Stmt::PrintExpr(e) => {
+                            if let Expr::IfElse { cond, then_expr, else_expr } = e {
+                                if let Some(cv) = eval_int_expr(cond) {
+                                    let chosen = if cv != 0 { then_expr } else { else_expr };
+                                    if let Expr::Lit(Value::String(s)) = &**chosen {
+                                        let mut bytes = s.clone().into_bytes();
+                                        bytes.push(b'\n');
+                                        prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                    }
+                                }
+                            }
+                        }
+
                         _ => {}
                     }
                 }
@@ -109,6 +128,24 @@ r#"
         .text
 _start:
 "#);
+        for (name, args) in &main_print_calls {
+            if args.is_empty() {
+                out.push_str(&format!("        bl {}\n", name));
+                out.push_str(
+"        mov x2, x1
+        mov x1, x0
+        mov x0, #1
+        mov x8, #64
+        svc #0
+        mov x8, #64
+        mov x0, #1
+        adrp x1, .LSNL
+        add x1, x1, :lo12:.LSNL
+        mov x2, #1
+        svc #0
+");
+            }
+        }
         let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
         if let Some((ref name, ref args)) = main_ret_call {
             if !args.is_empty() {
@@ -187,6 +224,9 @@ r#"        adrp x1, .LC0
                     }
                 }
                 out.push_str("\"\n");
+            }
+            if !main_print_calls.is_empty() {
+                out.push_str(".LSNL:\n        .byte 10\n");
             }
             for (lbl, s) in &call_arg_rodata {
                 out.push_str(&format!("{}:\n        .ascii \"", lbl));
@@ -291,17 +331,23 @@ r#"        adrp x1, .LC0
                                 func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                 fi += 1;
                             }
-                            Expr::Var(_name) => {
-                                if !func.params.is_empty() {
-                                    if let Type::String = func.params[0].ty {
-                                        out.push_str(
-"        mov x2, x1
-        mov x1, x0
+                            Expr::Var(name) => {
+                                let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                                let mut slot = 0usize;
+                                for p in &func.params {
+                                    if p.name == *name {
+                                        if let Type::String = p.ty {
+                                            if slot + 1 < regs.len() {
+                                                let ptr_reg = regs[slot];
+                                                let len_reg = regs[slot + 1];
+                                                out.push_str(&format!(
+"        mov x2, {len}
+        mov x1, {ptr}
         mov x0, #1
         mov x8, #64
         svc #0
-");
-                                        out.push_str(
+", len=len_reg, ptr=ptr_reg));
+                                                out.push_str(
 "        mov x8, #64
         mov x0, #1
         adrp x1, .LSNL
@@ -309,7 +355,117 @@ r#"        adrp x1, .LC0
         mov x2, #1
         svc #0
 ");
-                                        need_nl = true;
+                                                need_nl = true;
+                                            }
+                                        }
+                                        break;
+                                    } else {
+                                        match p.ty {
+                                            Type::String => slot += 2,
+                                            _ => slot += 1,
+                                        }
+                                    }
+                                }
+                            }
+                            Expr::Call(name, args) => {
+                                if args.is_empty() {
+                                    out.push_str(&format!("        bl {}\n", name));
+                                    out.push_str(
+"        mov x2, x1
+        mov x1, x0
+        mov x0, #1
+        mov x8, #64
+        svc #0
+");
+                                    out.push_str(
+"        mov x8, #64
+        mov x0, #1
+        adrp x1, .LSNL
+        add x1, x1, :lo12:.LSNL
+        mov x2, #1
+        svc #0
+");
+                                    need_nl = true;
+                                }
+                            }
+                            Expr::IfElse { cond, then_expr, else_expr } => {
+                                if let Some(cv) = eval_int_expr(cond) {
+                                    let chosen = if cv != 0 { then_expr } else { else_expr };
+                                    match &**chosen {
+                                        Expr::Lit(Value::String(s)) => {
+                                            let mut bytes = s.clone().into_bytes();
+                                            bytes.push(b'\n');
+                                            let len = s.as_bytes().len() + 1;
+                                            let lbl = format!(".LSF_{}_{}", func.name, fi);
+                                            out.push_str(&format!(
+"        mov x8, #64
+        mov x0, #1
+        adrp x1, {0}
+        add x1, x1, :lo12:{0}
+        mov x2, #{1}
+        svc #0
+", lbl, len));
+                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                            fi += 1;
+                                        }
+                                        Expr::Var(name) => {
+                                            let regs = ["x0","x1","x2","x3","x4","x5","x6","x7"];
+                                            let mut slot = 0usize;
+                                            for p in &func.params {
+                                                if p.name == *name {
+                                                    if let Type::String = p.ty {
+                                                        if slot + 1 < regs.len() {
+                                                            let ptr_reg = regs[slot];
+                                                            let len_reg = regs[slot + 1];
+                                                            out.push_str(&format!(
+"        mov x2, {len}
+        mov x1, {ptr}
+        mov x0, #1
+        mov x8, #64
+        svc #0
+", len=len_reg, ptr=ptr_reg));
+                                                            out.push_str(
+"        mov x8, #64
+        mov x0, #1
+        adrp x1, .LSNL
+        add x1, x1, :lo12:.LSNL
+        mov x2, #1
+        svc #0
+");
+                                                            need_nl = true;
+                                                        }
+                                                    }
+                                                    break;
+                                                } else {
+                                                    match p.ty {
+                                                        Type::String => slot += 2,
+                                                        _ => slot += 1,
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Expr::Call(name, args) => {
+                                            if args.is_empty() {
+                                                out.push_str(&format!("        bl {}\n", name));
+                                                out.push_str(
+"        mov x2, x1
+        mov x1, x0
+        mov x0, #1
+        mov x8, #64
+        svc #0
+");
+                                                out.push_str(
+"        mov x8, #64
+        mov x0, #1
+        adrp x1, .LSNL
+        add x1, x1, :lo12:.LSNL
+        mov x2, #1
+        svc #0
+");
+                                                need_nl = true;
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -322,6 +478,19 @@ r#"        adrp x1, .LC0
                         }
                         if let Some(fv) = eval_f64_expr(expr) {
                             ret_f = Some(fv);
+                        }
+                        if let Expr::Lit(Value::String(s)) = expr {
+                            let bytes = s.clone().into_bytes();
+                            let len = bytes.len();
+                            let lbl = format!(".LSRET_{}_{}", func.name, fi);
+                            out.push_str(&format!(
+"        adrp x0, {0}
+        add x0, x0, :lo12:{0}
+        mov x1, #{1}
+        ret
+", lbl, len));
+                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                            fi += 1;
                         }
                     }
                     _ => {}

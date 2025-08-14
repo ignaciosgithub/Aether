@@ -1,0 +1,9 @@
+func ret_str() -> String {
+    return "HelloExpr";
+}
+
+pub func main() -> i32 {
+    println(ret_str());
+    println(if 1 < 2 { "T" } else { "F" });
+    return 0;
+}

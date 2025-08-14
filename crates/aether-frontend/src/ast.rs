@@ -34,6 +34,7 @@ pub enum Type {
     F64,
     Any,
     List(Box<Type>),
+    String,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +51,7 @@ pub enum Value {
     Float32(f32),
     Bool(bool),
     List(Vec<Value>),
+    String(String),
 }
 
 #[derive(Debug, Clone)]
@@ -58,6 +60,9 @@ pub enum BinOpKind {
     Sub,
     Mul,
     Div,
+    Eq,
+    Lt,
+    Le,
 }
 
 #[derive(Debug, Clone)]
@@ -65,4 +70,7 @@ pub enum Expr {
     Lit(Value),
     BinOp(Box<Expr>, BinOpKind, Box<Expr>),
     Call(String, Vec<Expr>),
+    Var(String),
+    Cast(Box<Expr>, Type),
+    IfElse { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
 }

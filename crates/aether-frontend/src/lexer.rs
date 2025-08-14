@@ -34,6 +34,12 @@ pub enum TokenKind {
     F64,
     Any,
     List,
+    If,
+    Else,
+    Le,   // <=
+    Lt,   // <
+    Eq,   // ==
+    StringType, // type keyword: String
     Eof,
 }
 
@@ -88,6 +94,9 @@ impl Lexer {
                     "f64" => TokenKind::F64,
                     "any" => TokenKind::Any,
                     "list" => TokenKind::List,
+                    "if" => TokenKind::If,
+                    "else" => TokenKind::Else,
+                    "string" => TokenKind::StringType,
                     _ => TokenKind::Ident(s.to_string()),
                 };
                 toks.push(Token { kind });
@@ -151,6 +160,15 @@ impl Lexer {
                 '-' if i + 1 < bytes.len() && bytes[i + 1] as char == '>' => {
                     i += 2;
                     TokenKind::Arrow
+                }
+                '<' if i + 1 < bytes.len() && bytes[i + 1] as char == '=' => {
+                    i += 2;
+                    TokenKind::Le
+                }
+                '<' => { i += 1; TokenKind::Lt }
+                '=' if i + 1 < bytes.len() && bytes[i + 1] as char == '=' => {
+                    i += 2;
+                    TokenKind::Eq
                 }
                 '+' => { i += 1; TokenKind::Plus }
                 '-' => { i += 1; TokenKind::Minus }

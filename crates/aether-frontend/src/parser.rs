@@ -36,7 +36,24 @@ impl<'a> Parser<'a> {
             return Err(anyhow!("expected function name"));
         };
         self.expect(&TokenKind::LParen)?;
-        self.expect(&TokenKind::RParen)?;
+        let mut params = Vec::new();
+        if !self.eat_kind(&TokenKind::RParen) {
+            loop {
+                let name = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
+                    self.pos += 1;
+                    s
+                } else {
+                    return Err(anyhow!("expected parameter name"));
+                };
+                self.expect(&TokenKind::Colon)?;
+                let ty = self.parse_type()?;
+                params.push(Param { name, ty });
+                if self.eat_kind(&TokenKind::RParen) {
+                    break;
+                }
+                self.expect(&TokenKind::Comma)?;
+            }
+        }
         self.expect(&TokenKind::Arrow)?;
         let ret = self.parse_type()?;
         self.expect(&TokenKind::LBrace)?;
@@ -46,7 +63,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Some(Function {
             name,
-            params: vec![],
+            params,
             ret,
             body,
             is_pub,
@@ -70,6 +87,7 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::RBracket)?;
                 return Ok(Type::List(Box::new(inner)));
             }
+            TokenKind::StringType => Type::String,
             _ => return Err(anyhow!("unexpected token in type")),
         };
         self.pos += 1;
@@ -100,7 +118,43 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr> {
-        self.parse_add_sub()
+        self.parse_cmp()
+    }
+
+    fn parse_cmp(&mut self) -> Result<Expr> {
+        let mut node = self.parse_add_sub()?;
+        loop {
+            if self.eat_kind(&TokenKind::Le) {
+                let rhs = self.parse_add_sub()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Le, Box::new(rhs));
+            } else if self.eat_kind(&TokenKind::Lt) {
+                let rhs = self.parse_add_sub()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Lt, Box::new(rhs));
+            } else if self.eat_kind(&TokenKind::Eq) {
+                let rhs = self.parse_add_sub()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Eq, Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr> {
+        if self.eat_kind(&TokenKind::LParen) {
+            let save = self.pos;
+            let ty_res = self.parse_type();
+            if ty_res.is_ok() && self.eat_kind(&TokenKind::RParen) {
+                let inner = self.parse_unary()?;
+                return Ok(Expr::Cast(Box::new(inner), ty_res.unwrap()));
+            } else {
+                self.pos = save;
+                let e = self.parse_expr()?;
+                self.expect(&TokenKind::RParen)?;
+                return Ok(e);
+            }
+        }
+        self.parse_primary()
     }
 
     fn parse_add_sub(&mut self) -> Result<Expr> {
@@ -120,7 +174,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_mul_div(&mut self) -> Result<Expr> {
-        let mut node = self.parse_primary()?;
+        let mut node = self.parse_unary()?;
         loop {
             if self.eat_kind(&TokenKind::Star) {
                 let rhs = self.parse_primary()?;
@@ -136,6 +190,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self) -> Result<Expr> {
+        if self.eat_kind(&TokenKind::If) {
+            let cond = self.parse_expr()?;
+            self.expect(&TokenKind::LBrace)?;
+            let then_e = self.parse_expr()?;
+            self.expect(&TokenKind::RBrace)?;
+            self.expect(&TokenKind::Else)?;
+            self.expect(&TokenKind::LBrace)?;
+            let else_e = self.parse_expr()?;
+            self.expect(&TokenKind::RBrace)?;
+            return Ok(Expr::IfElse { cond: Box::new(cond), then_expr: Box::new(then_e), else_expr: Box::new(else_e) });
+        }
         if self.eat_kind(&TokenKind::LParen) {
             let e = self.parse_expr()?;
             self.expect(&TokenKind::RParen)?;
@@ -161,8 +226,21 @@ impl<'a> Parser<'a> {
         if let Some(TokenKind::Ident(name)) = self.peek().map(|t| t.kind.clone()) {
             if self.toks.get(self.pos + 1).map(|t| t.kind.clone()) == Some(TokenKind::LParen) {
                 self.pos += 2;
-                self.expect(&TokenKind::RParen)?;
-                return Ok(Expr::Call(name, vec![]));
+                let mut args = Vec::new();
+                if !self.eat_kind(&TokenKind::RParen) {
+                    loop {
+                        let e = self.parse_expr()?;
+                        args.push(e);
+                        if self.eat_kind(&TokenKind::RParen) {
+                            break;
+                        }
+                        self.expect(&TokenKind::Comma)?;
+                    }
+                }
+                return Ok(Expr::Call(name, args));
+            } else {
+                self.pos += 1;
+                return Ok(Expr::Var(name));
             }
         }
         let kind = self.peek().ok_or_else(|| anyhow!("unexpected eof"))?.kind.clone();
@@ -176,6 +254,10 @@ impl<'a> Parser<'a> {
                 self.pos += 1;
                 let v = s.parse::<f64>()?;
                 Ok(Expr::Lit(Value::Float64(v)))
+            }
+            TokenKind::String(s) => {
+                self.pos += 1;
+                Ok(Expr::Lit(Value::String(s)))
             }
             TokenKind::True => {
                 self.pos += 1;

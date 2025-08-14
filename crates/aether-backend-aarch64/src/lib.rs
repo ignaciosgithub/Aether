@@ -27,6 +27,7 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
                 BinOpKind::Div => {
                     if rv == 0 { None } else { Some(lv / rv) }
                 }
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
             }
         }
         _ => None,
@@ -48,6 +49,7 @@ fn eval_f64_expr(expr: &Expr) -> Option<f64> {
                 BinOpKind::Div => {
                     if rv == 0.0 { None } else { Some(lv / rv) }
                 }
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
             }
         }
         _ => None,

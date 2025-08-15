@@ -4,8 +4,29 @@ pub struct Module {
 }
 
 #[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<StructField>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaticVar {
+    pub name: String,
+    pub ty: Type,
+    pub init: Expr,
+}
+
+#[derive(Debug, Clone)]
 pub enum Item {
     Function(Function),
+    Struct(StructDef),
+    Static(StaticVar),
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +56,7 @@ pub enum Type {
     Any,
     List(Box<Type>),
     String,
+    User(String),
 }
 
 #[derive(Debug, Clone)]
@@ -77,4 +99,7 @@ pub enum Expr {
     Var(String),
     Cast(Box<Expr>, Type),
     IfElse { cond: Box<Expr>, then_expr: Box<Expr>, else_expr: Box<Expr> },
+    Field(Box<Expr>, String),
+    StructLit(String, Vec<(String, Expr)>),
+    MethodCall(Box<Expr>, String, Vec<Expr>),
 }

@@ -74,6 +74,7 @@ impl CodeGenerator for AArch64Codegen {
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
+                _ => continue,
             };
             if func.name == "main" {
                 for stmt in &func.body {

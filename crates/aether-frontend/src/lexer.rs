@@ -21,6 +21,8 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
+    Dot,
+    Assign,
     Return,
     Func,
     Pub,
@@ -39,6 +41,8 @@ pub enum TokenKind {
     While,
     Break,
     Continue,
+    Struct,
+    Static,
     Le,   // <=
     Lt,   // <
     Eq,   // ==
@@ -102,6 +106,8 @@ impl Lexer {
                     "while" => TokenKind::While,
                     "break" => TokenKind::Break,
                     "continue" => TokenKind::Continue,
+                    "struct" => TokenKind::Struct,
+                    "static" => TokenKind::Static,
                     "string" | "String" => TokenKind::StringType,
                     _ => TokenKind::Ident(s.to_string()),
                 };
@@ -176,10 +182,12 @@ impl Lexer {
                     i += 2;
                     TokenKind::Eq
                 }
+                '=' => { i += 1; TokenKind::Assign }
                 '+' => { i += 1; TokenKind::Plus }
                 '-' => { i += 1; TokenKind::Minus }
                 '*' => { i += 1; TokenKind::Star }
                 '/' => { i += 1; TokenKind::Slash }
+                '.' => { i += 1; TokenKind::Dot }
                 '(' => {
                     i += 1;
                     TokenKind::LParen

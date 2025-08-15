@@ -80,6 +80,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
+                _ => continue,
             };
             if func.name == "main" {
                 main_func = Some(func);

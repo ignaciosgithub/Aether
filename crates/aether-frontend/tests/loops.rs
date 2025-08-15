@@ -15,9 +15,7 @@ fn parse_while_with_print_and_break() {
     "#;
     let toks = Lexer::tokenize(src).expect("lex ok");
     let module = Parser::parse(&toks).expect("parse ok");
-    let func = match &module.items[0] {
-        Item::Function(f) => f,
-    };
+    let func = if let Item::Function(f) = &module.items[0] { f } else { panic!("expected function") };
     assert_eq!(func.name, "main");
     match &func.body[0] {
         Stmt::While { cond, body } => {

@@ -13,6 +13,7 @@ pub struct StructField {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<StructField>,
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Clone)]

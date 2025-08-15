@@ -109,6 +109,25 @@ impl<'a> Parser<'a> {
                 return Ok(Stmt::PrintExpr(expr));
             }
         }
+        if self.eat_kind(&TokenKind::While) {
+            self.expect(&TokenKind::LParen)?;
+            let cond = self.parse_expr()?;
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::LBrace)?;
+            let mut body = Vec::new();
+            while !self.eat_kind(&TokenKind::RBrace) {
+                body.push(self.parse_stmt()?);
+            }
+            return Ok(Stmt::While { cond, body });
+        }
+        if self.eat_kind(&TokenKind::Break) {
+            self.expect(&TokenKind::Semicolon)?;
+            return Ok(Stmt::Break);
+        }
+        if self.eat_kind(&TokenKind::Continue) {
+            self.expect(&TokenKind::Semicolon)?;
+            return Ok(Stmt::Continue);
+        }
         if self.eat_kind(&TokenKind::Return) {
             let expr = self.parse_expr()?;
             self.expect(&TokenKind::Semicolon)?;

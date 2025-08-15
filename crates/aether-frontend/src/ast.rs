@@ -43,6 +43,9 @@ pub enum Stmt {
     Expr(Expr),
     Println(String),
     PrintExpr(Expr),
+    While { cond: Expr, body: Vec<Stmt> },
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone)]

@@ -480,6 +480,72 @@ r#"        adrp x1, .LC0
                 }
             }
         }
+        if !static_types.is_empty() {
+            out.push_str("\n        .data\n");
+            for (sname, ty) in &static_types {
+                let sz = struct_sizes.get(ty).cloned().unwrap_or(8);
+                let mut emitted = false;
+                if let Some(Item::Static(st)) = module.items.iter().find(|it| matches!(it, Item::Static(s) if s.name == *sname)) {
+                    if let Expr::StructLit(ref lit_ty, ref fields) = st.init {
+                        if lit_ty == ty {
+                            let mut field_map: std::collections::HashMap<String, &Expr> = std::collections::HashMap::new();
+                            for (fname, fexpr) in fields {
+                                field_map.insert(fname.clone(), fexpr);
+                            }
+                            if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *ty)) {
+                                out.push_str(&format!("{}:\n", sname));
+                                for f in &sd.fields {
+                                    if let Some(expr) = field_map.get(&f.name) {
+                                        match (f.ty.clone(), (*expr).clone()) {
+                                            (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                                out.push_str(&format!("        .long {}\n", v as i32));
+                                            }
+                                            (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                                out.push_str(&format!("        .quad {}\n", v as i64));
+                                            }
+                                            (Type::F64, Expr::Lit(Value::Float64(fv))) => {
+                                                let bits = fv.to_bits();
+                                                let lo = bits as u32;
+                                                let hi = (bits >> 32) as u32;
+                                                out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                                            }
+                                            _ => {
+                                                let bytes = 8;
+                                                out.push_str(&format!("        .zero {}\n", bytes));
+                                            }
+                                        }
+                                    } else {
+                                        let bytes = match f.ty {
+                                            Type::I32 => 4,
+                                            Type::I64 | Type::F64 => 8,
+                                            _ => 8,
+                                        };
+                                        out.push_str(&format!("        .zero {}\n", bytes));
+                                    }
+                                }
+                                let mut total = 0usize;
+                                for f in &sd.fields {
+                                    total += match f.ty {
+                                        Type::I32 => 4,
+                                        Type::I64 | Type::F64 => 8,
+                                        _ => 8,
+                                    };
+                                }
+                                if total % 8 != 0 {
+                                    out.push_str(&format!("        .zero {}\n", 8 - (total % 8)));
+                                }
+                                emitted = true;
+                            }
+                        }
+                    }
+                }
+                if !emitted {
+                    out.push_str(&format!("{}:\n        .zero {}\n", sname, sz));
+                }
+            }
+            out.push_str("\n        .text\n");
+        }
+
         out.push_str("\n        .text\n");
         let mut func_rodata: Vec<(String, String)> = Vec::new();
         let mut need_nl = bool::from(false);

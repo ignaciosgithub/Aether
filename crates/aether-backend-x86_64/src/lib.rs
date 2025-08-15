@@ -105,6 +105,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
             }
         }
         let static_names: HashSet<String> = static_types.keys().cloned().collect();
+        let mut local_strings: HashMap<String, HashMap<String, String>> = HashMap::new();
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
@@ -133,6 +134,36 @@ impl CodeGenerator for X86_64LinuxCodegen {
                         }
                         Stmt::Expr(Expr::Call(name, args)) => {
                             calls.push((name.clone(), args.clone()));
+                        }
+                        Stmt::Let { name, ty, init } => {
+                            if let aether_frontend::ast::Type::User(_tname) = ty {
+                                if let Expr::StructLit(_lit_ty, fields) = init {
+                                    let mut fmap: HashMap<String, String> = HashMap::new();
+                                    for (fname, fexpr) in fields {
+                                        if let Expr::Lit(Value::String(sv)) = fexpr {
+                                            fmap.insert(fname.clone(), sv.clone());
+                                        }
+                                    }
+                                    if !fmap.is_empty() {
+                                        local_strings.insert(name.clone(), fmap);
+                                    }
+                                }
+                            }
+                        }
+                        Stmt::Assign { target, value } => {
+                            if let Expr::Field(recv, fname) = target {
+                                if let Expr::Var(rn) = &**recv {
+                                    if let Expr::Lit(Value::String(sv)) = value {
+                                        if let Some(map) = local_strings.get_mut(rn) {
+                                            map.insert(fname.clone(), sv.clone());
+                                        } else {
+                                            let mut fmap: HashMap<String, String> = HashMap::new();
+                                            fmap.insert(fname.clone(), sv.clone());
+                                            local_strings.insert(rn.clone(), fmap);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
                             main_print_calls.push((name.clone(), args.clone()));
@@ -183,6 +214,12 @@ impl CodeGenerator for X86_64LinuxCodegen {
                                             }
                                             off += sz;
                                         }
+                                    }
+                                } else if let Some(fmap) = local_strings.get(rn) {
+                                    if let Some(sv) = fmap.get(fname) {
+                                        let mut bytes = sv.clone().into_bytes();
+                                        bytes.push(b'\n');
+                                        prints.push((String::from_utf8(bytes).unwrap(), sv.as_bytes().len() + 1));
                                     }
                                 }
                             }

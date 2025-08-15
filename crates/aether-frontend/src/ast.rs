@@ -68,6 +68,8 @@ pub enum Stmt {
     While { cond: Expr, body: Vec<Stmt> },
     Break,
     Continue,
+    Let { name: String, ty: Type, init: Expr },
+    Assign { target: Expr, value: Expr },
 }
 
 #[derive(Debug, Clone)]

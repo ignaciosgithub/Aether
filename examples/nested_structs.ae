@@ -1,0 +1,14 @@
+pub struct Inner { x: i64, y: i32 }
+pub struct Outer { a: i32, inner: Inner, s: String }
+
+static G: Outer = Outer { a: 1, inner: Inner { x: 9, y: 7 }, s: "Hi" };
+
+pub func usei(v: i32) -> i32 { return v; }
+
+pub func main() -> i32 {
+    // Access nested field and pass as arg (tests base+offset load)
+    usei(G.inner.y);
+    // Print String field (tests String field layout + rodata init)
+    println(G.s);
+    return 0;
+}

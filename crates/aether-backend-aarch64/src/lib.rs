@@ -105,6 +105,7 @@ impl CodeGenerator for AArch64Codegen {
                 _ => continue,
             };
             if func.name == "main" {
+                let mut local_strings: std::collections::HashMap<String, std::collections::HashMap<String, String>> = std::collections::HashMap::new();
                 for stmt in &func.body {
                     match stmt {
                         Stmt::Return(expr) => {
@@ -127,6 +128,36 @@ impl CodeGenerator for AArch64Codegen {
                         Stmt::Expr(Expr::Call(name, args)) => {
                             calls.push((name.clone(), args.clone()));
                         }
+                        Stmt::Let { name, ty, init } => {
+                            if let aether_frontend::ast::Type::User(_) = ty {
+                                if let Expr::StructLit(_, fields) = init {
+                                    let mut fmap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                                    for (fname, fexpr) in fields {
+                                        if let Expr::Lit(Value::String(sv)) = fexpr {
+                                            fmap.insert(fname.clone(), sv.clone());
+                                        }
+                                    }
+                                    if !fmap.is_empty() {
+                                        local_strings.insert(name.clone(), fmap);
+                                    }
+                                }
+                            }
+                        }
+                        Stmt::Assign { target, value } => {
+                            if let Expr::Field(recv, fname) = target {
+                                if let Expr::Var(rn) = &**recv {
+                                    if let Expr::Lit(Value::String(sv)) = value {
+                                        if let Some(map) = local_strings.get_mut(rn) {
+                                            map.insert(fname.clone(), sv.clone());
+                                        } else {
+                                            let mut fmap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                                            fmap.insert(fname.clone(), sv.clone());
+                                            local_strings.insert(rn.clone(), fmap);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
                             main_print_calls.push((name.clone(), args.clone()));
                         }
@@ -138,6 +169,16 @@ impl CodeGenerator for AArch64Codegen {
                                         let mut bytes = s.clone().into_bytes();
                                         bytes.push(b'\n');
                                         prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                    }
+                                }
+                            } else if let Expr::Field(recv_any, fname_any) = e {
+                                if let Expr::Var(rn) = &**recv_any {
+                                    if let Some(map) = local_strings.get(rn) {
+                                        if let Some(s) = map.get(fname_any) {
+                                            let mut bytes = s.clone().into_bytes();
+                                            bytes.push(b'\n');
+                                            prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                        }
                                     }
                                 }
                             }

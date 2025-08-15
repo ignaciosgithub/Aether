@@ -1118,7 +1118,7 @@ r#"        xor eax, eax
                 } else {
                     out.push_str("\n        .data\n");
                 }
-                if !main_print_calls.is_empty() {
+                if true {
                 let mut while_data: Vec<(String, String)> = Vec::new();
                 for (widx, cond, body) in &main_while_blocks {
                     out.push_str(&format!("LWH_HEAD_main_{}:\n", widx));

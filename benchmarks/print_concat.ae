@@ -1,0 +1,6 @@
+pub func main() -> i32 {
+    println("hello");
+    println("world");
+    println("aether");
+    return 0;
+}

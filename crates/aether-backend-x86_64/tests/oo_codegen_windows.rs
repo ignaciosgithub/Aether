@@ -9,6 +9,7 @@ fn module_nested() -> Module {
             StructField { name: "x".to_string(), ty: Type::I64 },
             StructField { name: "y".to_string(), ty: Type::I32 },
         ],
+        parent: None,
     };
     let outer = StructDef {
         name: "Outer".to_string(),
@@ -17,6 +18,7 @@ fn module_nested() -> Module {
             StructField { name: "inner".to_string(), ty: Type::User("Inner".to_string()) },
             StructField { name: "s".to_string(), ty: Type::String },
         ],
+        parent: None,
     };
     let g = StaticVar {
         name: "G".to_string(),

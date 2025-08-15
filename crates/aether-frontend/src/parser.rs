@@ -54,6 +54,15 @@ impl<'a> Parser<'a> {
         } else {
             return Err(anyhow!("expected struct name"));
         };
+        let mut parent: Option<String> = None;
+        if self.eat_kind(&TokenKind::Colon) {
+            if let Some(TokenKind::Ident(pn)) = self.peek().map(|t| t.kind.clone()) {
+                self.pos += 1;
+                parent = Some(pn);
+            } else {
+                return Err(anyhow!("expected parent name after ':'"));
+            }
+        }
         self.expect(&TokenKind::LBrace)?;
         let mut fields = Vec::new();
         if !self.eat_kind(&TokenKind::RBrace) {
@@ -73,7 +82,7 @@ impl<'a> Parser<'a> {
                 self.expect(&TokenKind::Comma)?;
             }
         }
-        Ok(StructDef { name, fields })
+        Ok(StructDef { name, fields, parent })
     }
 
     fn parse_static_var(&mut self) -> Result<StaticVar> {

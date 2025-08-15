@@ -1,0 +1,8 @@
+func make2(a: i32, b: i32) -> String {
+    return "OK";
+}
+
+pub func main() -> i32 {
+    println(make2(7, 8));
+    return 0;
+}

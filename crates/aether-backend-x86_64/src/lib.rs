@@ -69,6 +69,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
     }
 
     fn generate(&mut self, module: &Module) -> Result<String> {
+        let mut main_func: Option<&aether_frontend::ast::Function> = None;
         let mut exit_code: i64 = 0;
         let mut f64_ret: Option<f64> = None;
         let mut prints: Vec<(String, usize)> = Vec::new();
@@ -81,6 +82,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
                 Item::Function(f) => f,
             };
             if func.name == "main" {
+                main_func = Some(func);
                 for stmt in &func.body {
                     match stmt {
                         Stmt::Return(expr) => {
@@ -146,6 +148,8 @@ r#"
 "#);
                 }
 
+                let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
+
                 for (name, args) in &main_print_calls {
                     if args.is_empty() {
                         out.push_str(
@@ -165,13 +169,81 @@ r#"        add $8, %rsp
         mov $1, %rdx
         syscall
 "#);
+                    } else {
+                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                        let mut islot = 0usize;
+                        for (aidx, a) in args.iter().enumerate() {
+                            match a {
+                                Expr::Lit(Value::Int(v)) => {
+                                    if islot < regs.len() {
+                                        let dst = regs[islot];
+                                        out.push_str(&format!("        mov ${}, {}\n", v, dst));
+                                        islot += 1;
+                                    }
+                                }
+                                Expr::Lit(Value::String(s)) => {
+                                    if islot + 1 < regs.len() {
+                                        let mut bytes = s.clone().into_bytes();
+                                        let len = bytes.len();
+                                        let lbl = format!(".LSARG{}_{}", 0, aidx);
+                                        out.push_str(&format!(
+"        leaq {}(%rip), {}
+        mov ${}, {}
+", lbl, regs[islot], len, regs[islot+1]));
+                                        call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                        islot += 2;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        out.push_str(
+r#"        sub $8, %rsp
+"#);
+                        out.push_str(&format!("        call {}\n", name));
+                        out.push_str(
+r#"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+"#);
                     }
                 }
-                let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
                 if let Some((ref name, ref args)) = main_ret_call {
                     if !args.is_empty() {
-                        if let Expr::Lit(Value::Int(v0)) = &args[0] {
-                            out.push_str(&format!("        mov ${}, %rdi\n", v0));
+                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                        let mut islot = 0usize;
+                        for (aidx, a) in args.iter().enumerate() {
+                            match a {
+                                Expr::Lit(Value::Int(v)) => {
+                                    if islot < regs.len() {
+                                        let dst = regs[islot];
+                                        out.push_str(&format!("        mov ${}, {}\n", v, dst));
+                                        islot += 1;
+                                    }
+                                }
+                                Expr::Lit(Value::String(s)) => {
+                                    if islot + 1 < regs.len() {
+                                        let mut bytes = s.clone().into_bytes();
+                                        let len = bytes.len();
+                                        let lbl = format!(".LSARG{}_{}", 0, aidx);
+                                        out.push_str(&format!(
+"        leaq {}(%rip), {}
+        mov ${}, {}
+", lbl, regs[islot], len, regs[islot+1]));
+                                        call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                        islot += 2;
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                     }
                     out.push_str(
@@ -184,21 +256,32 @@ r#"        add $8, %rsp
                 } else {
                     for (cidx, (name, args)) in calls.iter().enumerate() {
                         if !args.is_empty() {
-                            match &args[0] {
-                                Expr::Lit(Value::Int(v0)) => {
-                                    out.push_str(&format!("        mov ${}, %rdi\n", v0));
+                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                            let mut islot = 0usize;
+                            for (aidx, a) in args.iter().enumerate() {
+                                match a {
+                                    Expr::Lit(Value::Int(v)) => {
+                                        if islot < regs.len() {
+                                            let dst = regs[islot];
+                                            out.push_str(&format!("        mov ${}, {}\n", v, dst));
+                                            islot += 1;
+                                        }
+                                    }
+                                    Expr::Lit(Value::String(s)) => {
+                                        if islot + 1 < regs.len() {
+                                            let mut bytes = s.clone().into_bytes();
+                                            let len = bytes.len();
+                                            let lbl = format!(".LSARG{}_{}", cidx, aidx);
+                                            out.push_str(&format!(
+"        leaq {}(%rip), {}
+        mov ${}, {}
+", lbl, regs[islot], len, regs[islot+1]));
+                                            call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                            islot += 2;
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                                Expr::Lit(Value::String(s)) => {
-                                    let mut bytes = s.clone().into_bytes();
-                                    let len = bytes.len();
-                                    let lbl = format!(".LSARG{}", cidx);
-                                    out.push_str(&format!(
-"        leaq {}(%rip), %rdi
-        mov ${}, %rsi
-", lbl, len));
-                                    call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
-                                }
-                                _ => {}
                             }
                         }
                         out.push_str(
@@ -329,7 +412,14 @@ r#"        leaq .LC0(%rip), %rax
                 out.push_str("\n        .text\n");
                 let mut func_rodata: Vec<(String, String)> = Vec::new();
                 let mut need_nl = bool::from(false);
+                let mut funcs_to_emit: Vec<&aether_frontend::ast::Function> = Vec::new();
+                if let Some(mf) = main_func {
+                    funcs_to_emit.push(mf);
+                }
                 for func in other_funcs {
+                    funcs_to_emit.push(func);
+                }
+                for func in funcs_to_emit {
                     out.push_str("\n");
                     if func.name == "fact" {
                         out.push_str(&format!("{}:\n", func.name));
@@ -450,69 +540,39 @@ r#"        push %rbx
         syscall
 ");
                                             need_nl = true;
-                                        }
-                                    }
-                                    Expr::IfElse { cond, then_expr, else_expr } => {
-                                        if let Some(cv) = eval_int_expr(cond) {
-                                            let chosen = if cv != 0 { then_expr } else { else_expr };
-                                            match &**chosen {
-                                                Expr::Lit(Value::String(s)) => {
-                                                    let mut bytes = s.clone().into_bytes();
-                                                    bytes.push(b'\n');
-                                                    let len = s.as_bytes().len() + 1;
-                                                    let lbl = format!(".LSP_{}_{}", func.name, fi);
-                                                    out.push_str(&format!(
-"        mov $1, %rax
-        mov $1, %rdi
-        leaq {}(%rip), %rsi
-        mov ${}, %rdx
-        syscall
-", lbl, len));
-                                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
-                                                    fi += 1;
-                                                }
-                                                Expr::Var(name) => {
-                                                    let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
-                                                    let mut slot = 0usize;
-                                                    for p in &func.params {
-                                                        if p.name == *name {
-                                                            if let Type::String = p.ty {
-                                                                if slot + 1 < regs.len() {
-                                                                    let ptr_reg = regs[slot];
-                                                                    let len_reg = regs[slot + 1];
-                                                                    out.push_str(&format!(
-"        mov {len}, %rdx
-        mov {ptr}, %rsi
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-", len=len_reg, ptr=ptr_reg));
-                                                                    out.push_str(
-"        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-");
-                                                                    need_nl = true;
-                                                                }
-                                                            }
-                                                            break;
-                                                        } else {
-                                                            match p.ty {
-                                                                Type::String => slot += 2,
-                                                                _ => slot += 1,
-                                                            }
+                                        } else {
+                                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                            let mut islot = 0usize;
+                                            for (aidx, a) in args.iter().enumerate() {
+                                                match a {
+                                                    Expr::Lit(Value::Int(v)) => {
+                                                        if islot < regs.len() {
+                                                            let dst = regs[islot];
+                                                            out.push_str(&format!("        mov ${}, {}\n", v, dst));
+                                                            islot += 1;
                                                         }
                                                     }
+                                                    Expr::Lit(Value::String(s)) => {
+                                                        if islot + 1 < regs.len() {
+                                                            let mut bytes = s.clone().into_bytes();
+                                                            let len = bytes.len();
+                                                            let lbl = format!(".LSARG_{}_{}_{}", func.name, fi, aidx);
+                                                            out.push_str(&format!(
+"        leaq {}(%rip), {}
+        mov ${}, {}
+", lbl, regs[islot], len, regs[islot+1]));
+                                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                            islot += 2;
+                                                        }
+                                                    }
+                                                    _ => {}
                                                 }
-                                                Expr::Call(name, args) => {
-                                                    if args.is_empty() {
-                                                        out.push_str(
+                                            }
+                                            out.push_str(
 "        sub $8, %rsp
 ");
-                                                        out.push_str(&format!("        call {}\n", name));
-                                                        out.push_str(
+                                            out.push_str(&format!("        call {}\n", name));
+                                            out.push_str(
 "        add $8, %rsp
         mov %rdx, %rdx
         mov %rax, %rsi
@@ -520,18 +580,265 @@ r#"        push %rbx
         mov $1, %rdi
         syscall
 ");
-                                                        out.push_str(
+                                            out.push_str(
 "        mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
         mov $1, %rdx
         syscall
 ");
-                                                        need_nl = true;
+                                            need_nl = true;
+                                        }
+                                    }
+                                    Expr::IfElse { cond, then_expr, else_expr } => {
+                                        let then_lbl = format!(".LIF_THEN_{}_{}", func.name, fi);
+                                        let else_lbl = format!(".LIF_ELSE_{}_{}", func.name, fi);
+                                        let join_lbl = format!(".LIF_JOIN_{}_{}", func.name, fi);
+                                        match &**cond {
+                                            Expr::BinOp(lhs, op, rhs) => {
+                                                let mut lhs_loaded = false;
+                                                let mut rhs_loaded = false;
+                                                match &**lhs {
+                                                    Expr::Lit(Value::Int(v)) => {
+                                                        out.push_str(&format!("        mov ${}, %r10\n", v));
+                                                        lhs_loaded = true;
                                                     }
+                                                    Expr::Var(name) => {
+                                                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                        let mut slot = 0usize;
+                                                        for p in &func.params {
+                                                            if p.name == *name {
+                                                                match p.ty {
+                                                                    Type::String => { /* unsupported in cond */ }
+                                                                    _ => {
+                                                                        if slot < regs.len() {
+                                                                            let src = regs[slot];
+                                                                            out.push_str(&format!("        mov {}, %r10\n", src));
+                                                                            lhs_loaded = true;
+                                                                        }
+                                                                    }
+                                                                }
+                                                                break;
+                                                            } else {
+                                                                match p.ty {
+                                                                    Type::String => slot += 2,
+                                                                    _ => slot += 1,
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    _ => {}
                                                 }
-                                                _ => {}
+                                                match &**rhs {
+                                                    Expr::Lit(Value::Int(v)) => {
+                                                        out.push_str(&format!("        mov ${}, %r11\n", v));
+                                                        rhs_loaded = true;
+                                                    }
+                                                    Expr::Var(name) => {
+                                                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                        let mut slot = 0usize;
+                                                        for p in &func.params {
+                                                            if p.name == *name {
+                                                                match p.ty {
+                                                                    Type::String => { /* unsupported in cond */ }
+                                                                    _ => {
+                                                                        if slot < regs.len() {
+                                                                            let src = regs[slot];
+                                                                            out.push_str(&format!("        mov {}, %r11\n", src));
+                                                                            rhs_loaded = true;
+                                                                        }
+                                                                    }
+                                                                }
+                                                                break;
+                                                            } else {
+                                                                match p.ty {
+                                                                    Type::String => slot += 2,
+                                                                    _ => slot += 1,
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+                                                if lhs_loaded && rhs_loaded {
+                                                    out.push_str("        cmp %r11, %r10\n");
+                                                    match op {
+                                                        BinOpKind::Eq => {
+                                                            out.push_str(&format!("        je {}\n", then_lbl));
+                                                            out.push_str(&format!("        jmp {}\n", else_lbl));
+                                                        }
+                                                        BinOpKind::Lt => {
+                                                            out.push_str(&format!("        jl {}\n", then_lbl));
+                                                            out.push_str(&format!("        jmp {}\n", else_lbl));
+                                                        }
+                                                        BinOpKind::Le => {
+                                                            out.push_str(&format!("        jle {}\n", then_lbl));
+                                                            out.push_str(&format!("        jmp {}\n", else_lbl));
+                                                        }
+                                                        _ => {
+                                                            out.push_str(&format!("        jmp {}\n", else_lbl));
+                                                        }
+                                                    }
+                                                    out.push_str(&format!("{}:\n", then_lbl));
+                                                    match &**then_expr {
+                                                        Expr::Lit(Value::String(s)) => {
+                                                            let mut bytes = s.clone().into_bytes();
+                                                            bytes.push(b'\n');
+                                                            let len = s.as_bytes().len() + 1;
+                                                            let lbl = format!(".LSP_{}_{}", func.name, fi);
+                                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", lbl, len));
+                                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                        }
+                                                        Expr::Var(name) => {
+                                                            let regs_v = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                            let mut slot = 0usize;
+                                                            for p in &func.params {
+                                                                if p.name == *name {
+                                                                    if let Type::String = p.ty {
+                                                                        if slot + 1 < regs_v.len() {
+                                                                            let ptr_reg = regs_v[slot];
+                                                                            let len_reg = regs_v[slot + 1];
+                                                                            out.push_str(&format!(
+"        mov {len}, %rdx
+        mov {ptr}, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+", len=len_reg, ptr=ptr_reg));
+                                                                            need_nl = true;
+                                                                            out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                                        }
+                                                                    }
+                                                                    break;
+                                                                } else {
+                                                                    match p.ty {
+                                                                        Type::String => slot += 2,
+                                                                        _ => slot += 1,
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Expr::Call(name,args) => {
+                                                            if args.is_empty() {
+                                                                out.push_str(
+"        sub $8, %rsp
+");
+                                                                out.push_str(&format!("        call {}\n", name));
+                                                                out.push_str(
+"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                                                need_nl = true;
+                                                                out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                    out.push_str(&format!("        jmp {}\n", join_lbl));
+                                                    out.push_str(&format!("{}:\n", else_lbl));
+                                                    match &**else_expr {
+                                                        Expr::Lit(Value::String(s)) => {
+                                                            let mut bytes = s.clone().into_bytes();
+                                                            bytes.push(b'\n');
+                                                            let len = s.as_bytes().len() + 1;
+                                                            let lbl = format!(".LSP_{}_{}_else", func.name, fi);
+                                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", lbl, len));
+                                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                        }
+                                                        Expr::Var(name) => {
+                                                            let regs_v = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                            let mut slot = 0usize;
+                                                            for p in &func.params {
+                                                                if p.name == *name {
+                                                                    if let Type::String = p.ty {
+                                                                        if slot + 1 < regs_v.len() {
+                                                                            let ptr_reg = regs_v[slot];
+                                                                            let len_reg = regs_v[slot + 1];
+                                                                            out.push_str(&format!(
+"        mov {len}, %rdx
+        mov {ptr}, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+", len=len_reg, ptr=ptr_reg));
+                                                                            need_nl = true;
+                                                                            out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                                        }
+                                                                    }
+                                                                    break;
+                                                                } else {
+                                                                    match p.ty {
+                                                                        Type::String => slot += 2,
+                                                                        _ => slot += 1,
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        Expr::Call(name,args) => {
+                                                            if args.is_empty() {
+                                                                out.push_str(
+"        sub $8, %rsp
+");
+                                                                out.push_str(&format!("        call {}\n", name));
+                                                                out.push_str(
+"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                                                need_nl = true;
+                                                                out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                    out.push_str(&format!("{}:\n", join_lbl));
+                                                    fi += 1;
+                                                }
                                             }
+                                            _ => {}
                                         }
                                     }
                                     _ => {}
@@ -594,7 +901,7 @@ r#"        leaq .LC0(%rip), %rax
                         }
                         out.push_str("\"\n");
                     }
-                    if need_nl {
+                    if need_nl && !out.contains("\n.LSNL:\n") {
                         out.push_str(".LSNL:\n        .byte 10\n");
                     }
                     out.push_str("\n        .text\n");
@@ -776,8 +1083,19 @@ r#"        xor eax, eax
                 out.push_str("\n        .text\n");
                 let mut func_rodata: Vec<(String, String)> = Vec::new();
                 let mut need_nl = bool::from(false);
+                let mut funcs_to_emit: Vec<&aether_frontend::ast::Function> = Vec::new();
+                if let Some(mf) = main_func {
+                    funcs_to_emit.push(mf);
+                }
                 for func in other_funcs {
+                    funcs_to_emit.push(func);
+                }
+                for func in funcs_to_emit {
                     out.push_str("\n");
+                    if func.name == "main" {
+                        continue;
+                    }
+
                     if func.name == "fact" {
                         out.push_str(&format!("{}:\n", func.name));
                         out.push_str(

@@ -1,0 +1,7 @@
+pub func main() -> i32 {
+    while (1 < 2) {
+        println("tick");
+        break;
+    }
+    return 0;
+}

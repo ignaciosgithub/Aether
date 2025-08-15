@@ -128,6 +128,17 @@ impl CodeGenerator for X86_64LinuxCodegen {
                 other_funcs.push(func);
             }
         }
+        let mut main_while_blocks: Vec<(usize, Expr, Vec<Stmt>)> = Vec::new();
+        if let Some(f) = main_func {
+            let mut widx = 0usize;
+            for stmt in &f.body {
+                if let Stmt::While { cond, body } = stmt.clone() {
+                    main_while_blocks.push((widx, cond, body));
+                    widx += 1;
+                }
+            }
+        }
+
         match self.target.os {
             TargetOs::Linux => {
                 let mut out = String::new();
@@ -137,6 +148,64 @@ r#"
         .text
 _start:
 "#);
+                let mut while_rodata: Vec<(String, String)> = Vec::new();
+                for (widx, cond, body) in &main_while_blocks {
+                    out.push_str(&format!(".LWH_HEAD_main_{}:\n", widx));
+                    match cond {
+                        Expr::BinOp(a, op, b) => {
+                            if let (Expr::Lit(Value::Int(la)), Expr::Lit(Value::Int(lb))) = (&**a, &**b) {
+                                out.push_str(&format!("        mov ${}, %r10\n", la));
+                                out.push_str(&format!("        mov ${}, %r11\n", lb));
+                                out.push_str("        cmp %r11, %r10\n");
+                                match op {
+                                    BinOpKind::Lt => out.push_str(&format!("        jge .LWH_END_main_{}\n", widx)),
+                                    BinOpKind::Le => out.push_str(&format!("        jg .LWH_END_main_{}\n", widx)),
+                                    BinOpKind::Eq => out.push_str(&format!("        jne .LWH_END_main_{}\n", widx)),
+                                    _ => out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx)),
+                                }
+                            } else {
+                                out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx));
+                            }
+                        }
+                        Expr::Lit(Value::Int(v)) => {
+                            out.push_str(&format!("        mov ${}, %r10\n", v));
+                            out.push_str("        cmp $0, %r10\n");
+                            out.push_str(&format!("        je .LWH_END_main_{}\n", widx));
+                        }
+                        _ => {
+                            out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx));
+                        }
+                    }
+                    for (bidx, st) in body.iter().enumerate() {
+                        match st {
+                            Stmt::Println(s) => {
+                                let mut bytes = s.clone().into_bytes();
+                                bytes.push(b'\n');
+                                let lbl = format!(".LSW_main_{}_{}", widx, bidx);
+                                while_rodata.push((lbl.clone(), String::from_utf8(bytes).unwrap()));
+                                out.push_str("        mov $1, %rax\n");
+                                out.push_str("        mov $1, %rdi\n");
+                                out.push_str(&format!("        leaq {}(%rip), %rsi\n", lbl));
+                                out.push_str(&format!("        mov ${}, %rdx\n", s.as_bytes().len() + 1));
+                                out.push_str("        syscall\n");
+                            }
+                            Stmt::Break => out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx)),
+                            Stmt::Continue => out.push_str(&format!("        jmp .LWH_HEAD_main_{}\n", widx)),
+                            _ => {}
+                        }
+                    }
+                    out.push_str(&format!("        jmp .LWH_HEAD_main_{}\n", widx));
+                    out.push_str(&format!(".LWH_END_main_{}:\n", widx));
+                }
+                if !while_rodata.is_empty() {
+                    out.push_str("\n        .section .rodata\n");
+                    for (lbl, s) in &while_rodata {
+                        out.push_str(&format!("{}:\n", lbl));
+                        out.push_str(&format!("        .ascii \"{}\"\n", s.replace("\\\\", "\\\\\\\\").replace("\"", "\\\\\"")));
+                    }
+                    out.push_str("\n        .text\n");
+                }
+
                 if !main_print_calls.is_empty() {
                     out.push_str(
 r#"
@@ -1049,7 +1118,87 @@ r#"        xor eax, eax
                 } else {
                     out.push_str("\n        .data\n");
                 }
-                if !main_print_calls.is_empty() {
+                if true {
+                let mut while_data: Vec<(String, String)> = Vec::new();
+                for (widx, cond, body) in &main_while_blocks {
+                    out.push_str(&format!("LWH_HEAD_main_{}:\n", widx));
+                    match cond {
+                        Expr::BinOp(a, op, b) => {
+                            if let (Expr::Lit(Value::Int(la)), Expr::Lit(Value::Int(lb))) = (&**a, &**b) {
+                                out.push_str(&format!("        mov r10, {}\n", la));
+                                out.push_str(&format!("        mov r11, {}\n", lb));
+                                out.push_str("        cmp r10, r11\n");
+                                match op {
+                                    BinOpKind::Lt => out.push_str(&format!("        jge LWH_END_main_{}\n", widx)),
+                                    BinOpKind::Le => out.push_str(&format!("        jg LWH_END_main_{}\n", widx)),
+                                    BinOpKind::Eq => out.push_str(&format!("        jne LWH_END_main_{}\n", widx)),
+                                    _ => out.push_str(&format!("        jmp LWH_END_main_{}\n", widx)),
+                                }
+                            } else {
+                                out.push_str(&format!("        jmp LWH_END_main_{}\n", widx));
+                            }
+                        }
+                        Expr::Lit(Value::Int(v)) => {
+                            out.push_str(&format!("        mov r10, {}\n", v));
+                            out.push_str("        cmp r10, 0\n");
+                            out.push_str(&format!("        je LWH_END_main_{}\n", widx));
+                        }
+                        _ => {
+                            out.push_str(&format!("        jmp LWH_END_main_{}\n", widx));
+                        }
+                    }
+                    for (bidx, st) in body.iter().enumerate() {
+                        match st {
+                            Stmt::Println(s) => {
+                                let mut bytes = s.clone().into_bytes();
+                                bytes.push(b'\n');
+                                let len = s.as_bytes().len() + 1;
+                                let lbl = format!("LSW_main_{}_{}", widx, bidx);
+                                out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+"#);
+                                out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                out.push_str(&format!("        mov r8d, {}\n", len as i32));
+                                out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                while_data.push((lbl, String::from_utf8(bytes).unwrap()));
+                            }
+                            Stmt::Break => {
+                                out.push_str(&format!("        jmp LWH_END_main_{}\n", widx));
+                            }
+                            Stmt::Continue => {
+                                out.push_str(&format!("        jmp LWH_HEAD_main_{}\n", widx));
+                            }
+                            _ => {}
+                        }
+                    }
+                    out.push_str(&format!("        jmp LWH_HEAD_main_{}\n", widx));
+                    out.push_str(&format!("LWH_END_main_{}:\n", widx));
+                }
+                if !while_data.is_empty() {
+                    out.push_str("\n        .data\n");
+                    for (lbl, s) in &while_data {
+                        out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                        for b in s.as_bytes() {
+                            let ch = *b as char;
+                            match ch {
+                                '\n' => out.push_str("\\n"),
+                                '\t' => out.push_str("\\t"),
+                                '\"' => out.push_str("\\\""),
+                                '\\' => out.push_str("\\\\"),
+                                _ => out.push(ch),
+                            }
+                        }
+                        out.push_str("\"\n");
+                    }
+                    out.push_str("\n        .text\n");
+                }
+
                     out.push_str("LSNL:\n        .byte 10\n");
                 }
                 for (lbl, s) in &call_arg_data {

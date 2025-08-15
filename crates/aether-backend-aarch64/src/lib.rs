@@ -117,6 +117,7 @@ impl CodeGenerator for AArch64Codegen {
                         _ => {}
                     }
                 }
+
             } else {
                 other_funcs.push(func);
             }
@@ -128,6 +129,75 @@ r#"
         .text
 _start:
 "#);
+        let mut main_while_blocks: Vec<(usize, Expr, Vec<Stmt>)> = Vec::new();
+        if let Some(func) = module.items.iter().find_map(|it| if let Item::Function(f)=it { if f.name=="main" { Some(f) } else { None } } else { None }) {
+            let mut widx = 0usize;
+            for stmt in &func.body {
+                if let Stmt::While { cond, body } = stmt.clone() {
+                    main_while_blocks.push((widx, cond, body));
+                    widx += 1;
+                }
+            }
+        }
+        let mut while_rodata: Vec<(String, String)> = Vec::new();
+        for (widx, cond, body) in &main_while_blocks {
+            out.push_str(&format!(".LWH_HEAD_main_{}:\n", widx));
+            match cond {
+                Expr::BinOp(a, op, b) => {
+                    if let (Expr::Lit(Value::Int(la)), Expr::Lit(Value::Int(lb))) = (&**a, &**b) {
+                        out.push_str(&format!("        mov x10, #{}\n", la));
+                        out.push_str(&format!("        mov x11, #{}\n", lb));
+                        out.push_str("        cmp x10, x11\n");
+                        match op {
+                            BinOpKind::Lt => out.push_str(&format!("        b.ge .LWH_END_main_{}\n", widx)),
+                            BinOpKind::Le => out.push_str(&format!("        b.gt .LWH_END_main_{}\n", widx)),
+                            BinOpKind::Eq => out.push_str(&format!("        b.ne .LWH_END_main_{}\n", widx)),
+                            _ => out.push_str(&format!("        b .LWH_END_main_{}\n", widx)),
+                        }
+                    } else {
+                        out.push_str(&format!("        b .LWH_END_main_{}\n", widx));
+                    }
+                }
+                Expr::Lit(Value::Int(v)) => {
+                    out.push_str(&format!("        mov x10, #{}\n", v));
+                    out.push_str("        cmp x10, #0\n");
+                    out.push_str(&format!("        b.eq .LWH_END_main_{}\n", widx));
+                }
+                _ => {
+                    out.push_str(&format!("        b .LWH_END_main_{}\n", widx));
+                }
+            }
+            for (bidx, st) in body.iter().enumerate() {
+                match st {
+                    Stmt::Println(s) => {
+                        let mut bytes = s.clone().into_bytes();
+                        bytes.push(b'\n');
+                        let lbl = format!(".LSW_main_{}_{}", widx, bidx);
+                        while_rodata.push((lbl.clone(), String::from_utf8(bytes).unwrap()));
+                        out.push_str("        mov x0, #1\n");
+                        out.push_str("        mov x8, #64\n");
+                        out.push_str(&format!("        adrp x1, {}\n", lbl));
+                        out.push_str(&format!("        add x1, x1, :lo12:{}\n", lbl));
+                        out.push_str(&format!("        mov x2, #{}\n", s.as_bytes().len() + 1));
+                        out.push_str("        svc #0\n");
+                    }
+                    Stmt::Break => out.push_str(&format!("        b .LWH_END_main_{}\n", widx)),
+                    Stmt::Continue => out.push_str(&format!("        b .LWH_HEAD_main_{}\n", widx)),
+                    _ => {}
+                }
+            }
+            out.push_str(&format!("        b .LWH_HEAD_main_{}\n", widx));
+            out.push_str(&format!(".LWH_END_main_{}:\n", widx));
+        }
+        if !while_rodata.is_empty() {
+            out.push_str("\n        .section .rodata\n");
+            for (lbl, s) in &while_rodata {
+                out.push_str(&format!("{}:\n", lbl));
+                out.push_str(&format!("        .ascii \"{}\"\n", s.replace("\\", "\\\\").replace("\"", "\\\"")));
+            }
+            out.push_str("\n        .text\n");
+        }
+
         for (name, args) in &main_print_calls {
             if args.is_empty() {
                 out.push_str(&format!("        bl {}\n", name));
@@ -173,6 +243,7 @@ _start:
         mov x2, #1
         svc #0
 ");
+
             }
         }
         let mut call_arg_rodata: Vec<(String, String)> = Vec::new();

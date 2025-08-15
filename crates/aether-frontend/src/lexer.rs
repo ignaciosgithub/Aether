@@ -36,6 +36,9 @@ pub enum TokenKind {
     List,
     If,
     Else,
+    While,
+    Break,
+    Continue,
     Le,   // <=
     Lt,   // <
     Eq,   // ==
@@ -96,6 +99,9 @@ impl Lexer {
                     "list" => TokenKind::List,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
+                    "while" => TokenKind::While,
+                    "break" => TokenKind::Break,
+                    "continue" => TokenKind::Continue,
                     "string" | "String" => TokenKind::StringType,
                     _ => TokenKind::Ident(s.to_string()),
                 };

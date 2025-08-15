@@ -1,6 +1,7 @@
 use anyhow::Result;
 use aether_codegen::{CodeGenerator, Target, TargetArch, TargetOs};
 use aether_frontend::ast::{Module, Item, Stmt, Expr, Value, BinOpKind, Type};
+use std::collections::HashMap;
 
 pub struct X86_64LinuxCodegen {
     target: Target,
@@ -16,7 +17,99 @@ impl X86_64LinuxCodegen {
         Self {
             target: Target { arch: TargetArch::X86_64, os: TargetOs::Windows }
         }
+}
+ 
     }
+
+fn collect_structs<'m>(module: &'m Module) -> HashMap<String, &'m aether_frontend::ast::StructDef> {
+    let mut map = HashMap::new();
+    for item in &module.items {
+        if let Item::Struct(sd) = item {
+            map.insert(sd.name.clone(), sd);
+        }
+    }
+    map
+}
+
+fn size_of_type(ty: &Type, struct_sizes: &HashMap<String, usize>, structs: &HashMap<String, &aether_frontend::ast::StructDef>) -> usize {
+    match ty {
+        Type::I32 => 4,
+        Type::I64 | Type::F64 => 8,
+        Type::String => 16,
+        Type::User(ref un) => {
+            if let Some(sz) = struct_sizes.get(un) {
+                *sz
+            } else if let Some(sd) = structs.get(un) {
+                let mut size = 0usize;
+                for f in &sd.fields {
+                    size += size_of_type(&f.ty, struct_sizes, structs);
+                }
+                if size % 8 != 0 { size += 8 - (size % 8); }
+                size
+            } else {
+                8
+            }
+        }
+        _ => 8,
+    }
+}
+
+fn compute_struct_layouts<'m>(module: &'m Module) -> (HashMap<String, usize>, HashMap<(String, String), (usize, Type)>, HashMap<String, Vec<(String, Type, usize)>>) {
+    let structs = collect_structs(module);
+    let mut struct_sizes: HashMap<String, usize> = HashMap::new();
+    let mut field_offsets: HashMap<(String, String), (usize, Type)> = HashMap::new();
+    let mut flattened_fields: HashMap<String, Vec<(String, Type, usize)>> = HashMap::new();
+
+    fn build_layout(
+        name: &str,
+        structs: &HashMap<String, &aether_frontend::ast::StructDef>,
+        struct_sizes: &mut HashMap<String, usize>,
+        field_offsets: &mut HashMap<(String, String), (usize, Type)>,
+        flattened_fields: &mut HashMap<String, Vec<(String, Type, usize)>>
+    ) {
+        if flattened_fields.contains_key(name) {
+            return;
+        }
+        let sd = match structs.get(name) { Some(s) => *s, None => return };
+        if let Some(ref p) = sd.parent {
+            if structs.contains_key(p) {
+                build_layout(p, structs, struct_sizes, field_offsets, flattened_fields);
+            }
+        }
+        let mut fields_vec: Vec<(String, Type, usize)> = Vec::new();
+        let mut off = 0usize;
+        if let Some(ref p) = sd.parent {
+            if let Some(parent_fields) = flattened_fields.get(p) {
+                for (fname, fty, foff) in parent_fields {
+                    fields_vec.push((fname.clone(), fty.clone(), *foff));
+                    field_offsets.insert((name.to_string(), fname.clone()), (*foff, fty.clone()));
+                    let sz = size_of_type(fty, struct_sizes, structs);
+                    let end = *foff + sz;
+                    if end > off { off = end; }
+                }
+            }
+        }
+        for f in &sd.fields {
+            let sz = size_of_type(&f.ty, struct_sizes, &structs);
+            let cur_off = off;
+            field_offsets.insert((name.to_string(), f.name.clone()), (cur_off, f.ty.clone()));
+            fields_vec.push((f.name.clone(), f.ty.clone(), cur_off));
+            off += sz;
+        }
+        if off % 8 != 0 { off += 8 - (off % 8); }
+        struct_sizes.insert(name.to_string(), off);
+        flattened_fields.insert(name.to_string(), fields_vec);
+    }
+
+    for name in structs.keys() {
+        build_layout(name, &structs, &mut struct_sizes, &mut field_offsets, &mut flattened_fields);
+    }
+
+    (struct_sizes, field_offsets, flattened_fields)
+}
+
+fn get_field_info(struct_name: &str, field_name: &str, field_offsets: &HashMap<(String, String), (usize, Type)>) -> Option<(usize, Type)> {
+    field_offsets.get(&(struct_name.to_string(), field_name.to_string())).cloned()
 }
 
 fn eval_int_expr(expr: &Expr) -> Option<i64> {
@@ -182,37 +275,9 @@ impl CodeGenerator for X86_64LinuxCodegen {
                         Stmt::PrintExpr(Expr::Field(recv, fname)) => {
                             if let Expr::Var(rn) = &**recv {
                                 if let Some(tyname) = static_types.get(rn) {
-                                    if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
-                                        let mut off = 0usize;
-                                        for f in &sd.fields {
-                                            let sz = match f.ty {
-                                                Type::I32 => 4,
-                                                Type::I64 | Type::F64 => 8,
-                                                Type::String => 16,
-                                                Type::User(ref un) => {
-                                                    if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
-                                                        let mut sz2 = 0usize;
-                                                        for ff in &sd2.fields {
-                                                            sz2 += match ff.ty {
-                                                                Type::I32 => 4,
-                                                                Type::I64 | Type::F64 => 8,
-                                                                Type::String => 16,
-                                                                _ => 8,
-                                                            };
-                                                        }
-                                                        if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
-                                                        sz2
-                                                    } else { 8 }
-                                                }
-                                                _ => 8,
-                                            };
-                                            if f.name == *fname {
-                                                if let Type::String = f.ty {
-                                                    main_field_prints.push((rn.clone(), off));
-                                                }
-                                                break;
-                                            }
-                                            off += sz;
+                                    if let Some((off, fty)) = get_field_info(tyname, fname, &field_offsets) {
+                                        if let Type::String = fty {
+                                            main_field_prints.push((rn.clone(), off));
                                         }
                                     }
                                 } else if let Some(fmap) = local_strings.get(rn) {

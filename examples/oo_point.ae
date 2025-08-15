@@ -1,0 +1,11 @@
+pub struct Point { x: i32, y: i32 }
+
+static ORIGIN: Point = Point { x: 0, y: 0 };
+static P1: Point     = Point { x: 3, y: 4 };
+
+pub func Point_name(self: I64) -> String { return "Point"; }
+
+pub func main() -> i32 {
+    println(P1.name());
+    return 0;
+}

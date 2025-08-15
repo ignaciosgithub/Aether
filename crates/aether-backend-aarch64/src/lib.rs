@@ -70,6 +70,33 @@ impl CodeGenerator for AArch64Codegen {
         let mut calls: Vec<(String, Vec<Expr>)> = Vec::new();
         let mut main_ret_call: Option<(String, Vec<Expr>)> = None;
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
+        use std::collections::{HashMap, HashSet};
+        let mut struct_sizes: HashMap<String, usize> = HashMap::new();
+        let mut static_types: HashMap<String, String> = HashMap::new();
+        for item in &module.items {
+            match item {
+                Item::Struct(sd) => {
+                    let mut size = 0usize;
+                    for f in &sd.fields {
+                        match f.ty {
+                            Type::I32 => size += 4,
+                            Type::I64 => size += 8,
+                            Type::F64 => size += 8,
+                            _ => size += 8,
+                        }
+                    }
+                    if size % 8 != 0 { size += 8 - (size % 8); }
+                    struct_sizes.insert(sd.name.clone(), size);
+                }
+                Item::Static(st) => {
+                    if let Type::User(ref n) = st.ty {
+                        static_types.insert(st.name.clone(), n.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let static_names: HashSet<String> = static_types.keys().cloned().collect();
         let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
         for item in &module.items {
             let func = match item {
@@ -197,6 +224,15 @@ _start:
                 out.push_str(&format!("        .ascii \"{}\"\n", s.replace("\\", "\\\\").replace("\"", "\\\"")));
             }
             out.push_str("\n        .text\n");
+        if !static_types.is_empty() {
+            out.push_str("\n        .data\n");
+            for (sname, ty) in &static_types {
+                let sz = struct_sizes.get(ty).cloned().unwrap_or(8);
+                out.push_str(&format!("{}:\n        .zero {}\n", sname, sz));
+            }
+            out.push_str("\n        .text\n");
+        }
+
         }
 
         for (name, args) in &main_print_calls {
@@ -224,6 +260,13 @@ _start:
                             if islot < regs.len() {
                                 let dst = regs[islot];
                                 out.push_str(&format!("        mov {}, #{}\n", dst, v));
+                                islot += 1;
+                            }
+                        }
+                        Expr::Var(name) => {
+                            if islot < regs.len() && static_names.contains(name) {
+                                let dst = regs[islot];
+                                out.push_str(&format!("        adrp {0}, {1}\n        add {0}, {0}, :lo12:{1}\n", dst, name));
                                 islot += 1;
                             }
                         }
@@ -275,6 +318,13 @@ _start:
                                 islot += 2;
                             }
                         }
+                        Expr::Var(name) => {
+                            if islot < regs.len() && static_names.contains(name) {
+                                let dst = regs[islot];
+                                out.push_str(&format!("        adrp {0}, {1}\n        add {0}, {0}, :lo12:{1}\n", dst, name));
+                                islot += 1;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -306,6 +356,13 @@ _start:
 ", regs[islot], lbl, regs[islot+1], len));
                                     call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                     islot += 2;
+                                }
+                            }
+                            Expr::Var(name) => {
+                                if islot < regs.len() && static_names.contains(name) {
+                                    let dst = regs[islot];
+                                    out.push_str(&format!("        adrp {0}, {1}\n        add {0}, {0}, :lo12:{1}\n", dst, name));
+                                    islot += 1;
                                 }
                             }
                             _ => {}

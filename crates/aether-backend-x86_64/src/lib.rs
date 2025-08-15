@@ -77,6 +77,33 @@ impl CodeGenerator for X86_64LinuxCodegen {
         let mut main_ret_call: Option<(String, Vec<Expr>)> = None;
         let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
+        use std::collections::{HashMap, HashSet};
+        let mut struct_sizes: HashMap<String, usize> = HashMap::new();
+        let mut static_types: HashMap<String, String> = HashMap::new();
+        for item in &module.items {
+            match item {
+                Item::Struct(sd) => {
+                    let mut size = 0usize;
+                    for f in &sd.fields {
+                        match f.ty {
+                            Type::I32 => size += 4,
+                            Type::I64 => size += 8,
+                            Type::F64 => size += 8,
+                            _ => size += 8,
+                        }
+                    }
+                    if size % 8 != 0 { size += 8 - (size % 8); }
+                    struct_sizes.insert(sd.name.clone(), size);
+                }
+                Item::Static(st) => {
+                    if let Type::User(ref n) = st.ty {
+                        static_types.insert(st.name.clone(), n.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let static_names: HashSet<String> = static_types.keys().cloned().collect();
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
@@ -264,6 +291,13 @@ r#"        add $8, %rsp
                                         islot += 2;
                                     }
                                 }
+                                Expr::Var(name) => {
+                                    if islot < regs.len() && static_names.contains(name) {
+                                        let dst = regs[islot];
+                                        out.push_str(&format!("        leaq {}(%rip), {}\n", name, dst));
+                                        islot += 1;
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -312,6 +346,13 @@ r#"        add $8, %rsp
                                         islot += 2;
                                     }
                                 }
+                                Expr::Var(name) => {
+                                    if islot < regs.len() && static_names.contains(name) {
+                                        let dst = regs[islot];
+                                        out.push_str(&format!("        leaq {}(%rip), {}\n", name, dst));
+                                        islot += 1;
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -348,6 +389,13 @@ r#"        add $8, %rsp
 ", lbl, regs[islot], len, regs[islot+1]));
                                             call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                             islot += 2;
+                                        }
+                                    }
+                                    Expr::Var(name) => {
+                                        if islot < regs.len() && static_names.contains(name) {
+                                            let dst = regs[islot];
+                                            out.push_str(&format!("        leaq {}(%rip), {}\n", name, dst));
+                                            islot += 1;
                                         }
                                     }
                                     _ => {}
@@ -479,6 +527,15 @@ r#"        leaq .LC0(%rip), %rax
                         }
                     }
                 }
+                if !static_types.is_empty() {
+                    out.push_str("\n        .data\n");
+                    for (sname, ty) in &static_types {
+                        let sz = struct_sizes.get(ty).cloned().unwrap_or(8);
+                        out.push_str(&format!("{}:\n        .zero {}\n", sname, sz));
+                    }
+                    out.push_str("\n        .text\n");
+                }
+
                 out.push_str("\n        .text\n");
                 let mut func_rodata: Vec<(String, String)> = Vec::new();
                 let mut need_nl = bool::from(false);
@@ -1037,6 +1094,11 @@ r#"        add rsp, 32
         mov edx, {}
 ", lbl, len as i32));
                                     call_arg_data.push((lbl, String::from_utf8(bytes).unwrap()));
+                                }
+                                Expr::Var(name) => {
+                                    if static_names.contains(name) {
+                                        out.push_str(&format!("        lea rcx, [rip+{}]\n", name));
+                                    }
                                 }
                                 _ => {}
                             }

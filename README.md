@@ -1,179 +1,156 @@
 # Aether
-oo multithreaded programming language with a focus on speed and portability and compatibility and readability
-Aether: High-level feel, System-level power.
 
-![alt text]()
+Aether is a small, portable systems language and compiler with a clear, readable syntax and a focus on performance and cross‑platform code generation.
 
-Aether is a modern, object-oriented programming language designed for developers who demand uncompromising performance, intuitive control over memory, and seamless compatibility across platforms. multithreading support.
+Targets today:
+- x86_64 Linux
+- x86_64 Windows (PE/COFF)
+- AArch64 Linux
 
-It combines the readability and high-level abstractions of modern languages with the raw power and low-level control of systems programming. Aether is built on the philosophy that you shouldn't have to sacrifice safety and ease-of-use for speed.
+What you can do now:
+- Define functions and call them (including recursion)
+- Integer and float expressions and returns (f64 in proper FP return regs)
+- Control flow: if/else, while with break/continue
+- Println of Strings across all targets; println of i64 on Linux
+- Basic object‑oriented data: structs, statics, field access; single inheritance (Child : Parent) with parent‑first layout
+- Generate assembly per target and assemble/link via scripts
 
-Core Features
+See docs:
+- docs/BUILD.md — toolchain setup, generating assembly, assembling and linking per target
+- docs/language.md — current syntax and features
+- docs/benchmarks.md — fair microbenchmark methodology and how to run the harness
 
-Performance: Aether is designed to be as fast as Zig. It achieves this through a transparent compilation process, no hidden control flow, and explicit memory management with powerful compile-time checks.[1][2]
+## Quickstart
 
-Intuitive Memory Management: Aether introduces "Scoped Arenas," a novel approach to memory allocation that combines the safety of ownership models with the clarity of manual allocation. No garbage collector, no complex lifetime annotations—just clear, predictable memory behavior.
+Choose your OS and follow the steps to be ready to write and run Aether code in minutes.
 
-Extreme Platform Compatibility: With a primary focus on Linux and Windows, Aether's compiler is architected for straightforward cross-compilation. Its standard library provides a consistent API for interacting with system resources, from filesystems to hardware devices.[2]
+### Ubuntu (22.04/24.04)
 
-Direct Driver Interaction: Aether is suitable for developing kernel-level drivers.[3][4] It provides features for direct memory access and interaction with hardware registers, all within a type-safe and modern language structure.[5]
+1) Install prerequisites
+- Rust toolchain:
+  - curl https://sh.rustup.rs -sSf | sh -s -- -y
+  - Restart your terminal so cargo is on PATH
+- Toolchain packages:
+  - sudo apt-get update
+  - sudo apt-get install -y build-essential clang lld nasm
+- Optional cross toolchains:
+  - Windows: sudo apt-get install -y mingw-w64
+  - AArch64: sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
-Seamless Interoperability: Aether has a first-class Foreign Function Interface (FFI) that makes it trivial to use C libraries and to be embedded within other applications.[6][7]
+2) Clone and build
+- git clone https://github.com/ignaciosgithub/Aether.git
+- cd Aether
+- cargo build --workspace
 
-Quick Look: Hello, Aether!
-code
-Aether
-download
-content_copy
-expand_less
+3) Your first program
+Use the included example:
+- cargo run -p aetherc -- examples/println.ae --arch x86_64 --os linux -o out/linux/println.s
+- ./scripts/assemble_link.sh x86_64-linux out/linux/println.s out/linux/println
+- ./out/linux/println
 
-// main.ae - A simple Aether program
+To cross‑generate Windows PE:
+- cargo run -p aetherc -- examples/println.ae --arch x86_64 --os windows -o out/windows/println.s
+- ./scripts/assemble_link.sh x86_64-windows out/windows/println.s out/windows/println.exe
 
-// Import the standard i/o library
-import std.io;
+To generate AArch64 Linux:
+- cargo run -p aetherc -- examples/println.ae --arch aarch64 --os linux -o out/aarch64/println.s
+- ./scripts/assemble_link.sh aarch64-linux out/aarch64/println.s out/aarch64/println
 
-// Every program starts with a 'main' function.
-// 'pub' makes it accessible to the system loader.
-pub func main() -> (void) {
-    // Create a new Console object.
-    // 'let' declares a constant.
-    let console = io.Console.new();
-
-    // Call the 'writeLine' method.
-    console.writeLine("Hello from Aether!");
+4) Write your own
+Create hello.ae:
+```
+pub func main() -> i32 {
+    println("Hello from Aether!");
+    return 0;
 }
-The Aether Philosophy & Structure
-1. Object-Oriented, but not at the cost of performance
+```
+Then:
+- cargo run -p aetherc -- hello.ae --arch x86_64 --os linux -o out/linux/hello.s
+- ./scripts/assemble_link.sh x86_64-linux out/linux/hello.s out/linux/hello
+- ./out/linux/hello
 
-Aether is fundamentally object-oriented. It provides classes, interfaces, and inheritance to structure your code in a clean and maintainable way. However, it avoids performance pitfalls of some traditional OOP languages:
+### Windows 10 (Native, via MSYS2/MinGW64)
 
-Value-based objects by default: Class instances are stored on the stack unless explicitly allocated on the heap. This avoids unnecessary memory fragmentation and cache misses.
+1) Install MSYS2
+- Download and install from https://www.msys2.org/
+- Launch the “MSYS2 MINGW64” terminal (important)
 
-No hidden virtual calls: The compiler will tell you when a method call is dispatched dynamically. You can mark methods as final to ensure static dispatch.
+2) Install packages (in MINGW64 terminal)
+- pacman -Syu
+- pacman -S --needed git mingw-w64-x86_64-toolchain mingw-w64-x86_64-clang mingw-w64-x86_64-lld mingw-w64-x86_64-nasm make
 
-2. Intuitive Memory: Scoped Arenas
+3) Install Rust (GNU toolchain) in MINGW64
+- curl https://sh.rustup.rs -sSf | sh -s -- -y
+- Close and reopen the MINGW64 terminal so cargo is on PATH
+- Optional: rustup default stable-x86_64-pc-windows-gnu
 
-Aether simplifies memory management with a system called "Scoped Arenas." Instead of managing individual allocations, you allocate an "arena" for a specific scope or task. All objects created within that scope are placed in the arena. When the scope ends, the entire arena is deallocated at once.
+4) Clone and build
+- git clone https://github.com/ignaciosgithub/Aether.git
+- cd Aether
+- cargo build --workspace
 
-code
-Aether
-download
-content_copy
-expand_less
-IGNORE_WHEN_COPYING_START
-IGNORE_WHEN_COPYING_END
-import std.mem;
-import std.net;
+5) Your first program (Windows target)
+- cargo run -p aetherc -- examples/println.ae --arch x86_64 --os windows -o out/windows/println.s
+- bash ./scripts/assemble_link.sh x86_64-windows out/windows/println.s out/windows/println.exe
+- ./out/windows/println.exe
 
-func handle_request(request: net.Request) {
-    // Create a memory arena for this specific request.
-    // The arena will automatically be freed when this function exits.
-    using arena = mem.Arena.new(1024); // 1KB arena
+To produce Linux/AArch64 artifacts from Windows, use WSL (below) or a Linux VM.
 
-    // All subsequent allocations using '.new(&arena)' are placed here.
-    let headers = http.Headers.new(&arena, from: request);
-    let response = process_data(&arena, headers);
+### Windows 10 (Alternative: WSL Ubuntu)
 
-    send_response(response);
+1) Enable WSL and install Ubuntu from the Microsoft Store.
+2) Open “Ubuntu” and follow the Ubuntu steps above verbatim.
+3) To run Windows PE built in WSL on Windows, copy out the .exe and run it from Windows.
 
-} // 'arena' and all memory allocated within it is freed here. No 'free()' calls needed.
+### Troubleshooting
 
-This approach eliminates the risk of memory leaks for the vast majority of use cases while remaining explicit and highly performant. For long-lived objects, a global arena or manual allocation is still possible.
+- “command not found: cargo”
+  - Open a new terminal after installing rustup, or ensure cargo is on PATH.
+- “permission denied: scripts/*.sh”
+  - chmod +x scripts/*.sh or prefix calls with bash, e.g., bash ./scripts/assemble_link.sh ...
+- “clang/lld/nasm not found”
+  - Revisit prerequisites for your OS and install the listed packages.
+- “unknown target in assemble_link.sh”
+  - The first arg must be one of: x86_64-linux, x86_64-windows, aarch64-linux.
 
-3. As Fast as Zig: The 'Comptime' Advantage
+## Language overview
 
-Inspired by Zig, Aether features a powerful compile-time code execution engine known as comptime.[1][8] This allows you to run Aether code during compilation to generate types, pre-calculate values, and build custom data structures tailored to your specific needs.
+Examples in examples/*.ae:
+- println.ae — println String
+- calls.ae — multiple functions and calls
+- factorial.ae — recursion returning integer
+- runtime_ifelse.ae — runtime branching on conditions
+- inheritance.ae — single inheritance printing a parent field from a Child
+- locals_mutation.ae, nested_structs.ae — struct fields and mutation
 
-code
-Aether
-download
-content_copy
-expand_less
-IGNORE_WHEN_COPYING_START
-IGNORE_WHEN_COPYING_END
-// Generic Vector that stores its size at compile time.
-class Vec<T: type, comptime N: int> {
-    private data: [N]T;
+See docs/language.md for syntax, types, println, and OO layout details.
 
-    pub func len() -> (int) {
-        // This value is known at compile time.
-        return N;
-    }
-}
+## Printing
 
-// ...
+- println(String) works across Linux x86_64, Windows x86_64, and AArch64 Linux.
+- println(i64) is implemented on Linux x86_64 to make integer work observable (used by benchmarks).
 
-// Create a vector of 3 integers.
-// The size is part of the type, leading to significant optimizations.
-let my_vec = Vec<int, 3>.new();
-4. Unmatched Compatibility and Interaction
+## Benchmarks
 
-Aether is designed to work with the vast ecosystem of existing software and hardware.
+We include simple Aether vs C/Rust/Python microbenchmarks. The harness:
+- Verifies correctness via a checksum print (one line) in a separate phase
+- Times identical no‑output workloads using nanosecond timing with ITER repeats
 
-Driver Development: Aether can be used to write kernel-level code. It allows for precise control over memory layout and provides built-in types for interacting with hardware ports and registers. The standard library offers support for different system calling conventions.[5]
+Run:
+- ITER=10 N=200000000 FREPEAT=3000000 PCOUNT=100000 bash scripts/bench.sh
+- See benchmarks/checksums.txt and benchmarks/results.txt
 
-Foreign Function Interface (FFI): Interacting with C is as simple as importing a header file. The Aether compiler can parse C headers and automatically generate the necessary bindings.
+See docs/benchmarks.md for details and methodology.
 
-code
-Aether
-download
-content_copy
-expand_less
-IGNORE_WHEN_COPYING_START
-IGNORE_WHEN_COPYING_END
-// Import the C standard library's 'printf' function.
-importc "stdio.h";
+## CI
 
-pub func main() -> (void) {
-    // Call a C function directly from Aether.
-    c.printf("Hello from C, via Aether!\n");
-}
-Getting Started (Hypothetical)
+Minimal GitHub Actions build/test runs on pushes and PRs to main.
 
-Download the Compiler:
-Head to aether-lang.org/downloads and grab the toolchain for your platform (Windows or Linux).
+## Contributing
 
-Compile your first program:
+PRs welcome. Please:
+- Keep changes portable across the current targets
+- Avoid introducing secrets or platform‑specific paths
+- Update docs/examples if you change user‑visible behavior
 
-code
-Sh
-download
-content_copy
-expand_less
-IGNORE_WHEN_COPYING_START
-IGNORE_WHEN_COPYING_END
-aetherc main.ae -o hello
-
-Run it!
-
-code
-Sh
-download
-content_copy
-expand_less
-IGNORE_WHEN_COPYING_START
-IGNORE_WHEN_COPYING_END
-./hello
-Join the Vision
-
-Aether is more than just a language; it's a vision for the future of systems programming where performance and developer experience are not competing ideals. We are just getting started and welcome anyone who wants to contribute to the compiler, standard library, or documentation.
-
-License: Aether is distributed under the MIT License.
-
-Sources
-help
-soufianebouchaara.com
-fastly.com
-quora.com
-quora.com
-codeguru.com
-wikipedia.org
-wikipedia.org
-belief-driven-design.com
-Google Search Suggestions
-Display of Search Suggestions is required when using Grounding with Google Search. Learn more
-what makes the Zig programming language fast
-intuitive memory allocation strategies in programming languages
-how programming languages support driver development
-foreign function interface best practices for language interoperability
-Aether programming language
+License: MIT

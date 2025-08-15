@@ -76,6 +76,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
         let mut calls: Vec<(String, Vec<Expr>)> = Vec::new();
         let mut main_ret_call: Option<(String, Vec<Expr>)> = None;
         let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
+        let mut main_field_prints: Vec<(String, usize)> = Vec::new();
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         use std::collections::{HashMap, HashSet};
         let mut struct_sizes: HashMap<String, usize> = HashMap::new();
@@ -104,6 +105,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
             }
         }
         let static_names: HashSet<String> = static_types.keys().cloned().collect();
+        let mut local_strings: HashMap<String, HashMap<String, String>> = HashMap::new();
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
@@ -133,6 +135,36 @@ impl CodeGenerator for X86_64LinuxCodegen {
                         Stmt::Expr(Expr::Call(name, args)) => {
                             calls.push((name.clone(), args.clone()));
                         }
+                        Stmt::Let { name, ty, init } => {
+                            if let aether_frontend::ast::Type::User(_tname) = ty {
+                                if let Expr::StructLit(_lit_ty, fields) = init {
+                                    let mut fmap: HashMap<String, String> = HashMap::new();
+                                    for (fname, fexpr) in fields {
+                                        if let Expr::Lit(Value::String(sv)) = fexpr {
+                                            fmap.insert(fname.clone(), sv.clone());
+                                        }
+                                    }
+                                    if !fmap.is_empty() {
+                                        local_strings.insert(name.clone(), fmap);
+                                    }
+                                }
+                            }
+                        }
+                        Stmt::Assign { target, value } => {
+                            if let Expr::Field(recv, fname) = target {
+                                if let Expr::Var(rn) = &**recv {
+                                    if let Expr::Lit(Value::String(sv)) = value {
+                                        if let Some(map) = local_strings.get_mut(rn) {
+                                            map.insert(fname.clone(), sv.clone());
+                                        } else {
+                                            let mut fmap: HashMap<String, String> = HashMap::new();
+                                            fmap.insert(fname.clone(), sv.clone());
+                                            local_strings.insert(rn.clone(), fmap);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
                             main_print_calls.push((name.clone(), args.clone()));
                         }
@@ -146,7 +178,52 @@ impl CodeGenerator for X86_64LinuxCodegen {
                                     main_print_calls.push((fname, full_args));
                                 }
                             }
-                        }
+                        },
+                        Stmt::PrintExpr(Expr::Field(recv, fname)) => {
+                            if let Expr::Var(rn) = &**recv {
+                                if let Some(tyname) = static_types.get(rn) {
+                                    if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
+                                        let mut off = 0usize;
+                                        for f in &sd.fields {
+                                            let sz = match f.ty {
+                                                Type::I32 => 4,
+                                                Type::I64 | Type::F64 => 8,
+                                                Type::String => 16,
+                                                Type::User(ref un) => {
+                                                    if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                        let mut sz2 = 0usize;
+                                                        for ff in &sd2.fields {
+                                                            sz2 += match ff.ty {
+                                                                Type::I32 => 4,
+                                                                Type::I64 | Type::F64 => 8,
+                                                                Type::String => 16,
+                                                                _ => 8,
+                                                            };
+                                                        }
+                                                        if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                        sz2
+                                                    } else { 8 }
+                                                }
+                                                _ => 8,
+                                            };
+                                            if f.name == *fname {
+                                                if let Type::String = f.ty {
+                                                    main_field_prints.push((rn.clone(), off));
+                                                }
+                                                break;
+                                            }
+                                            off += sz;
+                                        }
+                                    }
+                                } else if let Some(fmap) = local_strings.get(rn) {
+                                    if let Some(sv) = fmap.get(fname) {
+                                        let mut bytes = sv.clone().into_bytes();
+                                        bytes.push(b'\n');
+                                        prints.push((String::from_utf8(bytes).unwrap(), sv.as_bytes().len() + 1));
+                                    }
+                                }
+                            }
+                        },
                         Stmt::PrintExpr(e) => {
                             if let Expr::IfElse { cond, then_expr, else_expr } = e {
                                 if let Some(cv) = eval_int_expr(cond) {
@@ -158,7 +235,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
                                     }
                                 }
                             }
-                        }
+                        },
 
                         _ => {}
                     }
@@ -188,6 +265,7 @@ r#"
 _start:
 "#);
                 let mut while_rodata: Vec<(String, String)> = Vec::new();
+                let mut static_rodata: Vec<(String, String)> = Vec::new();
                 for (widx, cond, body) in &main_while_blocks {
                     out.push_str(&format!(".LWH_HEAD_main_{}:\n", widx));
                     match cond {
@@ -245,7 +323,7 @@ _start:
                     out.push_str("\n        .text\n");
                 }
 
-                if !main_print_calls.is_empty() {
+                if !main_print_calls.is_empty() || !main_field_prints.is_empty() {
                     out.push_str(
 r#"
         .section .rodata
@@ -292,6 +370,7 @@ r#"        add $8, %rsp
                                 Expr::Lit(Value::String(s)) => {
                                     if islot + 1 < regs.len() {
                                         let mut bytes = s.clone().into_bytes();
+
                                         let len = bytes.len();
                                         let lbl = format!(".LSARG{}_{}", 0, aidx);
                                         out.push_str(&format!(
@@ -384,6 +463,7 @@ r#"        add $8, %rsp
                                                         base_name = Some(rn2.clone());
                                                         if let Some(tn) = static_types.get(rn2) {
                                                             cur_ty = Some(tn.clone());
+
                                                         }
                                                     }
                                                     if let Some(ref tyname) = cur_ty {
@@ -724,6 +804,21 @@ r#"        leaq .LC0(%rip), %rax
         syscall
 ", idx, len));
                     }
+                    if !main_field_prints.is_empty() {
+                        for (bn, off) in &main_field_prints {
+                            out.push_str(&format!("        leaq {}(%rip), %r10\n", bn));
+                            out.push_str(&format!("        mov {}(%r10), %rsi\n", off));
+                            out.push_str(&format!("        mov {}(%r10), %rdx\n", off + 8));
+                            out.push_str("        mov $1, %rax\n");
+                            out.push_str("        mov $1, %rdi\n");
+                            out.push_str("        syscall\n");
+                            out.push_str("        mov $1, %rax\n");
+                            out.push_str("        mov $1, %rdi\n");
+                            out.push_str("        leaq .LSNL(%rip), %rsi\n");
+                            out.push_str("        mov $1, %rdx\n");
+                            out.push_str("        syscall\n");
+                        }
+                    }
                     if main_ret_call.is_some() {
                         out.push_str(
 "        mov %eax, %edi
@@ -779,6 +874,21 @@ r#"        leaq .LC0(%rip), %rax
         mov ${}, %rdx
         syscall
 ", idx, len));
+                    }
+                    if !main_field_prints.is_empty() {
+                        for (bn, off) in &main_field_prints {
+                            out.push_str(&format!("        leaq {}(%rip), %r10\n", bn));
+                            out.push_str(&format!("        mov {}(%r10), %rsi\n", off));
+                            out.push_str(&format!("        mov {}(%r10), %rdx\n", off + 8));
+                            out.push_str("        mov $1, %rax\n");
+                            out.push_str("        mov $1, %rdi\n");
+                            out.push_str("        syscall\n");
+                            out.push_str("        mov $1, %rax\n");
+                            out.push_str("        mov $1, %rdi\n");
+                            out.push_str("        leaq .LSNL(%rip), %rsi\n");
+                            out.push_str("        mov $1, %rdx\n");
+                            out.push_str("        syscall\n");
+                        }
                     }
                     if main_ret_call.is_some() {
                         out.push_str(
@@ -854,8 +964,98 @@ r#"        leaq .LC0(%rip), %rax
                                                         let hi = (bits >> 32) as u32;
                                                         out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                                                     }
+                                                    (Type::String, Expr::Lit(Value::String(sv))) => {
+                                                        let lbl = format!(".LSS_{}_{}", sname, f.name);
+                                                        static_rodata.push((lbl.clone(), sv.clone()));
+                                                        out.push_str(&format!("        .quad {}\n", lbl));
+                                                        out.push_str(&format!("        .quad {}\n", sv.as_bytes().len()));
+                                                    }
+                                                    (Type::User(un), Expr::StructLit(ref lty, ref lfields)) if *lty == un => {
+                                                        let mut inner_map: std::collections::HashMap<String, &Expr> = std::collections::HashMap::new();
+                                                        for (fname2, fexpr2) in lfields {
+                                                            inner_map.insert(fname2.clone(), fexpr2);
+                                                        }
+                                                        if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == un)) {
+                                                            for ff in &sd2.fields {
+                                                                if let Some(expr2) = inner_map.get(&ff.name) {
+                                                                    match (ff.ty.clone(), (*expr2).clone()) {
+                                                                        (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                                                            out.push_str(&format!("        .long {}\n", v as i32));
+                                                                        }
+                                                                        (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                                                            out.push_str(&format!("        .quad {}\n", v as i64));
+                                                                        }
+                                                                        (Type::F64, Expr::Lit(Value::Float64(fv))) => {
+                                                                            let bits = fv.to_bits();
+                                                                            let lo = bits as u32;
+                                                                            let hi = (bits >> 32) as u32;
+                                                                            out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                                                                        }
+                                                                        (Type::String, Expr::Lit(Value::String(sv))) => {
+                                                                            let lbl = format!(".LSS_{}_{}_{}", sname, f.name, ff.name);
+                                                                            static_rodata.push((lbl.clone(), sv.clone()));
+                                                                            out.push_str(&format!("        .quad {}\n", lbl));
+                                                                            out.push_str(&format!("        .quad {}\n", sv.as_bytes().len()));
+                                                                        }
+                                                                        _ => {
+                                                                            let bytes = match ff.ty {
+                                                                                Type::I32 => 4,
+                                                                                Type::I64 | Type::F64 => 8,
+                                                                                Type::String => 16,
+                                                                                _ => 8,
+                                                                            };
+                                                                            out.push_str(&format!("        .zero {}\n", bytes));
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    let bytes = match ff.ty {
+                                                                        Type::I32 => 4,
+                                                                        Type::I64 | Type::F64 => 8,
+                                                                        Type::String => 16,
+                                                                        _ => 8,
+                                                                    };
+                                                                    out.push_str(&format!("        .zero {}\n", bytes));
+                                                                }
+                                                            }
+                                                            let mut inner_total = 0usize;
+                                                            for ff in &sd2.fields {
+                                                                inner_total += match ff.ty {
+                                                                    Type::I32 => 4,
+                                                                    Type::I64 | Type::F64 => 8,
+                                                                    Type::String => 16,
+                                                                    _ => 8,
+                                                                };
+                                                            }
+                                                            if inner_total % 8 != 0 {
+                                                                out.push_str(&format!("        .zero {}\n", 8 - (inner_total % 8)));
+                                                            }
+                                                        } else {
+                                                            let bytes = 8;
+                                                            out.push_str(&format!("        .zero {}\n", bytes));
+                                                        }
+                                                    }
                                                     _ => {
-                                                        let bytes = 8;
+                                                        let bytes = match f.ty {
+                                                            Type::I32 => 4,
+                                                            Type::I64 | Type::F64 => 8,
+                                                            Type::String => 16,
+                                                            Type::User(ref un) => {
+                                                                if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                                    let mut sz2 = 0usize;
+                                                                    for ff in &sd2.fields {
+                                                                        sz2 += match ff.ty {
+                                                                            Type::I32 => 4,
+                                                                            Type::I64 | Type::F64 => 8,
+                                                                            Type::String => 16,
+                                                                            _ => 8,
+                                                                        };
+                                                                    }
+                                                                    if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                                    sz2
+                                                                } else { 8 }
+                                                            }
+                                                            _ => 8,
+                                                        };
                                                         out.push_str(&format!("        .zero {}\n", bytes));
                                                     }
                                                 }
@@ -863,6 +1063,22 @@ r#"        leaq .LC0(%rip), %rax
                                                 let bytes = match f.ty {
                                                     Type::I32 => 4,
                                                     Type::I64 | Type::F64 => 8,
+                                                    Type::String => 16,
+                                                    Type::User(ref un) => {
+                                                        if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                            let mut sz2 = 0usize;
+                                                            for ff in &sd2.fields {
+                                                                sz2 += match ff.ty {
+                                                                    Type::I32 => 4,
+                                                                    Type::I64 | Type::F64 => 8,
+                                                                    Type::String => 16,
+                                                                    _ => 8,
+                                                                };
+                                                            }
+                                                            if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                            sz2
+                                                        } else { 8 }
+                                                    }
                                                     _ => 8,
                                                 };
                                                 out.push_str(&format!("        .zero {}\n", bytes));
@@ -873,6 +1089,22 @@ r#"        leaq .LC0(%rip), %rax
                                             total += match f.ty {
                                                 Type::I32 => 4,
                                                 Type::I64 | Type::F64 => 8,
+                                                Type::String => 16,
+                                                Type::User(ref un) => {
+                                                    if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                        let mut sz2 = 0usize;
+                                                        for ff in &sd2.fields {
+                                                            sz2 += match ff.ty {
+                                                                Type::I32 => 4,
+                                                                Type::I64 | Type::F64 => 8,
+                                                                Type::String => 16,
+                                                                _ => 8,
+                                                            };
+                                                        }
+                                                        if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                        sz2
+                                                    } else { 8 }
+                                                }
                                                 _ => 8,
                                             };
                                         }
@@ -888,8 +1120,26 @@ r#"        leaq .LC0(%rip), %rax
                             out.push_str(&format!("{}:\n        .zero {}\n", sname, sz));
                         }
                     }
+                    if !static_rodata.is_empty() {
+                        out.push_str("\n        .section .rodata\n");
+                        for (lbl, s) in &static_rodata {
+                            out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                            for b in s.as_bytes() {
+                                let ch = *b as char;
+                                match ch {
+                                    '\n' => out.push_str("\\n"),
+                                    '\t' => out.push_str("\\t"),
+                                    '\"' => out.push_str("\\\""),
+                                    '\\' => out.push_str("\\\\"),
+                                    _ => out.push(ch),
+                                }
+                            }
+                            out.push_str("\"\n");
+                        }
+                    }
                     out.push_str("\n        .text\n");
                 }
+                
 
                 out.push_str("\n        .text\n");
                 let mut func_rodata: Vec<(String, String)> = Vec::new();

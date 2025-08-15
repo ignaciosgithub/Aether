@@ -97,6 +97,7 @@ impl CodeGenerator for AArch64Codegen {
             }
         }
         let static_names: HashSet<String> = static_types.keys().cloned().collect();
+        let mut main_field_prints: Vec<(String, usize)> = Vec::new();
         let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
         for item in &module.items {
             let func = match item {
@@ -104,6 +105,7 @@ impl CodeGenerator for AArch64Codegen {
                 _ => continue,
             };
             if func.name == "main" {
+                let mut local_strings: std::collections::HashMap<String, std::collections::HashMap<String, String>> = std::collections::HashMap::new();
                 for stmt in &func.body {
                     match stmt {
                         Stmt::Return(expr) => {
@@ -126,6 +128,36 @@ impl CodeGenerator for AArch64Codegen {
                         Stmt::Expr(Expr::Call(name, args)) => {
                             calls.push((name.clone(), args.clone()));
                         }
+                        Stmt::Let { name, ty, init } => {
+                            if let aether_frontend::ast::Type::User(_) = ty {
+                                if let Expr::StructLit(_, fields) = init {
+                                    let mut fmap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                                    for (fname, fexpr) in fields {
+                                        if let Expr::Lit(Value::String(sv)) = fexpr {
+                                            fmap.insert(fname.clone(), sv.clone());
+                                        }
+                                    }
+                                    if !fmap.is_empty() {
+                                        local_strings.insert(name.clone(), fmap);
+                                    }
+                                }
+                            }
+                        }
+                        Stmt::Assign { target, value } => {
+                            if let Expr::Field(recv, fname) = target {
+                                if let Expr::Var(rn) = &**recv {
+                                    if let Expr::Lit(Value::String(sv)) = value {
+                                        if let Some(map) = local_strings.get_mut(rn) {
+                                            map.insert(fname.clone(), sv.clone());
+                                        } else {
+                                            let mut fmap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                                            fmap.insert(fname.clone(), sv.clone());
+                                            local_strings.insert(rn.clone(), fmap);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
                             main_print_calls.push((name.clone(), args.clone()));
                         }
@@ -137,6 +169,125 @@ impl CodeGenerator for AArch64Codegen {
                                         let mut bytes = s.clone().into_bytes();
                                         bytes.push(b'\n');
                                         prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                    }
+                                }
+                            } else if let Expr::Field(recv_any, fname_any) = e {
+                                if let Expr::Var(rn) = &**recv_any {
+                                    if let Some(map) = local_strings.get(rn) {
+                                        if let Some(s) = map.get(fname_any) {
+                                            let mut bytes = s.clone().into_bytes();
+                                            bytes.push(b'\n');
+                                            prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Stmt::PrintExpr(Expr::Field(recv0, fname0)) => {
+                            let mut recv = recv0.clone();
+                            let mut fname = fname0.clone();
+                            let mut base_name: Option<String> = None;
+                            let mut total_off: usize = 0;
+                            let mut cur_ty: Option<String> = None;
+                            loop {
+                                match &*recv {
+                                    Expr::Var(rn) => {
+                                        base_name = Some(rn.clone());
+                                        if let Some(tn) = static_types.get(rn) {
+                                            cur_ty = Some(tn.clone());
+                                        }
+                                        break;
+                                    }
+                                    Expr::Field(inner_recv, inner_name) => {
+                                        if let Expr::Var(rn2) = &**inner_recv {
+                                            base_name = Some(rn2.clone());
+                                            if let Some(tn) = static_types.get(rn2) {
+                                                cur_ty = Some(tn.clone());
+                                            }
+                                        }
+                                        if let Some(ref tyname) = cur_ty {
+                                            if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
+                                                let mut off = 0usize;
+                                                let mut next_ty: Option<String> = None;
+                                                for f in &sd.fields {
+                                                    let sz = match f.ty {
+                                                        Type::I32 => 4,
+                                                        Type::I64 | Type::F64 => 8,
+                                                        Type::String => 16,
+                                                        Type::User(ref un) => {
+                                                            if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                                let mut sz2 = 0usize;
+                                                                for ff in &sd2.fields {
+                                                                    sz2 += match ff.ty {
+                                                                        Type::I32 => 4,
+                                                                        Type::I64 | Type::F64 => 8,
+                                                                        Type::String => 16,
+                                                                        _ => 8,
+                                                                    };
+                                                                }
+                                                                if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                                sz2
+                                                            } else { 8 }
+                                                        }
+                                                        _ => 8,
+                                                    };
+                                                    if f.name == *inner_name {
+                                                        match f.ty {
+                                                            Type::User(ref un) => next_ty = Some(un.clone()),
+                                                            _ => next_ty = None,
+                                                        }
+                                                        total_off += off;
+                                                        break;
+                                                    }
+                                                    off += sz;
+                                                }
+                                                cur_ty = next_ty;
+                                            }
+                                        }
+                                        recv = inner_recv.clone();
+                                        fname = fname.clone();
+                                        continue;
+                                    }
+                                    _ => break,
+                                }
+                            }
+                            if let (Some(rn), Some(ref tyname)) = (base_name.clone(), cur_ty.clone().or_else(|| base_name.as_ref().and_then(|bn| static_types.get(bn)).cloned())) {
+                                if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
+                                    let mut off = 0usize;
+                                    let mut is_string = false;
+                                    for f in &sd.fields {
+                                        let sz = match f.ty {
+                                            Type::I32 => 4,
+                                            Type::I64 | Type::F64 => 8,
+                                            Type::String => 16,
+                                            Type::User(ref un) => {
+                                                if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                    let mut sz2 = 0usize;
+                                                    for ff in &sd2.fields {
+                                                        sz2 += match ff.ty {
+                                                            Type::I32 => 4,
+                                                            Type::I64 | Type::F64 => 8,
+                                                            Type::String => 16,
+                                                            _ => 8,
+                                                        };
+                                                    }
+                                                    if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                    sz2
+                                                } else { 8 }
+                                            }
+                                            _ => 8,
+                                        };
+                                        if f.name == *fname {
+                                            if let Type::String = f.ty {
+                                                is_string = true;
+                                            }
+                                            break;
+                                        }
+                                        off += sz;
+                                    }
+                                    if is_string {
+                                        let final_off = total_off + off;
+                                        main_field_prints.push((rn.clone(), final_off));
                                     }
                                 }
                             }
@@ -419,7 +570,7 @@ r#"        adrp x1, .LC0
                 }
                 out.push_str("\"\n");
             }
-            if !main_print_calls.is_empty() {
+            if !main_print_calls.is_empty() || !main_field_prints.is_empty() {
                 out.push_str(".LSNL:\n        .byte 10\n");
             }
             for (lbl, s) in &call_arg_rodata {

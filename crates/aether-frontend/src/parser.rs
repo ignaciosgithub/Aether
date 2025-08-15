@@ -13,22 +13,85 @@ impl<'a> Parser<'a> {
         let mut p = Parser { toks, pos: 0 };
         let mut items = Vec::new();
         loop {
-            match p.parse_function()? {
-                Some(func) => items.push(Item::Function(func)),
+            if p.peek().map(|t| &t.kind) == Some(&TokenKind::Eof) {
+                break;
+            }
+            match p.parse_item()? {
+                Some(it) => items.push(it),
                 None => break,
             }
         }
         Ok(Module { items })
     }
 
-    fn parse_function(&mut self) -> Result<Option<Function>> {
+    fn parse_item(&mut self) -> Result<Option<Item>> {
         let mut is_pub = false;
         if self.eat_kind(&TokenKind::Pub) {
             is_pub = true;
         }
-        if !self.eat_kind(&TokenKind::Func) {
-            return Ok(None);
+        if self.eat_kind(&TokenKind::Func) {
+            let f = self.parse_function(is_pub)?;
+            return Ok(Some(Item::Function(f)));
         }
+        if self.eat_kind(&TokenKind::Struct) {
+            let s = self.parse_struct_def()?;
+            return Ok(Some(Item::Struct(s)));
+        }
+        if self.eat_kind(&TokenKind::Static) {
+            let s = self.parse_static_var()?;
+            return Ok(Some(Item::Static(s)));
+        }
+        if is_pub {
+            return Err(anyhow!("expected Func/Struct/Static after 'pub'"));
+        }
+        Ok(None)
+    }
+
+    fn parse_struct_def(&mut self) -> Result<StructDef> {
+        let name = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
+            self.pos += 1;
+            s
+        } else {
+            return Err(anyhow!("expected struct name"));
+        };
+        self.expect(&TokenKind::LBrace)?;
+        let mut fields = Vec::new();
+        if !self.eat_kind(&TokenKind::RBrace) {
+            loop {
+                let fname = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
+                    self.pos += 1;
+                    s
+                } else {
+                    return Err(anyhow!("expected field name"));
+                };
+                self.expect(&TokenKind::Colon)?;
+                let fty = self.parse_type()?;
+                fields.push(StructField { name: fname, ty: fty });
+                if self.eat_kind(&TokenKind::RBrace) {
+                    break;
+                }
+                self.expect(&TokenKind::Comma)?;
+            }
+        }
+        Ok(StructDef { name, fields })
+    }
+
+    fn parse_static_var(&mut self) -> Result<StaticVar> {
+        let name = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
+            self.pos += 1;
+            s
+        } else {
+            return Err(anyhow!("expected static name"));
+        };
+        self.expect(&TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+        self.expect(&TokenKind::Assign)?;
+        let init = self.parse_expr()?;
+        self.expect(&TokenKind::Semicolon)?;
+        Ok(StaticVar { name, ty, init })
+    }
+
+    fn parse_function(&mut self, is_pub: bool) -> Result<Function> {
         let name = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
             self.pos += 1;
             s
@@ -61,14 +124,14 @@ impl<'a> Parser<'a> {
         while !self.eat_kind(&TokenKind::RBrace) {
             body.push(self.parse_stmt()?);
         }
-        Ok(Some(Function {
+        Ok(Function {
             name,
             params,
             ret,
             body,
             is_pub,
             is_threaded: false,
-        }))
+        })
     }
 
     fn parse_type(&mut self) -> Result<Type> {
@@ -88,6 +151,10 @@ impl<'a> Parser<'a> {
                 return Ok(Type::List(Box::new(inner)));
             }
             TokenKind::StringType => Type::String,
+            TokenKind::Ident(s) => {
+                self.pos += 1;
+                return Ok(Type::User(s));
+            }
             _ => return Err(anyhow!("unexpected token in type")),
         };
         self.pos += 1;
@@ -175,7 +242,7 @@ impl<'a> Parser<'a> {
                 return Ok(e);
             }
         }
-        self.parse_primary()
+        self.parse_postfix()
     }
 
     fn parse_add_sub(&mut self) -> Result<Expr> {
@@ -198,11 +265,44 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_unary()?;
         loop {
             if self.eat_kind(&TokenKind::Star) {
-                let rhs = self.parse_primary()?;
+                let rhs = self.parse_postfix()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Mul, Box::new(rhs));
             } else if self.eat_kind(&TokenKind::Slash) {
-                let rhs = self.parse_primary()?;
+                let rhs = self.parse_postfix()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Div, Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expr> {
+        let mut node = self.parse_primary()?;
+        loop {
+            if self.eat_kind(&TokenKind::Dot) {
+                let mname = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
+                    self.pos += 1;
+                    s
+                } else {
+                    return Err(anyhow!("expected identifier after '.'"));
+                };
+                if self.eat_kind(&TokenKind::LParen) {
+                    let mut args = Vec::new();
+                    if !self.eat_kind(&TokenKind::RParen) {
+                        loop {
+                            let e = self.parse_expr()?;
+                            args.push(e);
+                            if self.eat_kind(&TokenKind::RParen) {
+                                break;
+                            }
+                            self.expect(&TokenKind::Comma)?;
+                        }
+                    }
+                    node = Expr::MethodCall(Box::new(node), mname, args);
+                } else {
+                    node = Expr::Field(Box::new(node), mname);
+                }
             } else {
                 break;
             }
@@ -259,6 +359,27 @@ impl<'a> Parser<'a> {
                     }
                 }
                 return Ok(Expr::Call(name, args));
+            } else if self.toks.get(self.pos + 1).map(|t| t.kind.clone()) == Some(TokenKind::LBrace) {
+                self.pos += 2;
+                let mut fields = Vec::new();
+                if !self.eat_kind(&TokenKind::RBrace) {
+                    loop {
+                        let fname = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
+                            self.pos += 1;
+                            s
+                        } else {
+                            return Err(anyhow!("expected field name in struct literal"));
+                        };
+                        self.expect(&TokenKind::Colon)?;
+                        let fexpr = self.parse_expr()?;
+                        fields.push((fname, fexpr));
+                        if self.eat_kind(&TokenKind::RBrace) {
+                            break;
+                        }
+                        self.expect(&TokenKind::Comma)?;
+                    }
+                }
+                return Ok(Expr::StructLit(name, fields));
             } else {
                 self.pos += 1;
                 return Ok(Expr::Var(name));

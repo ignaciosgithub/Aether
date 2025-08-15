@@ -760,47 +760,134 @@ r#"        push %rbx
                                                             islot += 2;
                                                         }
                                                     }
-                                                    Expr::Field(recv, fname) => {
-                                                        if let Expr::Var(rn) = &**recv {
-                                                            if let Some(ty) = static_types.get(rn) {
-                                                                if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *ty)) {
-                                                                    let mut off = 0usize;
-                                                                    let mut fty = Type::I64;
-                                                                    for f in &sd.fields {
-                                                                        let sz = match f.ty {
-                                                                            Type::I32 => 4,
-                                                                            Type::I64 | Type::F64 => 8,
-                                                                            _ => 8,
-                                                                        };
-                                                                        if f.name == *fname {
-                                                                            fty = f.ty.clone();
-                                                                            break;
-                                                                        }
-                                                                        off += sz;
+                                                    Expr::Field(mut recv, mut fname) => {
+                                                        let mut base_name: Option<String> = None;
+                                                        let mut total_off: usize = 0;
+                                                        let mut cur_ty: Option<String> = None;
+                                                        loop {
+                                                            match &*recv {
+                                                                Expr::Var(rn) => {
+                                                                    base_name = Some(rn.clone());
+                                                                    if let Some(tn) = static_types.get(rn) {
+                                                                        cur_ty = Some(tn.clone());
                                                                     }
-                                                                    if islot < regs.len() {
-                                                                        out.push_str(&format!("        leaq {}(%rip), %r10\n", rn));
-                                                                        match fty {
-                                                                            Type::I32 => {
-                                                                                let dst32 = match regs[islot] {
-                                                                                    "%rdi" => "%edi",
-                                                                                    "%rsi" => "%esi",
-                                                                                    "%rdx" => "%edx",
-                                                                                    "%rcx" => "%ecx",
-                                                                                    "%r8"  => "%r8d",
-                                                                                    "%r9"  => "%r9d",
-                                                                                    _ => "%edi",
-                                                                                };
-                                                                                out.push_str(&format!("        mov {}(%r10), {}\n", off, dst32));
-                                                                                islot += 1;
-                                                                            }
-                                                                            Type::I64 | Type::F64 => {
-                                                                                let dst = regs[islot];
-                                                                                out.push_str(&format!("        mov {}(%r10), {}\n", off, dst));
-                                                                                islot += 1;
-                                                                            }
-                                                                            _ => {}
+                                                                    break;
+                                                                }
+                                                                Expr::Field(inner_recv, inner_name) => {
+                                                                    if let Expr::Var(rn2) = &**inner_recv {
+                                                                        base_name = Some(rn2.clone());
+                                                                        if let Some(tn) = static_types.get(rn2) {
+                                                                            cur_ty = Some(tn.clone());
                                                                         }
+                                                                    }
+                                                                    if let Some(ref tyname) = cur_ty {
+                                                                        if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
+                                                                            let mut off = 0usize;
+                                                                            let mut next_ty: Option<String> = None;
+                                                                            for f in &sd.fields {
+                                                                                let sz = match f.ty {
+                                                                                    Type::I32 => 4,
+                                                                                    Type::I64 | Type::F64 => 8,
+                                                                                    Type::String => 16,
+                                                                                    Type::User(ref un) => {
+                                                                                        if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                                                            let mut sz2 = 0usize;
+                                                                                            for ff in &sd2.fields {
+                                                                                                sz2 += match ff.ty {
+                                                                                                    Type::I32 => 4,
+                                                                                                    Type::I64 | Type::F64 => 8,
+                                                                                                    Type::String => 16,
+                                                                                                    _ => 8,
+                                                                                                };
+                                                                                            }
+                                                                                            if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                                                            sz2
+                                                                                        } else { 8 }
+                                                                                    }
+                                                                                    _ => 8,
+                                                                                };
+                                                                                if f.name == *inner_name {
+                                                                                    match f.ty {
+                                                                                        Type::User(ref un) => next_ty = Some(un.clone()),
+                                                                                        _ => next_ty = None,
+                                                                                    }
+                                                                                    total_off += off;
+                                                                                    break;
+                                                                                }
+                                                                                off += sz;
+                                                                            }
+                                                                            cur_ty = next_ty;
+                                                                        }
+                                                                    }
+                                                                    recv = inner_recv.clone();
+                                                                    fname = fname.clone();
+                                                                    continue;
+                                                                }
+                                                                _ => break,
+                                                            }
+                                                        }
+                                                        if let (Some(rn), Some(ref tyname)) = (base_name.clone(), cur_ty.clone().or(cur_ty.clone()).or_else(|| static_types.get(base_name.as_ref().unwrap()).cloned())) {
+                                                            if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
+                                                                let mut off = 0usize;
+                                                                let mut fty = Type::I64;
+                                                                for f in &sd.fields {
+                                                                    let sz = match f.ty {
+                                                                        Type::I32 => 4,
+                                                                        Type::I64 | Type::F64 => 8,
+                                                                        Type::String => 16,
+                                                                        Type::User(ref un) => {
+                                                                            if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                                                let mut sz2 = 0usize;
+                                                                                for ff in &sd2.fields {
+                                                                                    sz2 += match ff.ty {
+                                                                                        Type::I32 => 4,
+                                                                                        Type::I64 | Type::F64 => 8,
+                                                                                        Type::String => 16,
+                                                                                        _ => 8,
+                                                                                    };
+                                                                                }
+                                                                                if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                                                sz2
+                                                                            } else { 8 }
+                                                                        }
+                                                                        _ => 8,
+                                                                    };
+                                                                    if f.name == *fname {
+                                                                        fty = f.ty.clone();
+                                                                        break;
+                                                                    }
+                                                                    off += sz;
+                                                                }
+                                                                let final_off = total_off + off;
+                                                                if islot < regs.len() {
+                                                                    out.push_str(&format!("        leaq {}(%rip), %r10\n", rn));
+                                                                    match fty {
+                                                                        Type::I32 => {
+                                                                            let dst32 = match regs[islot] {
+                                                                                "%rdi" => "%edi",
+                                                                                "%rsi" => "%esi",
+                                                                                "%rdx" => "%edx",
+                                                                                "%rcx" => "%ecx",
+                                                                                "%r8"  => "%r8d",
+                                                                                "%r9"  => "%r9d",
+                                                                                _ => "%edi",
+                                                                            };
+                                                                            out.push_str(&format!("        mov {}(%r10), {}\n", final_off, dst32));
+                                                                            islot += 1;
+                                                                        }
+                                                                        Type::I64 | Type::F64 => {
+                                                                            let dst = regs[islot];
+                                                                            out.push_str(&format!("        mov {}(%r10), {}\n", final_off, dst));
+                                                                            islot += 1;
+                                                                        }
+                                                                        Type::String => {
+                                                                            if islot + 1 < regs.len() {
+                                                                                out.push_str(&format!("        mov {}(%r10), {}\n", final_off, regs[islot]));
+                                                                                out.push_str(&format!("        mov {}(%r10), {}\n", final_off + 8, regs[islot+1]));
+                                                                                islot += 2;
+                                                                            }
+                                                                        }
+                                                                        _ => {}
                                                                     }
                                                                 }
                                                             }

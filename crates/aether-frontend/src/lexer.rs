@@ -43,6 +43,7 @@ pub enum TokenKind {
     Continue,
     Struct,
     Static,
+    Let,
     Le,   // <=
     Lt,   // <
     Eq,   // ==
@@ -108,6 +109,7 @@ impl Lexer {
                     "continue" => TokenKind::Continue,
                     "struct" => TokenKind::Struct,
                     "static" => TokenKind::Static,
+                    "let" => TokenKind::Let,
                     "string" | "String" => TokenKind::StringType,
                     _ => TokenKind::Ident(s.to_string()),
                 };

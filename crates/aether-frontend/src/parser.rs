@@ -162,6 +162,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt> {
+        if self.eat_kind(&TokenKind::Let) {
+            let name = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
+                self.pos += 1;
+                s
+            } else {
+                return Err(anyhow!("expected identifier after let"));
+            };
+            self.expect(&TokenKind::Colon)?;
+            let ty = self.parse_type()?;
+            self.expect(&TokenKind::Assign)?;
+            let init = self.parse_expr()?;
+            self.expect(&TokenKind::Semicolon)?;
+            return Ok(Stmt::Let { name, ty, init });
+        }
         if self.eat_kind(&TokenKind::Println) {
             self.expect(&TokenKind::LParen)?;
             if let Some(TokenKind::String(val)) = self.peek().map(|t| t.kind.clone()) {
@@ -199,6 +213,15 @@ impl<'a> Parser<'a> {
             let expr = self.parse_expr()?;
             self.expect(&TokenKind::Semicolon)?;
             return Ok(Stmt::Return(expr));
+        }
+        let save = self.pos;
+        let lval = self.parse_postfix()?;
+        if self.eat_kind(&TokenKind::Assign) {
+            let value = self.parse_expr()?;
+            self.expect(&TokenKind::Semicolon)?;
+            return Ok(Stmt::Assign { target: lval, value });
+        } else {
+            self.pos = save;
         }
         let expr = self.parse_expr()?;
         self.expect(&TokenKind::Semicolon)?;

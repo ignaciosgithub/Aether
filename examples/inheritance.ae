@@ -1,0 +1,12 @@
+pub struct Parent { s: String }
+pub struct Child : Parent { b: i32 }
+
+static C: Child = Child {
+    s: "Inherit!",
+    b: 42,
+};
+
+pub func main() -> i32 {
+    println(C.s);
+    return 0;
+}

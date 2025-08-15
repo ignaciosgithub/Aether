@@ -1,17 +1,27 @@
 Build and Targeting Guide
 
-Prerequisites (Linux host)
+Prerequisites (Ubuntu host)
 - Rust toolchain (rustup): curl https://sh.rustup.rs -sSf | sh -s -- -y
 - Build tools: sudo apt-get update && sudo apt-get install -y build-essential clang lld nasm
-- Cross toolchains:
+- Optional cross toolchains:
   - Windows x86_64 (MinGW): sudo apt-get install -y mingw-w64
   - AArch64 Linux: sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
+Windows 10 (Native via MSYS2/MinGW64)
+- Install MSYS2 from https://www.msys2.org/, then open “MSYS2 MINGW64”.
+- Install packages:
+  - pacman -Syu
+  - pacman -S --needed git mingw-w64-x86_64-toolchain mingw-w64-x86_64-clang mingw-w64-x86_64-lld mingw-w64-x86_64-nasm make
+- Install Rust in MINGW64:
+  - curl https://sh.rustup.rs -sSf | sh -s -- -y
+  - Reopen the MINGW64 terminal so cargo is on PATH
+  - Optional: rustup default stable-x86_64-pc-windows-gnu
+
 Workspace Build
 - Build all crates:
-  ./scripts/build_linux.sh
+  cargo build --workspace
 
-Cross-compile CLI aetherc
+Cross-compile CLI aetherc (optional)
 - Using rustup target and cargo:
   ./scripts/cross_build.sh x86_64-unknown-linux-gnu
   ./scripts/cross_build.sh x86_64-pc-windows-gnu
@@ -32,6 +42,7 @@ Assemble and link
 Notes
 - If target cannot be determined, default behavior in codegen is to x86_64-windows-gnu.
 - For running PE on Linux, use wine. For AArch64 binaries, use qemu-aarch64-static if needed.
+
 Float example (generate and link)
 
 x86_64 Linux
@@ -51,13 +62,11 @@ Print example (generate, link, run)
 x86_64 Linux
 - cargo run -p aetherc -- examples/println.ae --arch x86_64 --os linux -o out/linux/println.s
 - ./scripts/assemble_link.sh x86_64-linux out/linux/println.s out/linux/println
-- ./out/linux/println  # should print two lines
+- ./out/linux/println
 
-x86_64 Windows (cross-link)
+x86_64 Windows (native or cross-link)
 - cargo run -p aetherc -- examples/println.ae --arch x86_64 --os windows -o out/windows/println.s
 - ./scripts/assemble_link.sh x86_64-windows out/windows/println.s out/windows/println.exe
-- # Optional on Linux host (requires wine):
-- # wine ./out/windows/println.exe
 
 AArch64 Linux (cross-link)
 - cargo run -p aetherc -- examples/println.ae --arch aarch64 --os linux -o out/aarch64/println.s

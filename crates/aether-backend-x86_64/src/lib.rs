@@ -136,6 +136,17 @@ impl CodeGenerator for X86_64LinuxCodegen {
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
                             main_print_calls.push((name.clone(), args.clone()));
                         }
+                        Stmt::PrintExpr(Expr::MethodCall(recv, meth, args)) => {
+                            if let Expr::Var(rn) = &**recv {
+                                if let Some(ty) = static_types.get(rn) {
+                                    let mut full_args = Vec::new();
+                                    full_args.push(Expr::Var(rn.clone()));
+                                    full_args.extend(args.clone());
+                                    let fname = format!("{}_{}", ty, meth);
+                                    main_print_calls.push((fname, full_args));
+                                }
+                            }
+                        }
                         Stmt::PrintExpr(e) => {
                             if let Expr::IfElse { cond, then_expr, else_expr } = e {
                                 if let Some(cv) = eval_int_expr(cond) {

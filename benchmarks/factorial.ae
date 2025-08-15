@@ -1,8 +1,18 @@
 pub func fact(n: i64) -> i64 {
-    if (n <= 1) { 1 } else { n * fact(n - 1) }
+    return if (n <= 1) { 1 } else { n * fact(n - 1) };
+}
+
+pub func run() -> i64 {
+    let i: i64 = 0;
+    let acc: i64 = 0;
+    while (i < 5000000) {
+        acc = acc + fact(12);
+        i = i + 1;
+    }
+    return acc;
 }
 
 pub func main() -> i32 {
-    fact(12);
+    println(run());
     return 0;
 }

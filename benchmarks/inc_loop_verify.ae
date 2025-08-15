@@ -1,0 +1,13 @@
+pub func run() -> i64 {
+    let limit: i64 = 2147483647 - 1;
+    let i: i64 = 0;
+    while (i <= limit) {
+        i = i + 1;
+    }
+    return i;
+}
+
+pub func main() -> i32 {
+    println(run());
+    return 0;
+}

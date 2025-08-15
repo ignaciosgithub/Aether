@@ -1,8 +1,14 @@
-pub func sum_to(n: i64) -> i64 {
-    if (n <= 1) { 1 } else { n + sum_to(n - 1) }
+pub func sum_to_iter(n: i64) -> i64 {
+    let i: i64 = 0;
+    let s: i64 = 0;
+    while (i < n) {
+        s = s + i;
+        i = i + 1;
+    }
+    return s;
 }
 
 pub func main() -> i32 {
-    sum_to(20000);
+    println(sum_to_iter(500000000));
     return 0;
 }

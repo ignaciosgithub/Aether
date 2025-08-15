@@ -1,29 +1,46 @@
-Benchmarks for Aether vs C, Rust, and Python
+# Benchmarks for Aether vs C, Rust, and Python
 
-This folder contains simple, reproducible microbenchmarks to compare Aether’s current codegen against C, Rust, and Python. The goals:
-- Use identical algorithms and comparable optimization flags.
-- Focus on tight arithmetic, recursion, and string I/O.
+This folder contains simple, reproducible microbenchmarks to compare Aether’s current codegen against C, Rust, and Python.
 
-Benchmarks
-- loop_sum: Sum 1..N as i64
-- factorial: Recursive factorial for a small n (to avoid TLE in Python)
-- print_concat: Print N short strings
+Workloads
+- loop_sum: sum 0..N-1 as i64
+- factorial: accumulate factorial(12) FREPEAT times
+- print_concat: print three short strings PCOUNT times
+- inc_loop: increment i from 0 up to (2^31 - 2), with no output in timed runs (per user’s spec)
 
-How to run
-- Ensure Rust toolchain and GCC are installed.
-- Ensure Python3 is installed.
-- Build Aether compiler (cargo build --workspace).
-- Run the bench script:
+Language sources
+- Aether:
+  - benchmarks/*.ae (loop_sum.ae, factorial.ae, print_concat.ae, inc_loop.ae)
+- C:
+  - benchmarks/c/*.c (loop_sum.c, factorial.c, print_concat.c, inc_loop.c)
+- Rust:
+  - benchmarks/rust/*.rs (loop_sum.rs, factorial.rs, print_concat.rs, inc_loop.rs)
+- Python:
+  - benchmarks/python/*.py (loop_sum.py, factorial.py, print_concat.py, inc_loop.py)
 
-  ./scripts/bench.sh
+Fairness/flags
+- C: gcc -O3 -march=native -mtune=native
+- Rust: rustc -C opt-level=3
+- Python: CPython 3
+- Aether: compiled to assembly with aetherc, then assembled/linked
 
-It will:
-- Compile C with -O3
-- Compile Rust with -C opt-level=3
-- Use CPython for Python
-- Compile Aether programs to assembly (out/linux/*.s), assemble and run on Linux using provided assemble_link.sh
-- Time each program and write results to benchmarks/results.txt
+Methodology
+- Verification phase: each workload prints a single checksum once to stdout; checks are recorded in benchmarks/checksums.txt.
+- Timing phase: identical algorithms run without producing output; timings use nanosecond resolution and ITER repeats; results are recorded in benchmarks/results.txt.
+- Inputs and repeats can be adjusted via environment variables.
+
+Run
+- Defaults are chosen for stable, non-zero timings:
+  - ITER=10 N=200000000 FREPEAT=3000000 PCOUNT=100000
+- Override via env and run:
+  ITER=10 N=200000000 FREPEAT=3000000 PCOUNT=100000 bash scripts/bench.sh
+
+Outputs
+- benchmarks/results.txt: min/avg across ITER runs per workload
+- benchmarks/checksums.txt: verification that outputs match
+  - loop_sum checksum equals N*(N-1)/2
+  - factorial checksum equals FREPEAT * 12!
+  - inc_loop final i is (2^31 - 2) + 1
 
 Notes
-- The Aether compiler currently targets Linux x86_64 for running benchmarks locally. Windows/AArch64 assembly can be generated but not run in this script.
-- Adjust N and repetitions in scripts/bench.sh to match your environment.
+- This script runs and times x86_64 Linux binaries locally. Windows/AArch64 assemblies are still generated elsewhere in the repo.

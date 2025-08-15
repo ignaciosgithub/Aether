@@ -1,15 +1,18 @@
+import os
 import sys
 
-sys.setrecursionlimit(1_000_000)
-
-def sum_to(n: int) -> int:
-    if n <= 1:
-        return 1
-    return n + sum_to(n - 1)
+def sum_to_iter(n: int) -> int:
+    s = 0
+    i = 0
+    while i < n:
+        s += i
+        i += 1
+    return s
 
 def main():
-    N = 20000
-    x = sum_to(N)
+    N = int(os.getenv("N", "500000000"))
+    x = sum_to_iter(N)
+    print(x)
     _ = x
 
 if __name__ == "__main__":

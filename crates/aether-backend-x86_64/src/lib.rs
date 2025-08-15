@@ -172,29 +172,13 @@ impl CodeGenerator for X86_64LinuxCodegen {
         let mut main_field_prints: Vec<(String, usize)> = Vec::new();
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         use std::collections::{HashMap, HashSet};
-        let mut struct_sizes: HashMap<String, usize> = HashMap::new();
         let mut static_types: HashMap<String, String> = HashMap::new();
+        let (struct_sizes, field_offsets, _flattened_fields) = compute_struct_layouts(module);
         for item in &module.items {
-            match item {
-                Item::Struct(sd) => {
-                    let mut size = 0usize;
-                    for f in &sd.fields {
-                        match f.ty {
-                            Type::I32 => size += 4,
-                            Type::I64 => size += 8,
-                            Type::F64 => size += 8,
-                            _ => size += 8,
-                        }
-                    }
-                    if size % 8 != 0 { size += 8 - (size % 8); }
-                    struct_sizes.insert(sd.name.clone(), size);
+            if let Item::Static(st) = item {
+                if let Type::User(ref n) = st.ty {
+                    static_types.insert(st.name.clone(), n.clone());
                 }
-                Item::Static(st) => {
-                    if let Type::User(ref n) = st.ty {
-                        static_types.insert(st.name.clone(), n.clone());
-                    }
-                }
-                _ => {}
             }
         }
         let static_names: HashSet<String> = static_types.keys().cloned().collect();
@@ -1276,6 +1260,92 @@ r#"        push %rbx
         syscall
 ", lbl, len));
                                         func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                        fi += 1;
+                                    }
+                                    Expr::Lit(Value::Int(v)) => {
+                                        out.push_str(
+"        sub $80, %rsp
+        mov $0, %rax
+");
+                                        out.push_str(&format!("        mov ${}, %rax\n", v));
+                                        out.push_str(
+"        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+.LitI64_print_loop:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .LitI64_print_loop
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+");
+                                        let nl_lbl = format!(".LNL_{}", fi);
+                                        out.push_str(&format!("{}:\n        .ascii \"\\n\"\n", nl_lbl));
+                                        fi += 1;
+                                    }
+                                    Expr::Call(name, args) => {
+                                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                        let mut ai = 0usize;
+                                        for a in args {
+                                            match a {
+                                                Expr::Lit(Value::Int(iv)) => {
+                                                    if ai < regs.len() {
+                                                        out.push_str(&format!("        mov ${}, {}\n", iv, regs[ai]));
+                                                        ai += 1;
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        out.push_str(&format!("        call {}\n", name));
+                                        out.push_str(
+"        sub $80, %rsp
+        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .I64_print_loop_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .I64_print_done_%=
+.I64_print_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .I64_print_loop_%=
+.I64_print_done_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+");
+                                        let nl_lbl = format!(".LNL_{}", fi);
+                                        out.push_str(&format!("{}:\n        .ascii \"\\n\"\n", nl_lbl));
                                         fi += 1;
                                     }
                                     Expr::Var(name) => {

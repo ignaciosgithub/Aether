@@ -1796,7 +1796,7 @@ r#"        sub rsp, 40
         mov rbx, rax
 "#);
                 }
-                if prints.is_empty() && !main_print_calls.is_empty() {
+                if prints.is_empty() && (!main_print_calls.is_empty() || !main_field_prints.is_empty()) {
                     out.push_str(
 r#"        sub rsp, 40
         mov ecx, -11
@@ -1888,6 +1888,32 @@ r#"        add rsp, 32
 "#);
                     }
                 }
+                if !main_field_prints.is_empty() {
+                    for (bn, off) in &main_field_prints {
+                        out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+"#);
+                        out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
+                        out.push_str(&format!("        mov rdx, qword ptr [r10+{}]\n", off));
+                        out.push_str(&format!("        mov r8d, dword ptr [r10+{}]\n", off + 8));
+                        out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                    }
+                }
+
                 if !prints.is_empty() {
                     for (idx, (_s, len)) in prints.iter().enumerate() {
                         out.push_str(&format!(

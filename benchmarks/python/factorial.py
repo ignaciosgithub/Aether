@@ -1,6 +1,5 @@
+import os
 import sys
-
-sys.setrecursionlimit(1_000_000)
 
 def fact(n: int) -> int:
     if n <= 1:
@@ -8,9 +7,14 @@ def fact(n: int) -> int:
     return n * fact(n - 1)
 
 def main():
-    n = 12
-    x = fact(n)
-    _ = x
+    reps = int(os.getenv("FREPEAT", "5000000"))
+    acc = 0
+    i = 0
+    while i < reps:
+        acc += fact(12)
+        i += 1
+    print(acc)
+    _ = acc
 
 if __name__ == "__main__":
     main()

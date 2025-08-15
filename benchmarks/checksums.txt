@@ -1,0 +1,11 @@
+=== CHECKSUMS ===
+Expected loop_sum: 19999999900000000
+Aether loop_sum: 
+C loop_sum: 19999999900000000
+Rust loop_sum: 19999999900000000
+Python loop_sum: 19999999900000000
+Expected factorial acc: 1437004800000000
+Aether factorial: 
+C factorial: 1437004800000000
+Rust factorial: 1437004800000000
+Python factorial: 1437004800000000

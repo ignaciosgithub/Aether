@@ -1,6 +1,10 @@
 pub func main() -> i32 {
-    println("hello");
-    println("world");
-    println("aether");
+    let i: i64 = 0;
+    while (i < 200000) {
+        println("hello");
+        println("world");
+        println("aether");
+        i = i + 1;
+    }
     return 0;
 }

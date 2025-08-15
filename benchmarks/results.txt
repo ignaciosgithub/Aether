@@ -1,0 +1,39 @@
+Building Aether compiler...
+Compiling benchmarks...
+=== Aether loop_sum (x10) ===
+min 0.001927
+avg 0.002116
+=== C loop_sum (x10) ===
+min 0.019062
+avg 0.019415
+=== Rust loop_sum (x10) ===
+min 0.003559
+avg 0.003878
+=== Python loop_sum (x10) ===
+min 11.366484
+avg 12.456608
+=== Aether factorial (x10) ===
+min 0.001764
+avg 0.001991
+=== C factorial (x10) ===
+min 0.003300
+avg 0.003429
+=== Rust factorial (x10) ===
+min 0.003470
+avg 0.003645
+=== Python factorial (x10) ===
+min 2.060149
+avg 2.139894
+=== Aether print_concat (x10) ===
+min 0.001769
+avg 0.002021
+=== C print_concat (x10) ===
+min 0.006898
+avg 0.007213
+=== Rust print_concat (x10) ===
+min 0.105916
+avg 0.109266
+=== Python print_concat (x10) ===
+min 0.248739
+avg 0.255058
+Done. Results written to /home/ubuntu/repos/Aether/benchmarks/results.txt; checks to /home/ubuntu/repos/Aether/benchmarks/checksums.txt

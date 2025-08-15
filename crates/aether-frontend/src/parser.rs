@@ -29,13 +29,8 @@ impl<'a> Parser<'a> {
         if self.eat_kind(&TokenKind::Pub) {
             is_pub = true;
         }
-        if is_pub {
-            self.expect(&TokenKind::Func)?;
-            let f = self.parse_function(true)?;
-            return Ok(Some(Item::Function(f)));
-        }
         if self.eat_kind(&TokenKind::Func) {
-            let f = self.parse_function(false)?;
+            let f = self.parse_function(is_pub)?;
             return Ok(Some(Item::Function(f)));
         }
         if self.eat_kind(&TokenKind::Struct) {
@@ -45,6 +40,9 @@ impl<'a> Parser<'a> {
         if self.eat_kind(&TokenKind::Static) {
             let s = self.parse_static_var()?;
             return Ok(Some(Item::Static(s)));
+        }
+        if is_pub {
+            return Err(anyhow!("expected Func/Struct/Static after 'pub'"));
         }
         Ok(None)
     }

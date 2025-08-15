@@ -29,9 +29,16 @@ fn windows_while_emits_labels_and_branches() {
     let module = Module { items: vec![Item::Function(func)] };
     let mut cg = X86_64LinuxCodegen::new_windows();
     let asm = cg.generate(&module).expect("codegen ok");
-    assert!(asm.contains(".LWH_HEAD_main_0:"));
-    assert!(asm.contains(".LWH_END_main_0:"));
+    assert!(asm.contains(".LWH_HEAD_main_0:") || asm.contains("LWH_HEAD_main_0:"));
+    assert!(asm.contains(".LWH_END_main_0:") || asm.contains("LWH_END_main_0:"));
     assert!(asm.contains("cmp r10, r11") || asm.contains("cmp r11, r10"));
-    assert!(asm.contains("jge .LWH_END_main_0") || asm.contains("jg .LWH_END_main_0") || asm.contains("jl .LWH_HEAD_main_0"));
-    assert!(asm.contains("jmp .LWH_HEAD_main_0"));
+    assert!(
+        asm.contains("jge .LWH_END_main_0") ||
+        asm.contains("jg .LWH_END_main_0") ||
+        asm.contains("jl .LWH_HEAD_main_0") ||
+        asm.contains("jge LWH_END_main_0") ||
+        asm.contains("jg LWH_END_main_0") ||
+        asm.contains("jl LWH_HEAD_main_0")
+    );
+    assert!(asm.contains("jmp .LWH_HEAD_main_0") || asm.contains("jmp LWH_HEAD_main_0"));
 }

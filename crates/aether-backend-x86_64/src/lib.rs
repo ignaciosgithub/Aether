@@ -2412,7 +2412,6 @@ r#"        call CloseHandle
 
                 }
                 out.push_str("\n        .text\n");
-                if true {
                 let mut while_data: Vec<(String, String)> = Vec::new();
                 for (widx, cond, body) in &main_while_blocks {
                     out.push_str(&format!("LWH_HEAD_main_{}:\n", widx));
@@ -2493,8 +2492,10 @@ r#"        xor r9d, r9d
                     out.push_str("\n        .text\n");
                 }
 
-                    out.push_str("LSNL:\n        .byte 10\n");
+                if !out.contains("\nLSNL:\n") {
+                    out.push_str("\n        .data\nLSNL:\n        .byte 10\n\n        .text\n");
                 }
+
                 for (lbl, s) in &call_arg_data {
                     out.push_str(&format!("{}:\n        .ascii \"", lbl));
                     for b in s.as_bytes() {
@@ -2792,6 +2793,117 @@ r#"        sub rsp, 40
                                                 }
                                                 _ => {}
                                             }
+                                        } else {
+                                            let then_lbl = format!("LIF_THEN_{}_{}", func.name, fi);
+                                            let else_lbl = format!("LIF_ELSE_{}_{}", func.name, fi);
+                                            let join_lbl = format!("LIF_JOIN_{}_{}", func.name, fi);
+                                            match &**cond {
+                                                Expr::BinOp(lhs, op, rhs) => {
+                                                    fn load_i32_for_win_param(out: &mut String, func: &aether_frontend::ast::Function, expr: &Expr, into: &str) {
+                                                        let regs = ["ecx","edx","r8d","r9d"];
+                                                        match expr {
+                                                            Expr::Lit(Value::Int(v)) => {
+                                                                out.push_str(&format!("        mov {}, {}\n", into, *v as i32));
+                                                            }
+                                                            Expr::Var(nm) => {
+                                                                let mut slot = 0usize;
+                                                                for p in &func.params {
+                                                                    if p.name == *nm {
+                                                                        let src = if slot < regs.len() { regs[slot] } else { "ecx" };
+                                                                        out.push_str(&format!("        mov {}, {}\n", into, src));
+                                                                        break;
+                                                                    } else {
+                                                                        match p.ty {
+                                                                            Type::String => slot += 2,
+                                                                            _ => slot += 1,
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                            _ => {
+                                                                out.push_str(&format!("        xor {}, {}\n", into, into));
+                                                            }
+                                                        }
+                                                    }
+                                                    load_i32_for_win_param(&mut out, func, lhs, "r10d");
+                                                    load_i32_for_win_param(&mut out, func, rhs, "r11d");
+                                                    out.push_str("        cmp r10d, r11d\n");
+                                                    match op {
+                                                        BinOpKind::Lt => out.push_str(&format!("        jl {}\n        jmp {}\n", then_lbl, else_lbl)),
+                                                        BinOpKind::Le => out.push_str(&format!("        jle {}\n        jmp {}\n", then_lbl, else_lbl)),
+                                                        BinOpKind::Eq => out.push_str(&format!("        je {}\n        jmp {}\n", then_lbl, else_lbl)),
+                                                        _ => out.push_str(&format!("        jmp {}\n", else_lbl)),
+                                                    }
+                                                }
+                                                Expr::Lit(Value::Int(v)) => {
+                                                    out.push_str(&format!("        cmp {}, 0\n", *v as i32));
+                                                    out.push_str(&format!("        jne {}\n        jmp {}\n", then_lbl, else_lbl));
+                                                }
+                                                _ => {
+                                                    out.push_str(&format!("        jmp {}\n", else_lbl));
+                                                }
+                                            }
+                                            out.push_str(&format!("{}:\n", then_lbl));
+                                            match &**then_expr {
+                                                Expr::Lit(Value::String(s)) => {
+                                                    let mut bytes = s.clone().into_bytes();
+                                                    bytes.push(b'\n');
+                                                    let len = s.as_bytes().len() + 1;
+                                                    let lbl = format!("LSF_{}_{}", func.name, fi);
+                                                    out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+"#);
+                                                    out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                                    out.push_str(&format!("        mov r8d, {}\n", len as i32));
+                                                    out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                    fi += 1;
+                                                }
+                                                _ => {}
+                                            }
+                                            out.push_str(&format!("        jmp {}\n", join_lbl));
+                                            out.push_str(&format!("{}:\n", else_lbl));
+                                            match &**else_expr {
+                                                Expr::Lit(Value::String(s)) => {
+                                                    let mut bytes = s.clone().into_bytes();
+                                                    bytes.push(b'\n');
+                                                    let len = s.as_bytes().len() + 1;
+                                                    let lbl = format!("LSF_{}_{}", func.name, fi);
+                                                    out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+"#);
+                                                    out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                                    out.push_str(&format!("        mov r8d, {}\n", len as i32));
+                                                    out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                    fi += 1;
+                                                }
+                                                _ => {}
+                                            }
+                                            out.push_str(&format!("{}:\n", join_lbl));
+                                            need_nl = true;
+                                            out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
                                         }
                                     },
                                     _ => {}

@@ -2800,28 +2800,12 @@ r#"        xor r9d, r9d
                         continue;
                     }
 
-                    if func.name == "fact" {
-                        out.push_str(&format!("{}:\n", func.name));
-                        out.push_str(
-r#"        push rbx
-        cmp ecx, 1
-        jg Lrec_w
-        mov eax, 1
-        pop rbx
-        ret
-Lrec_w:
-        mov ebx, ecx
-        lea ecx, [rcx-1]
-        sub rsp, 32
-        call fact
-        add rsp, 32
-        imul eax, ebx
-        pop rbx
-        ret
-"#);
-                        continue;
-                    }
                     out.push_str(&format!("{}:\n", func.name));
+                    out.push_str(
+r#"        push rbp
+        mov rbp, rsp
+        push rbx
+"#);
                     let mut ret_i: i64 = 0;
                     let mut ret_f: Option<f64> = None;
                     let mut fi: usize = 0;
@@ -3183,6 +3167,8 @@ r#"        sub rsp, 40
                                     out.push_str(&format!(
 "        lea rax, [rip+{0}]
         mov rdx, {1}
+        pop rbx
+        pop rbp
         ret
 ", lbl, len));
                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
@@ -3198,6 +3184,8 @@ r#"        sub rsp, 40
                         out.push_str(
 r#"        lea rax, [rip+LC1]
         movsd xmm0, qword ptr [rax]
+        pop rbx
+        pop rbp
         ret
 "#);
                         let lo = bits as u32;
@@ -3207,7 +3195,7 @@ r#"        lea rax, [rip+LC1]
                             out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                         }
                     } else {
-                        out.push_str(&format!("        mov eax, {}\n        ret\n", ret_i as i32));
+                        out.push_str(&format!("        mov eax, {}\n        pop rbx\n        pop rbp\n        ret\n", ret_i as i32));
                     }
                 }
                 if !func_rodata.is_empty() || need_nl {

@@ -1,3 +1,23 @@
+Threading
+
+Builtins recognized by the backends (no surface syntax changes):
+- spawn("func_name", arg: i64) -> i64 handle
+- join(handle: i64) -> i32 (worker exit/status)
+- destroy(handle: i64) -> i32 (1 on success, 0 on failure)
+
+Worker functions have signature:
+pub func name(arg: i64) -> i32
+
+Per-target notes:
+- x86_64 Windows: CreateThread, WaitForSingleObject, GetExitCodeThread, CloseHandle, TerminateThread
+- x86_64 Linux: raw clone(SIGCHLD) with 64KiB stacks in .bss, wait4, kill(SIGKILL)
+- AArch64 Linux: same behavior via svc syscalls
+
+Examples:
+let h: i64 = spawn("worker", 101);
+let r: i32 = join(h);
+let ok: i32 = destroy(h);
+
 # Aether Language (current subset)
 
 This document describes the features currently supported by the compiler. The language is evolving; syntax and semantics may change.

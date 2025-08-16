@@ -1,3 +1,17 @@
+Threading (portable MVP)
+
+- spawn("func", i64) -> i64 handle
+- join(i64) -> i32
+- destroy(i64) -> i32 (1 success, 0 failure)
+
+Targets:
+- Windows x86_64: CreateThread + WaitForSingleObject + GetExitCodeThread + CloseHandle + TerminateThread
+- Linux x86_64/AArch64: clone(SIGCHLD) + wait4 + kill(SIGKILL), 64KiB stacks in .bss
+
+Examples: examples/threads_simple.ae, examples/threads_map_reduce.ae
+
+See docs/BUILD.md for per-target run steps.
+
 # Aether
 
 Aether is a small, portable systems language and compiler with a clear, readable syntax and a focus on performance and cross‑platform code generation.

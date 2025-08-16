@@ -64,6 +64,8 @@ impl CodeGenerator for AArch64Codegen {
     }
 
     fn generate(&mut self, module: &Module) -> Result<String> {
+        let mut out = String::new();
+
         let mut exit_code: i64 = 0;
         let mut f64_ret: Option<f64> = None;
         let mut prints: Vec<(String, usize)> = Vec::new();
@@ -99,6 +101,10 @@ impl CodeGenerator for AArch64Codegen {
         let static_names: HashSet<String> = static_types.keys().cloned().collect();
         let mut main_field_prints: Vec<(String, usize)> = Vec::new();
         let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
+        let mut spawn_sites: Vec<(String, String, Option<i64>)> = Vec::new();
+        let mut join_sites: Vec<(String, String)> = Vec::new();
+        let mut destroy_sites: Vec<(String, String)> = Vec::new();
+
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
@@ -141,6 +147,33 @@ impl CodeGenerator for AArch64Codegen {
                                         local_strings.insert(name.clone(), fmap);
                                     }
                                 }
+
+                                if let Expr::Call(cname, cargs) = init {
+                                    if cname == "spawn" {
+                                        if cargs.len() == 2 {
+                                            if let Expr::Lit(Value::String(fname)) = &cargs[0] {
+                                                let mut arg_i: Option<i64> = None;
+                                                if let Expr::Lit(Value::Int(v)) = &cargs[1] {
+                                                    arg_i = Some(*v);
+                                                }
+                                                spawn_sites.push((name.clone(), fname.clone(), arg_i));
+                                            }
+                                        }
+                                    } else if cname == "join" {
+                                        if cargs.len() == 1 {
+                                            if let Expr::Var(hn) = &cargs[0] {
+                                                join_sites.push((name.clone(), hn.clone()));
+                                            }
+                                        }
+                                    } else if cname == "destroy" {
+                                        if cargs.len() == 1 {
+                                            if let Expr::Var(hn) = &cargs[0] {
+                                                destroy_sites.push((name.clone(), hn.clone()));
+                                            }
+                                        }
+                                    }
+                                }
+
                             }
                         }
                         Stmt::Assign { target, value } => {
@@ -301,7 +334,6 @@ impl CodeGenerator for AArch64Codegen {
                 other_funcs.push(func);
             }
         }
-        let mut out = String::new();
         out.push_str(
 r#"
         .global _start
@@ -374,6 +406,121 @@ _start:
                 out.push_str(&format!("{}:\n", lbl));
                 out.push_str(&format!("        .ascii \"{}\"\n", s.replace("\\", "\\\\").replace("\"", "\\\"")));
             }
+        }
+        if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
+            out.push_str("\n        .bss\n");
+            for (sidx, _) in spawn_sites.iter().enumerate() {
+                out.push_str(&format!("TSTACK{}:\n        .zero 65536\n", sidx));
+                out.push_str(&format!("THANDLE{}:\n        .quad 0\n", sidx));
+            }
+            for (jidx, _) in join_sites.iter().enumerate() {
+                out.push_str(&format!("TRESJ{}:\n        .long 0\n        .long 0\n", jidx));
+            }
+            for (didx, _) in destroy_sites.iter().enumerate() {
+                out.push_str(&format!("TRESD{}:\n        .long 0\n        .long 0\n", didx));
+            }
+            out.push_str("\n        .text\n");
+            for (sidx, (_hname, fname, arg_opt)) in spawn_sites.iter().enumerate() {
+                out.push_str(&format!(
+"        adrp x1, TSTACK{0}
+        add x1, x1, :lo12:TSTACK{0}
+        add x1, x1, #65536
+        mov x0, #17
+        mov x2, xzr
+        mov x3, xzr
+        mov x4, xzr
+        mov x8, #220
+        svc #0
+        cbnz x0, .LPARENT_{0}
+        ", sidx));
+                if let Some(arg) = arg_opt {
+                    out.push_str(&format!("        mov x0, #{0}\n", *arg));
+                } else {
+                    out.push_str("        mov x0, #0\n");
+                }
+                out.push_str(&format!(
+"        bl {0}
+        mov x8, #93
+        svc #0
+.LPARENT_{1}:
+        adrp x10, THANDLE{1}
+        add x10, x10, :lo12:THANDLE{1}
+        str x0, [x10]
+", fname, sidx));
+            }
+            if !join_sites.is_empty() {
+                for (jidx, (_rname, hname)) in join_sites.iter().enumerate() {
+                    let mut found = None;
+                    for (sidx, (hvar, _fnm, _)) in spawn_sites.iter().enumerate() {
+                        if hvar == hname { found = Some(sidx); break; }
+                    }
+                    if let Some(sidx) = found {
+                        out.push_str(
+"        sub sp, sp, #16
+");
+                        out.push_str(&format!(
+"        adrp x10, THANDLE{0}
+        add x10, x10, :lo12:THANDLE{0}
+        ldr x0, [x10]
+        mov x8, #260
+        add x1, sp, #0
+        mov x2, xzr
+        mov x3, xzr
+        svc #0
+        ldr w0, [sp]
+        lsr w0, w0, #8
+        and w0, w0, #0xff
+        add sp, sp, #16
+", sidx));
+                        out.push_str(&format!(
+"        adrp x11, TRESJ{0}
+        add x11, x11, :lo12:TRESJ{0}
+        str w0, [x11]
+", jidx));
+                    }
+                }
+            }
+            if !destroy_sites.is_empty() {
+                for (didx, (_rname, hname)) in destroy_sites.iter().enumerate() {
+                    let mut found = None;
+                    for (sidx, (hvar, _fnm, _)) in spawn_sites.iter().enumerate() {
+                        if hvar == hname { found = Some(sidx); break; }
+                    }
+                    if let Some(sidx) = found {
+                        out.push_str(&format!(
+"        adrp x10, THANDLE{0}
+        add x10, x10, :lo12:THANDLE{0}
+        ldr x0, [x10]
+        mov x1, #9
+        mov x8, #129
+        svc #0
+        cmp x0, #0
+        cset w0, eq
+", sidx));
+                        out.push_str(
+"        sub sp, sp, #16
+");
+                        out.push_str(&format!(
+"        adrp x10, THANDLE{0}
+        add x10, x10, :lo12:THANDLE{0}
+        ldr x0, [x10]
+        mov x8, #260
+        add x1, sp, #0
+        mov x2, xzr
+        mov x3, xzr
+        svc #0
+        add sp, sp, #16
+", sidx));
+                        out.push_str(&format!(
+"        adrp x11, TRESD{0}
+        add x11, x11, :lo12:TRESD{0}
+        str w0, [x11]
+", didx));
+                    }
+                }
+            }
+        }
+
             out.push_str("\n        .text\n");
         if !static_types.is_empty() {
             out.push_str("\n        .data\n");
@@ -382,8 +529,6 @@ _start:
                 out.push_str(&format!("{}:\n        .zero {}\n", sname, sz));
             }
             out.push_str("\n        .text\n");
-        }
-
         }
 
         for (name, args) in &main_print_calls {

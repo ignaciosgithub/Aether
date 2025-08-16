@@ -2135,6 +2135,12 @@ r#"        leaq .LC0(%rip), %rax
                 out.push_str(
 r#"
         .intel_syntax noprefix
+        .extern CreateThread
+        .extern WaitForSingleObject
+        .extern GetExitCodeThread
+        .extern CloseHandle
+        .extern TerminateThread
+
         .extern GetStdHandle
         .extern WriteFile
         .global main
@@ -2293,6 +2299,17 @@ r#"        xor eax, eax
         ret
 "#);
                 }
+                for (sidx, (_hname, fname, _)) in spawn_sites.iter().enumerate() {
+                    out.push_str(&format!(
+"        ; thunk for {}
+{0}_thunk:
+        sub rsp, 32
+        call {0}
+        add rsp, 32
+        ret
+", fname));
+                }
+
                 if let Some(fv) = f64_ret {
                     let bits = fv.to_bits();
                     let lo = bits as u32;
@@ -2301,6 +2318,105 @@ r#"        xor eax, eax
                     out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                 } else {
                     out.push_str("\n        .data\n");
+                if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
+                    out.push_str("\n        .data\n");
+                    for (sidx, _) in spawn_sites.iter().enumerate() {
+                        out.push_str(&format!("THANDLE{}:\n        .quad 0\n", sidx));
+                    }
+                    for (jidx, _) in join_sites.iter().enumerate() {
+                        out.push_str(&format!("TRESJ{}:\n        .long 0\n        .long 0\n", jidx));
+                    }
+                    for (didx, _) in destroy_sites.iter().enumerate() {
+                        out.push_str(&format!("TRESD{}:\n        .long 0\n        .long 0\n", didx));
+                    }
+                    out.push_str("\n        .text\n");
+                    for (sidx, (_hname, fname, arg_opt)) in spawn_sites.iter().enumerate() {
+                        out.push_str(
+r#"        sub rsp, 40
+        xor ecx, ecx
+        xor edx, edx
+"#);
+                        out.push_str(&format!("        lea r8, [rip+{}_thunk]\n", fname));
+                        if let Some(arg) = arg_opt {
+                            out.push_str(&format!("        mov r9, {}\n", *arg as i64));
+                        } else {
+                            out.push_str("        xor r9, r9\n");
+                        }
+                        out.push_str(
+r#"        mov qword ptr [rsp+32], 0
+        call CreateThread
+        add rsp, 40
+"#);
+                        out.push_str(&format!("        mov [rip+THANDLE{0}], rax\n", sidx));
+                    }
+                    for (jidx, (_rname, hname)) in join_sites.iter().enumerate() {
+                        let mut found = None;
+                        for (sidx, (hvar, _fnm, _ao)) in spawn_sites.iter().enumerate() {
+                            if hvar == hname { found = Some(sidx); break; }
+                        }
+                        if let Some(sidx) = found {
+                            out.push_str(
+r#"        sub rsp, 40
+"#);
+                            out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
+                            out.push_str(
+r#"        mov rdx, -1
+        call WaitForSingleObject
+        add rsp, 40
+        sub rsp, 40
+"#);
+                            out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
+                            out.push_str(
+r#"        lea rdx, [rsp+24]
+        call GetExitCodeThread
+        mov eax, dword ptr [rsp+24]
+        add rsp, 40
+"#);
+                            out.push_str(
+r#"        sub rsp, 40
+"#);
+                            out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
+                            out.push_str(
+r#"        call CloseHandle
+        add rsp, 40
+"#);
+                            out.push_str(&format!("        mov dword ptr [rip+TRESJ{}], eax\n", jidx));
+                        }
+                    }
+                    for (didx, (_rname, hname)) in destroy_sites.iter().enumerate() {
+                        let mut found = None;
+                        for (sidx, (hvar, _fnm, _ao)) in spawn_sites.iter().enumerate() {
+                            if hvar == hname { found = Some(sidx); break; }
+                        }
+                        if let Some(sidx) = found {
+                            out.push_str(
+r#"        sub rsp, 40
+"#);
+                            out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
+                            out.push_str(
+r#"        mov edx, 1
+        call TerminateThread
+        add rsp, 40
+"#);
+                            out.push_str(
+r#"        mov ecx, eax
+        xor eax, eax
+        test ecx, ecx
+        setne al
+"#);
+                            out.push_str(
+r#"        sub rsp, 40
+"#);
+                            out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
+                            out.push_str(
+r#"        call CloseHandle
+        add rsp, 40
+"#);
+                            out.push_str(&format!("        mov dword ptr [rip+TRESD{}], eax\n", didx));
+                        }
+                    }
+                }
+
                 }
                 if true {
                 let mut while_data: Vec<(String, String)> = Vec::new();

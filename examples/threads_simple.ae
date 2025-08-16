@@ -1,0 +1,7 @@
+pub func worker(arg: i64) -> i32 { return (i32)arg; }
+
+pub func main() -> i32 {
+    let h1: i64 = spawn("worker", 1000);
+    let r1: i32 = join(h1);
+    return r1;
+}

@@ -7,7 +7,7 @@ pub enum TargetArch {
     AArch64,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetOs {
     Linux,
     Windows,

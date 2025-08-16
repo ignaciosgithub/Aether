@@ -170,6 +170,10 @@ impl CodeGenerator for X86_64LinuxCodegen {
         let mut main_ret_call: Option<(String, Vec<Expr>)> = None;
         let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
         let mut main_field_prints: Vec<(String, usize)> = Vec::new();
+        let mut spawn_sites: Vec<(String, String, Option<i64>)> = Vec::new();
+        let mut join_sites: Vec<(String, String)> = Vec::new();
+        let mut destroy_sites: Vec<(String, String)> = Vec::new();
+
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         use std::collections::{HashMap, HashSet};
         let mut static_types: HashMap<String, String> = HashMap::new();
@@ -223,6 +227,31 @@ impl CodeGenerator for X86_64LinuxCodegen {
                                     }
                                     if !fmap.is_empty() {
                                         local_strings.insert(name.clone(), fmap);
+                                    }
+                                }
+                            }
+                            if let Expr::Call(cname, cargs) = init {
+                                if cname == "spawn" {
+                                    if cargs.len() == 2 {
+                                        if let Expr::Lit(Value::String(fname)) = &cargs[0] {
+                                            let mut arg_i: Option<i64> = None;
+                                            if let Expr::Lit(Value::Int(v)) = &cargs[1] {
+                                                arg_i = Some(*v);
+                                            }
+                                            spawn_sites.push((name.clone(), fname.clone(), arg_i));
+                                        }
+                                    }
+                                } else if cname == "join" {
+                                    if cargs.len() == 1 {
+                                        if let Expr::Var(hn) = &cargs[0] {
+                                            join_sites.push((name.clone(), hn.clone()));
+                                        }
+                                    }
+                                } else if cname == "destroy" {
+                                    if cargs.len() == 1 {
+                                        if let Expr::Var(hn) = &cargs[0] {
+                                            destroy_sites.push((name.clone(), hn.clone()));
+                                        }
                                     }
                                 }
                             }
@@ -313,6 +342,102 @@ r#"
         .text
 _start:
 "#);
+                if self.target.os == TargetOs::Linux {
+                    if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
+                        out.push_str("\n        .bss\n");
+                        for (sidx, _) in spawn_sites.iter().enumerate() {
+                            out.push_str(&format!("TSTACK{}:\n        .skip 65536\n", sidx));
+                            out.push_str(&format!("THANDLE{}:\n        .quad 0\n", sidx));
+                        }
+                        for (jidx, _) in join_sites.iter().enumerate() {
+                            out.push_str(&format!("TRESJ{}:\n        .long 0\n        .long 0\n", jidx));
+                        }
+                        for (didx, _) in destroy_sites.iter().enumerate() {
+                            out.push_str(&format!("TRESD{}:\n        .long 0\n        .long 0\n", didx));
+                        }
+                        out.push_str("\n        .text\n");
+                        for (sidx, (_hname, fname, arg_opt)) in spawn_sites.iter().enumerate() {
+                            out.push_str(&format!(
+"        leaq TSTACK{0}(%rip), %rdi
+        add $65536, %rdi
+        mov $56, %rax
+        mov $17, %rsi
+        syscall
+        test %rax, %rax
+        jnz .LPARENT_{0}
+", sidx));
+                            if let Some(v) = arg_opt {
+                                out.push_str(&format!("        mov ${}, %rdi\n", v));
+                            } else {
+                                out.push_str("        xor %rdi, %rdi\n");
+                            }
+                            out.push_str(&format!(
+"        sub $8, %rsp
+        call {0}
+        add $8, %rsp
+        mov %eax, %edi
+        mov $60, %rax
+        syscall
+.LPARENT_{1}:
+        mov %rax, THANDLE{1}(%rip)
+", fname, sidx));
+                        }
+                        if !join_sites.is_empty() {
+                            for (jidx, (_rname, hname)) in join_sites.iter().enumerate() {
+                                let mut found = None;
+                                for (sidx, (hvar, _fnm, _ao)) in spawn_sites.iter().enumerate() {
+                                    if hvar == hname { found = Some(sidx); break; }
+                                }
+                                if let Some(sidx) = found {
+                                    out.push_str(&format!(
+"        sub $16, %rsp
+        mov $61, %rax
+        mov THANDLE{0}(%rip), %rdi
+        leaq (%rsp), %rsi
+        xor %rdx, %rdx
+        xor %r10, %r10
+        syscall
+        mov (%rsp), %eax
+        shr $8, %eax
+        and $0xff, %eax
+        mov %eax, TRESJ{1}(%rip)
+        add $16, %rsp
+", sidx, jidx));
+                                }
+                            }
+                        }
+                        if !destroy_sites.is_empty() {
+                            for (didx, (_rname, hname)) in destroy_sites.iter().enumerate() {
+                                let mut found = None;
+                                for (sidx, (hvar, _fnm, _ao)) in spawn_sites.iter().enumerate() {
+                                    if hvar == hname { found = Some(sidx); break; }
+                                }
+                                if let Some(sidx) = found {
+                                    out.push_str(&format!(
+"        mov $62, %rax
+        mov THANDLE{0}(%rip), %rdi
+        mov $9, %rsi
+        syscall
+        mov %eax, %ecx
+        xor %eax, %eax
+        test %ecx, %ecx
+        sete %al
+        mov %eax, TRESD{1}(%rip)
+        sub $16, %rsp
+        mov $61, %rax
+        mov THANDLE{0}(%rip), %rdi
+        leaq (%rsp), %rsi
+        xor %rdx, %rdx
+        xor %r10, %r10
+        syscall
+        add $16, %rsp
+", sidx, didx));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let mut while_rodata: Vec<(String, String)> = Vec::new();
                 let mut static_rodata: Vec<(String, String)> = Vec::new();
                 for (widx, cond, body) in &main_while_blocks {
@@ -454,6 +579,101 @@ r#"        add $8, %rsp
         mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
+                if self.target.os == TargetOs::Linux {
+                    if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
+                        out.push_str("\n        .bss\n");
+                        for (sidx, _) in spawn_sites.iter().enumerate() {
+                            out.push_str(&format!("TSTACK{}:\n        .skip 65536\n", sidx));
+                            out.push_str(&format!("THANDLE{}:\n        .quad 0\n", sidx));
+                        }
+                        for (jidx, _) in join_sites.iter().enumerate() {
+                            out.push_str(&format!("TRESJ{}:\n        .long 0\n        .long 0\n", jidx));
+                        }
+                        for (didx, _) in destroy_sites.iter().enumerate() {
+                            out.push_str(&format!("TRESD{}:\n        .long 0\n        .long 0\n", didx));
+                        }
+                        out.push_str("\n        .text\n");
+                        for (sidx, (_hname, fname, arg_opt)) in spawn_sites.iter().enumerate() {
+                            out.push_str(&format!(
+"        leaq TSTACK{0}(%rip), %rdi
+        add $65536, %rdi
+        mov $56, %rax
+        mov $17, %rsi
+        syscall
+        test %rax, %rax
+        jnz .LPARENT_{0}
+", sidx));
+                            if let Some(v) = arg_opt {
+                                out.push_str(&format!("        mov ${}, %rdi\n", v));
+                            } else {
+                                out.push_str("        xor %rdi, %rdi\n");
+                            }
+                            out.push_str(&format!(
+"        sub $8, %rsp
+        call {0}
+        add $8, %rsp
+        mov %eax, %edi
+        mov $60, %rax
+        syscall
+.LPARENT_{1}:
+        mov %rax, THANDLE{1}(%rip)
+", fname, sidx));
+                        }
+                        if !join_sites.is_empty() {
+                            for (jidx, (_rname, hname)) in join_sites.iter().enumerate() {
+                                let mut found = None;
+                                for (sidx, (hvar, _fnm, _ao)) in spawn_sites.iter().enumerate() {
+                                    if hvar == hname { found = Some(sidx); break; }
+                                }
+                                if let Some(sidx) = found {
+                                    out.push_str(&format!(
+"        sub $16, %rsp
+        mov $61, %rax
+        mov THANDLE{0}(%rip), %rdi
+        leaq (%rsp), %rsi
+        xor %rdx, %rdx
+        xor %r10, %r10
+        syscall
+        mov (%rsp), %eax
+        shr $8, %eax
+        and $0xff, %eax
+        mov %eax, TRESJ{1}(%rip)
+        add $16, %rsp
+", sidx, jidx));
+                                }
+                            }
+                        }
+                        if !destroy_sites.is_empty() {
+                            for (didx, (_rname, hname)) in destroy_sites.iter().enumerate() {
+                                let mut found = None;
+                                for (sidx, (hvar, _fnm, _ao)) in spawn_sites.iter().enumerate() {
+                                    if hvar == hname { found = Some(sidx); break; }
+                                }
+                                if let Some(sidx) = found {
+                                    out.push_str(&format!(
+"        mov $62, %rax
+        mov THANDLE{0}(%rip), %rdi
+        mov $9, %rsi
+        syscall
+        mov %eax, %ecx
+        xor %eax, %eax
+        test %ecx, %ecx
+        sete %al
+        mov %eax, TRESD{1}(%rip)
+        sub $16, %rsp
+        mov $61, %rax
+        mov THANDLE{0}(%rip), %rdi
+        leaq (%rsp), %rsi
+        xor %rdx, %rdx
+        xor %r10, %r10
+        syscall
+        add $16, %rsp
+", sidx, didx));
+                                }
+                            }
+                        }
+                    }
+                }
         mov $1, %rdx
         syscall
 "#);

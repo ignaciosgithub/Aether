@@ -2870,13 +2870,21 @@ r#"        xor r9d, r9d
                     }
 
                     out.push_str(&format!("{}:\n", func.name));
-                    out.push_str(
+                    let has_while = func.body.iter().any(|s| matches!(s, Stmt::While { .. }));
+                    let has_locals = func.body.iter().any(|s| matches!(s, Stmt::Let { .. }));
+                    let no_prologue = has_while && !has_locals;
+                    if no_prologue {
+                        out.push_str("        push rbx\n");
+                    } else {
+                        out.push_str(
 r#"        push rbp
         mov rbp, rsp
         push rbx
 "#);
+                    }
                     let mut local_offsets: HashMap<String, usize> = HashMap::new();
                     let mut local_types: HashMap<String, Type> = HashMap::new();
+                    let pad: usize = 40usize;
                     let mut cur_off: usize = 0;
                     for stmt in &func.body {
                         if let Stmt::Let { name, ty, .. } = stmt {
@@ -3028,6 +3036,7 @@ r#"        sub rsp, 40
                             Stmt::While { cond, body } => {
                                 let head = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
                                 let end = format!("LWH_END_{}_{}", func.name, lwh_idx);
+                                out.push_str(&format!("        jmp {}\n", head));
                                 out.push_str(&format!("{}:\n", head));
                                 emit_win_eval_cond_to_rax(&cond, &mut out, &local_offsets, &local_types);
                                 out.push_str("        cmp rax, 0\n");
@@ -3415,10 +3424,19 @@ r#"        sub rsp, 32
                                         out.push_str(&format!("        call {}\n", name));
                                         out.push_str(
 r#"        add rsp, 32
-        pop rbx
+"#);
+                                        if no_prologue {
+                                            out.push_str(
+r#"        pop rbx
+        ret
+"#);
+                                        } else {
+                                            out.push_str(
+r#"        pop rbx
         pop rbp
         ret
 "#);
+                                        }
                                     }
                                 } else if let Expr::Lit(Value::String(s)) = expr {
                                     let bytes = s.clone().into_bytes();

@@ -2808,6 +2808,28 @@ r#"        push rbp
         mov rbp, rsp
         push rbx
 "#);
+                    let mut local_offsets: HashMap<String, usize> = HashMap::new();
+                    let mut cur_off: usize = 0;
+                    for stmt in &func.body {
+                        if let Stmt::Let { name, ty, .. } = stmt {
+                            let mut sz = match ty {
+                                Type::I32 => 8usize,
+                                Type::I64 | Type::F64 => 8usize,
+                                Type::String => 16usize,
+                                Type::User(un) => {
+                                    if let Some(sz) = struct_sizes.get(un) { *sz } else { 8usize }
+                                }
+                                _ => 8usize,
+                            };
+                            if sz % 8 != 0 { sz += 8 - (sz % 8); }
+                            local_offsets.insert(name.clone(), cur_off + sz);
+                            cur_off += sz;
+                        }
+                    }
+                    let mut frame_size = if cur_off % 16 == 0 { cur_off } else { cur_off + (16 - (cur_off % 16)) };
+                    if frame_size > 0 {
+                        out.push_str(&format!("        sub rsp, {}\n", frame_size));
+                    }
                     let mut ret_i: i64 = 0;
                     let mut ret_f: Option<f64> = None;
                     let mut fi: usize = 0;
@@ -2831,7 +2853,52 @@ r#"        sub rsp, 40
 "#, lbl, len));
                                 func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                 fi += 1;
-                            }
+                            },
+                            Stmt::Let { name, ty, init } => {
+                                if let Some(off) = local_offsets.get(name) {
+                                    match (ty, init) {
+                                        (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                            out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off, *v as i32));
+                                        }
+                                        (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                            out.push_str(&format!("        mov rax, {}\n", *v as i64));
+                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                        }
+                                        (Type::String, Expr::Lit(Value::String(s))) => {
+                                            let lbl = format!("LSF_INIT_{}_{}", func.name, fi);
+                                            let bytes = s.clone().into_bytes();
+                                            out.push_str(&format!("        lea rax, [rip+{}]\n", lbl));
+                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                            out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off - 8, bytes.len() as i32));
+                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                            fi += 1;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            },
+                            Stmt::Assign { target, value } => {
+                                if let Expr::Var(vn) = target {
+                                    if let Some(off) = local_offsets.get(vn.as_str()) {
+                                        match value {
+                                            Expr::Lit(Value::Int(v)) => {
+                                                out.push_str(&format!("        mov rax, {}\n", *v as i64));
+                                                out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                            }
+                                            Expr::Lit(Value::String(s)) => {
+                                                let lbl = format!("LSF_SET_{}_{}", func.name, fi);
+                                                let bytes = s.clone().into_bytes();
+                                                out.push_str(&format!("        lea rax, [rip+{}]\n", lbl));
+                                                out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                                out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off - 8, bytes.len() as i32));
+                                                func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                fi += 1;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            },
                             Stmt::While { cond, body } => {
                                 let head = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
                                 let end = format!("LWH_END_{}_{}", func.name, lwh_idx);
@@ -3244,7 +3311,10 @@ r#"        sub rsp, 32
                                         out.push_str(&format!("        call {}\n", name));
                                         out.push_str(
 r#"        add rsp, 32
-        pop rbx
+"#);
+                                        out.push_str(&format!("        add rsp, {}\n", frame_size));
+                                        out.push_str(
+r#"        pop rbx
         pop rbp
         ret
 "#);
@@ -3256,10 +3326,13 @@ r#"        add rsp, 32
                                     out.push_str(&format!(
 "        lea rax, [rip+{0}]
         mov rdx, {1}
-        pop rbx
+", lbl, len));
+                                out.push_str(&format!("        add rsp, {}\n", frame_size));
+                                out.push_str(
+r#"        pop rbx
         pop rbp
         ret
-", lbl, len));
+"#);
                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                     fi += 1;
                                 }
@@ -3273,7 +3346,10 @@ r#"        add rsp, 32
                         out.push_str(
 r#"        lea rax, [rip+LC1]
         movsd xmm0, qword ptr [rax]
-        pop rbx
+"#);
+                        out.push_str(&format!("        add rsp, {}\n", frame_size));
+                        out.push_str(
+r#"        pop rbx
         pop rbp
         ret
 "#);
@@ -3284,7 +3360,13 @@ r#"        lea rax, [rip+LC1]
                             out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                         }
                     } else {
-                        out.push_str(&format!("        mov eax, {}\n        pop rbx\n        pop rbp\n        ret\n", ret_i as i32));
+                        out.push_str(&format!("        mov eax, {}\n", ret_i as i32));
+                        out.push_str(&format!("        add rsp, {}\n", frame_size));
+                        out.push_str(
+r#"        pop rbx
+        pop rbp
+        ret
+"#);
                     }
                 }
                 if !func_rodata.is_empty() || need_nl {

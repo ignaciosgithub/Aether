@@ -2146,25 +2146,16 @@ r#"
         .global main
         .text
 main:
+        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
 "#);
                 let mut call_arg_data: Vec<(String, String)> = Vec::new();
                 if !prints.is_empty() {
-                    out.push_str(
-r#"        sub rsp, 40
-        mov ecx, -11
-        call GetStdHandle
-        add rsp, 40
-        mov rbx, rax
-"#);
                 }
                 if prints.is_empty() && (!main_print_calls.is_empty() || !main_field_prints.is_empty()) {
-                    out.push_str(
-r#"        sub rsp, 40
-        mov ecx, -11
-        call GetStdHandle
-        add rsp, 40
-        mov rbx, rax
-"#);
                 }
                 if let Some((ref name, ref args)) = main_ret_call {
                     if !args.is_empty() {
@@ -2222,6 +2213,7 @@ r#"        lea rax, [rip+LC0]
         movsd xmm0, qword ptr [rax]
 "#);
                 }
+                out.push_str("\n        .text\n");
                 for (name, args) in &main_print_calls {
                     if args.is_empty() {
                         out.push_str(
@@ -2316,6 +2308,7 @@ r#"        xor eax, eax
                     let hi = (bits >> 32) as u32;
                     out.push_str("\n        .data\nLC0:\n");
                     out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                    out.push_str("\n        .text\n");
                 } else {
                     out.push_str("\n        .data\n");
                 if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
@@ -2418,6 +2411,7 @@ r#"        call CloseHandle
                 }
 
                 }
+                out.push_str("\n        .text\n");
                 if true {
                 let mut while_data: Vec<(String, String)> = Vec::new();
                 for (widx, cond, body) in &main_while_blocks {

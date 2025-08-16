@@ -2413,7 +2413,9 @@ r#"        xor r9d, r9d
                                 }
                             }
                             Stmt::Return(expr) => {
-                                if let Some(v) = eval_int_expr(expr) {
+                                if !main_while_blocks.is_empty() {
+                                    out.push_str("        jmp LWH_HEAD_main_0\n");
+                                } else if let Some(v) = eval_int_expr(expr) {
                                     let v32 = v as i32;
                                     out.push_str(&format!("        mov eax, {}\n        ret\n", v32));
                                 } else if let Expr::Lit(Value::String(s)) = expr {
@@ -2608,25 +2610,27 @@ r#"        sub rsp, 40
 "#, idx, len));
                     }
                 }
-                if main_ret_call.is_some() {
-                    out.push_str(
+                if !win_emitted_main_in_order && main_while_blocks.is_empty() {
+                    if main_ret_call.is_some() {
+                        out.push_str(
 r#"        ret
 "#);
-                } else {
-                    out.push_str(
+                    } else {
+                        out.push_str(
 r#"        xor eax, eax
         ret
 "#);
+                    }
                 }
                 for (sidx, (_hname, fname, _)) in spawn_sites.iter().enumerate() {
                     out.push_str(&format!(
 "        ; thunk for {}
-{0}_thunk:
+{0}_thunk_{1}:
         sub rsp, 32
         call {0}
         add rsp, 32
         ret
-", fname));
+", fname, sidx));
                 }
 
                 if let Some(fv) = f64_ret {
@@ -2656,7 +2660,7 @@ r#"        sub rsp, 40
         xor ecx, ecx
         xor edx, edx
 "#);
-                        out.push_str(&format!("        lea r8, [rip+{}_thunk]\n", fname));
+                        out.push_str(&format!("        lea r8, [rip+{}_thunk_{}]\n", fname, sidx));
                         if let Some(arg) = arg_opt {
                             out.push_str(&format!("        mov r9, {}\n", *arg as i64));
                         } else {
@@ -2799,6 +2803,10 @@ r#"        xor r9d, r9d
                     }
                     out.push_str(&format!("        jmp LWH_HEAD_main_{}\n", widx));
                     out.push_str(&format!("LWH_END_main_{}:\n", widx));
+                    out.push_str(
+r#"        xor eax, eax
+        ret
+"#);
                 }
                 if !while_data.is_empty() {
                     out.push_str("\n        .data\n");

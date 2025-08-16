@@ -76,6 +76,28 @@ impl Lexer {
                 }
                 continue;
             }
+            if c == '#' {
+                while i < bytes.len() && bytes[i] as char != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if c == '/' && i + 1 < bytes.len() && bytes[i + 1] as char == '*' {
+                i += 2;
+                let mut closed = false;
+                while i + 1 < bytes.len() {
+                    if bytes[i] as char == '*' && bytes[i + 1] as char == '/' {
+                        i += 2;
+                        closed = true;
+                        break;
+                    }
+                    i += 1;
+                }
+                if !closed {
+                    return Err(anyhow!("unterminated block comment"));
+                }
+                continue;
+            }
             if c.is_ascii_alphabetic() || c == '_' {
                 let start = i;
                 i += 1;

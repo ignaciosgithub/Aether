@@ -21,6 +21,15 @@ impl<'a> Parser<'a> {
                 None => break,
             }
         }
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for it in &items {
+            if let Item::Function(f) = it {
+                if !seen.insert(f.name.clone()) {
+                    return Err(anyhow!("duplicate function name '{}'", f.name));
+                }
+            }
+        }
         Ok(Module { items })
     }
 

@@ -104,6 +104,7 @@ To produce Linux/AArch64 artifacts from Windows, use WSL (below) or a Linux VM.
 1) Enable WSL and install Ubuntu from the Microsoft Store.
 2) Open “Ubuntu” and follow the Ubuntu steps above verbatim.
 3) To run Windows PE built in WSL on Windows, copy out the .exe and run it from Windows.
+- Using the wrong MSYS2 shell (MSYS or UCRT64) instead of MINGW64\n  - Close the current terminal and open “MSYS2 MINGW64”. The prompt should include MINGW64.\n- Link errors about kernel32 or unresolved Windows symbols\n  - Ensure you ran: bash ./scripts/assemble_link.sh x86_64-windows ...\n  - Verify lld/clang are installed (see package list above); the script links -lkernel32 automatically.\n- Missing lld/clang/make\n  - Re-run: pacman -S --needed mingw-w64-x86_64-clang mingw-w64-x86_64-lld make\n- “The system cannot find the path specified. (os error 3)” when running aetherc\n  - Ensure the output directory exists and that aetherc writes a .s file, not .o. Example:\n    - mkdir -p out/windows\n    - cargo run -p aetherc -- examples/println.ae --arch x86_64 --os windows -o out/windows/println.s\n    - bash ./scripts/assemble_link.sh x86_64-windows out/windows/println.s out/windows/println.exe
 
 ### Troubleshooting
 

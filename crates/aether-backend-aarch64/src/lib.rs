@@ -63,11 +63,9 @@ impl CodeGenerator for AArch64Codegen {
         &self.target
     }
 
-        let mut spawn_sites: Vec<(String, String, Option<i64>)> = Vec::new();
-        let mut join_sites: Vec<(String, String)> = Vec::new();
-        let mut destroy_sites: Vec<(String, String)> = Vec::new();
-
     fn generate(&mut self, module: &Module) -> Result<String> {
+        let mut out = String::new();
+
         let mut exit_code: i64 = 0;
         let mut f64_ret: Option<f64> = None;
         let mut prints: Vec<(String, usize)> = Vec::new();
@@ -103,6 +101,10 @@ impl CodeGenerator for AArch64Codegen {
         let static_names: HashSet<String> = static_types.keys().cloned().collect();
         let mut main_field_prints: Vec<(String, usize)> = Vec::new();
         let mut main_print_calls: Vec<(String, Vec<Expr>)> = Vec::new();
+        let mut spawn_sites: Vec<(String, String, Option<i64>)> = Vec::new();
+        let mut join_sites: Vec<(String, String)> = Vec::new();
+        let mut destroy_sites: Vec<(String, String)> = Vec::new();
+
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
@@ -145,46 +147,32 @@ impl CodeGenerator for AArch64Codegen {
                                         local_strings.insert(name.clone(), fmap);
                                     }
                                 }
-                        Stmt::Let { name, ty, init } => {
-                            if let aether_frontend::ast::Type::User(_) = ty {
-                                if let Expr::StructLit(_, fields) = init {
-                                    let mut fmap: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-                                    for (fname, fexpr) in fields {
-                                        if let Expr::Lit(Value::String(sv)) = fexpr {
-                                            fmap.insert(fname.clone(), sv.clone());
-                                        }
-                                    }
-                                    if !fmap.is_empty() {
-                                        local_strings.insert(name.clone(), fmap);
-                                    }
-                                }
-                            }
-                            if let Expr::Call(cname, cargs) = init {
-                                if cname == "spawn" {
-                                    if cargs.len() == 2 {
-                                        if let Expr::Lit(Value::String(fname)) = &cargs[0] {
-                                            let mut arg_i: Option<i64> = None;
-                                            if let Expr::Lit(Value::Int(v)) = &cargs[1] {
-                                                arg_i = Some(*v);
+
+                                if let Expr::Call(cname, cargs) = init {
+                                    if cname == "spawn" {
+                                        if cargs.len() == 2 {
+                                            if let Expr::Lit(Value::String(fname)) = &cargs[0] {
+                                                let mut arg_i: Option<i64> = None;
+                                                if let Expr::Lit(Value::Int(v)) = &cargs[1] {
+                                                    arg_i = Some(*v);
+                                                }
+                                                spawn_sites.push((name.clone(), fname.clone(), arg_i));
                                             }
-                                            spawn_sites.push((name.clone(), fname.clone(), arg_i));
                                         }
-                                    }
-                                } else if cname == "join" {
-                                    if cargs.len() == 1 {
-                                        if let Expr::Var(hn) = &cargs[0] {
-                                            join_sites.push((name.clone(), hn.clone()));
+                                    } else if cname == "join" {
+                                        if cargs.len() == 1 {
+                                            if let Expr::Var(hn) = &cargs[0] {
+                                                join_sites.push((name.clone(), hn.clone()));
+                                            }
                                         }
-                                    }
-                                } else if cname == "destroy" {
-                                    if cargs.len() == 1 {
-                                        if let Expr::Var(hn) = &cargs[0] {
-                                            destroy_sites.push((name.clone(), hn.clone()));
+                                    } else if cname == "destroy" {
+                                        if cargs.len() == 1 {
+                                            if let Expr::Var(hn) = &cargs[0] {
+                                                destroy_sites.push((name.clone(), hn.clone()));
+                                            }
                                         }
                                     }
                                 }
-                            }
-                        }
 
                             }
                         }
@@ -346,7 +334,6 @@ impl CodeGenerator for AArch64Codegen {
                 other_funcs.push(func);
             }
         }
-        let mut out = String::new();
         out.push_str(
 r#"
         .global _start
@@ -542,8 +529,6 @@ _start:
                 out.push_str(&format!("{}:\n        .zero {}\n", sname, sz));
             }
             out.push_str("\n        .text\n");
-        }
-
         }
 
         for (name, args) in &main_print_calls {

@@ -1,3 +1,22 @@
+Threading examples
+
+Linux (x86_64):
+- cargo run -p aetherc -- examples/threads_simple.ae --arch x86_64 --os linux -o out/linux/threads_simple.s
+- bash ./scripts/assemble_link.sh x86_64-linux out/linux/threads_simple.s out/linux/threads_simple
+- ./out/linux/threads_simple
+
+Windows (x86_64) in MSYS2 MINGW64:
+- mkdir -p out/windows
+- cargo run -p aetherc -- examples/threads_simple.ae --arch x86_64 --os windows -o out/windows/threads_simple.s
+- bash ./scripts/assemble_link.sh x86_64-windows out/windows/threads_simple.s out/windows/threads_simple.exe
+- ./out/windows/threads_simple.exe
+
+AArch64 Linux:
+- cargo run -p aetherc -- examples/threads_simple.ae --arch aarch64 --os linux -o out/aarch64/threads_simple.s
+- bash ./scripts/assemble_link.sh aarch64-linux out/aarch64/threads_simple.s out/aarch64/threads_simple
+- (optional) run with qemu-aarch64-static
+
+destroy(handle) returns 1 on success and 0 on failure.
 Build and Targeting Guide
 
 Prerequisites (Ubuntu host)

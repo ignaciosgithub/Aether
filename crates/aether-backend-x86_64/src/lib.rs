@@ -2152,75 +2152,73 @@ main:
         add rsp, 40
         mov rbx, rax
 "#);
-                let mut call_arg_data: Vec<(String, String)> = Vec::new();
-                if !prints.is_empty() {
-                }
-                if prints.is_empty() && (!main_print_calls.is_empty() || !main_field_prints.is_empty()) {
-                }
-                if let Some((ref name, ref args)) = main_ret_call {
-                    if !args.is_empty() {
-                        if let Expr::Lit(Value::Int(v0)) = &args[0] {
-                            out.push_str(&format!("        mov ecx, {}\n", *v0 as i32));
-                        }
-                    }
-                    out.push_str(
-r#"        sub rsp, 32
+                let mut win_order_ls: Vec<(String, String)> = Vec::new();
+                let mut win_order_ls_idx: usize = 0;
+                let mut win_need_lsnl: bool = false;
+                let mut win_emitted_main_in_order: bool = false;
+
+                if let Some(f) = main_func {
+                    win_emitted_main_in_order = true;
+
+                    for stmt in &f.body {
+                        match stmt {
+                            Stmt::Println(s) => {
+                                let mut bytes = s.clone().into_bytes();
+                                bytes.push(b'\n');
+                                let len = bytes.len();
+                                let lbl = format!("LS{}", win_order_ls_idx);
+                                out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
 "#);
-                    out.push_str(&format!("        call {}\n", name));
-                    out.push_str(
-r#"        add rsp, 32
+                                out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                out.push_str(&format!("        mov r8d, {}\n", len as i32));
+                                out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
 "#);
-                } else {
-                    for (cidx, (name, args)) in calls.iter().enumerate() {
-                        if !args.is_empty() {
-                            match &args[0] {
-                                Expr::Lit(Value::Int(v0)) => {
-                                    out.push_str(&format!("        mov ecx, {}\n", *v0 as i32));
-                                }
-                                Expr::Lit(Value::String(s)) => {
-                                    let mut bytes = s.clone().into_bytes();
-                                    let len = bytes.len();
-                                    let lbl = format!("LSARG{}", cidx);
-                                    out.push_str(&format!(
-"        lea rcx, [rip+{}]
-        mov edx, {}
-", lbl, len as i32));
-                                    call_arg_data.push((lbl, String::from_utf8(bytes).unwrap()));
-                                }
-                                Expr::Var(name) => {
-                                    if static_names.contains(name) {
-                                        out.push_str(&format!("        lea rcx, [rip+{}]\n", name));
+                                win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
+                                win_order_ls_idx += 1;
+                            }
+                            Stmt::Expr(Expr::Call(name, args)) => {
+                                if !args.is_empty() {
+                                    for (i, a) in args.iter().enumerate().take(4) {
+                                        match (i, a) {
+                                            (0, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov ecx, {}\n", *v as i32)),
+                                            (1, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov edx, {}\n", *v as i32)),
+                                            (2, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r8d, {}\n", *v as i32)),
+                                            (3, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r9d, {}\n", *v as i32)),
+                                            _ => {}
+                                        }
                                     }
                                 }
-                                _ => {}
-                            }
-                        }
-                        out.push_str(
+                                out.push_str(
 r#"        sub rsp, 32
 "#);
-                        out.push_str(&format!("        call {}\n", name));
-                        out.push_str(
+                                out.push_str(&format!("        call {}\n", name));
+                                out.push_str(
 r#"        add rsp, 32
 "#);
-                    }
-                }
-                if let Some(fv) = f64_ret {
-                    let bits = fv.to_bits();
-                    let lo = bits as u32;
-                    let hi = (bits >> 32) as u32;
-                    out.push_str(
-r#"        lea rax, [rip+LC0]
-        movsd xmm0, qword ptr [rax]
-"#);
-                }
-                out.push_str("\n        .text\n");
-                for (name, args) in &main_print_calls {
-                    if args.is_empty() {
-                        out.push_str(
+                            }
+                            Stmt::PrintExpr(Expr::Call(name, args)) => {
+                                if !args.is_empty() {
+                                    for (i, a) in args.iter().enumerate().take(4) {
+                                        match (i, a) {
+                                            (0, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov ecx, {}\n", *v as i32)),
+                                            (1, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov edx, {}\n", *v as i32)),
+                                            (2, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r8d, {}\n", *v as i32)),
+                                            (3, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r9d, {}\n", *v as i32)),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                out.push_str(
 r#"        sub rsp, 32
 "#);
-                        out.push_str(&format!("        call {}\n", name));
-                        out.push_str(
+                                out.push_str(&format!("        call {}\n", name));
+                                out.push_str(
 r#"        add rsp, 32
         sub rsp, 40
         mov rdx, rax
@@ -2239,9 +2237,269 @@ r#"        add rsp, 32
         call WriteFile
         add rsp, 40
 "#);
+                                win_need_lsnl = true;
+                            }
+                            Stmt::PrintExpr(Expr::Field(recv, fname)) => {
+                                let mut base_name: Option<String> = None;
+                                let mut cur_ty: Option<String> = None;
+                                let mut total_off: usize = 0;
+                                let mut r = recv.clone();
+                                loop {
+                                    match r.as_ref() {
+                                        Expr::Var(vn) => {
+                                            base_name = Some(vn.clone());
+                                            if let Some(tn) = static_types.get(vn.as_str()) {
+            cur_ty = Some(tn.clone());
+                                            }
+                                            break;
+                                        }
+                                        Expr::Field(inner, inner_name) => {
+                                            if let Expr::Var(vn2) = inner.as_ref() {
+                                                base_name = Some(vn2.clone());
+                                                if let Some(tn) = static_types.get(vn2.as_str()) {
+                cur_ty = Some(tn.clone());
+                                                }
+                                            }
+                                            if let Some(ref tyname) = cur_ty {
+                                                if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
+                                                    let mut off = 0usize;
+                                                    let mut next_ty: Option<String> = None;
+                                                    for f in &sd.fields {
+                                                        let sz = match f.ty {
+                                                            Type::I32 => 4,
+                                                            Type::I64 | Type::F64 => 8,
+                                                            Type::String => 16,
+                                                            Type::User(ref un) => {
+                                                                if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                                    let mut sz2 = 0usize;
+                                                                    for ff in &sd2.fields {
+                                                                        sz2 += match ff.ty {
+                                                                            Type::I32 => 4,
+                                                                            Type::I64 | Type::F64 => 8,
+                                                                            Type::String => 16,
+                                                                            _ => 8,
+                                                                        };
+                                                                    }
+                                                                    if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                                    sz2
+                                                                } else { 8 }
+                                                            }
+                                                            _ => 8,
+                                                        };
+                                                        if f.name == *inner_name {
+                                                            match f.ty {
+                                                                Type::User(ref un) => next_ty = Some(un.clone()),
+                                                                _ => next_ty = None,
+                                                            }
+                                                            total_off += off;
+                                                            break;
+                                                        }
+                                                        off += sz;
+                                                    }
+                                                    cur_ty = next_ty;
+                                                }
+                                            }
+                                            r = inner.clone();
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                if let (Some(bn), Some(tyn)) = (base_name, cur_ty) {
+                                    if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyn)) {
+                                        let mut off = 0usize;
+                                        let mut fty = Type::I64;
+                                        for f in &sd.fields {
+                                            let sz = match f.ty {
+                                                Type::I32 => 4,
+                                                Type::I64 | Type::F64 => 8,
+                                                Type::String => 16,
+                                                Type::User(ref un) => {
+                                                    if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                        let mut sz2 = 0usize;
+                                                        for ff in &sd2.fields {
+                                                            sz2 += match ff.ty {
+                                                                Type::I32 => 4,
+                                                                Type::I64 | Type::F64 => 8,
+                                                                Type::String => 16,
+                                                                _ => 8,
+                                                            };
+                                                        }
+                                                        if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                        sz2
+                                                    } else { 8 }
+                                                }
+                                                _ => 8,
+                                            };
+                                            if f.name == *fname {
+                                                fty = f.ty.clone();
+                                                break;
+                                            }
+                                            off += sz;
+                                        }
+                                        let final_off = total_off + off;
+                                        if matches!(fty, Type::String) {
+                                            out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+"#);
+                                            out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
+                                            out.push_str(&format!("        mov rdx, qword ptr [r10+{}]\n", final_off));
+                                            out.push_str(&format!("        mov r8d, dword ptr [r10+{}]\n", final_off + 8));
+                                            out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                            win_need_lsnl = true;
+                                        }
+                                    }
+                                }
+                            }
+                            Stmt::Return(expr) => {
+                                if let Some(v) = eval_int_expr(expr) {
+                                    let v32 = v as i32;
+                                    out.push_str(&format!("        mov eax, {}\n        ret\n", v32));
+                                } else if let Expr::Lit(Value::String(s)) = expr {
+                                    let bytes = s.clone().into_bytes();
+                                    let lbl = format!("LSRET_main_{}", win_order_ls_idx);
+                                    out.push_str(&format!(
+"        lea rax, [rip+{}]
+        mov edx, {}
+        ret
+", lbl, bytes.len() as i32));
+                                    win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
+                                    win_order_ls_idx += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if win_need_lsnl || !win_order_ls.is_empty() {
+                        out.push_str("\n        .data\n");
+                        if win_need_lsnl {
+                            out.push_str("LSNL:\n        .byte 10\n");
+                        }
+                        for (lbl, s) in &win_order_ls {
+                            out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                            for b in s.as_bytes() {
+                                let ch = *b as char;
+                                match ch {
+                                    '\n' => out.push_str("\\n"),
+                                    '\t' => out.push_str("\\t"),
+                                    '\"' => out.push_str("\\\""),
+                                    '\\' => out.push_str("\\\\"),
+                                    _ => out.push(ch),
+                                }
+                            }
+                            out.push_str("\"\n");
+                        }
+                        out.push_str("\n        .text\n");
                     }
                 }
-                if !main_field_prints.is_empty() {
+                let mut call_arg_data: Vec<(String, String)> = Vec::new();
+                if !prints.is_empty() {
+                }
+                if prints.is_empty() && (!main_print_calls.is_empty() || !main_field_prints.is_empty()) {
+                }
+                if !win_emitted_main_in_order {
+                    if let Some((ref name, ref args)) = main_ret_call {
+                        if !args.is_empty() {
+                            if let Expr::Lit(Value::Int(v0)) = &args[0] {
+                                out.push_str(&format!("        mov ecx, {}\n", *v0 as i32));
+                            }
+                        }
+                        out.push_str(
+r#"        sub rsp, 32
+"#);
+                        out.push_str(&format!("        call {}\n", name));
+                        out.push_str(
+r#"        add rsp, 32
+"#);
+                    } else {
+                        for (cidx, (name, args)) in calls.iter().enumerate() {
+                            if !args.is_empty() {
+                                match &args[0] {
+                                    Expr::Lit(Value::Int(v0)) => {
+                                        out.push_str(&format!("        mov ecx, {}\n", *v0 as i32));
+                                    }
+                                    Expr::Lit(Value::String(s)) => {
+                                        let mut bytes = s.clone().into_bytes();
+                                        let len = bytes.len();
+                                        let lbl = format!("LSARG{}", cidx);
+                                        out.push_str(&format!(
+"        lea rcx, [rip+{}]
+        mov edx, {}
+", lbl, len as i32));
+                                        call_arg_data.push((lbl, String::from_utf8(bytes).unwrap()));
+                                    }
+                                    Expr::Var(name) => {
+                                        if static_names.contains(name) {
+                                            out.push_str(&format!("        lea rcx, [rip+{}]\n", name));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            out.push_str(
+r#"        sub rsp, 32
+"#);
+                            out.push_str(&format!("        call {}\n", name));
+                            out.push_str(
+r#"        add rsp, 32
+"#);
+                        }
+                    }
+                }
+                if let Some(fv) = f64_ret {
+                    let bits = fv.to_bits();
+                    let lo = bits as u32;
+                    let hi = (bits >> 32) as u32;
+                    out.push_str(
+r#"        lea rax, [rip+LC0]
+        movsd xmm0, qword ptr [rax]
+"#);
+                }
+                out.push_str("\n        .text\n");
+                if !win_emitted_main_in_order {
+                    for (name, args) in &main_print_calls {
+                        if args.is_empty() {
+                            out.push_str(
+r#"        sub rsp, 32
+"#);
+                            out.push_str(&format!("        call {}\n", name));
+                            out.push_str(
+r#"        add rsp, 32
+        sub rsp, 40
+        mov rdx, rax
+        mov r8d, edx
+        mov rcx, rbx
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                        }
+                    }
+                }
+                if !win_emitted_main_in_order && !main_field_prints.is_empty() {
                     for (bn, off) in &main_field_prints {
                         out.push_str(
 r#"        sub rsp, 40
@@ -2267,7 +2525,7 @@ r#"        xor r9d, r9d
                     }
                 }
 
-                if !prints.is_empty() {
+                if !win_emitted_main_in_order && !prints.is_empty() {
                     for (idx, (_s, len)) in prints.iter().enumerate() {
                         out.push_str(&format!(
 r#"        sub rsp, 40

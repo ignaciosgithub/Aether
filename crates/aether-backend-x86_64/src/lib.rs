@@ -2768,19 +2768,21 @@ r#"        xor r9d, r9d
                     }
                     out.push_str("\"\n");
                 }
-                for (idx, (s, _len)) in prints.iter().enumerate() {
-                    out.push_str(&format!("LS{}:\n        .ascii \"", idx));
-                    for b in s.as_bytes() {
-                        let ch = *b as char;
-                        match ch {
-                            '\n' => out.push_str("\\n"),
-                            '\t' => out.push_str("\\t"),
-                            '\"' => out.push_str("\\\""),
-                            '\\' => out.push_str("\\\\"),
-                            _ => out.push(ch),
+                if !win_emitted_main_in_order {
+                    for (idx, (s, _len)) in prints.iter().enumerate() {
+                        out.push_str(&format!("LS{}:\n        .ascii \"", idx));
+                        for b in s.as_bytes() {
+                            let ch = *b as char;
+                            match ch {
+                                '\n' => out.push_str("\\n"),
+                                '\t' => out.push_str("\\t"),
+                                '\"' => out.push_str("\\\""),
+                                '\\' => out.push_str("\\\\"),
+                                _ => out.push(ch),
+                            }
                         }
+                        out.push_str("\"\n");
                     }
-                    out.push_str("\"\n");
                 }
                 out.push_str("\n        .text\n");
                 let mut func_rodata: Vec<(String, String)> = Vec::new();

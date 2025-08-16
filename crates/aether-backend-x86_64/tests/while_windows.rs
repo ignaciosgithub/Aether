@@ -11,7 +11,11 @@ fn windows_nonmain_while_codegen() {
         ret: Type::I32,
         body: vec![
             Stmt::While {
-                cond: Expr::Lit(Value::Int(0)),
+                cond: Expr::BinOp(
+                    Box::new(Expr::Lit(Value::Int(1))),
+                    aether_frontend::ast::BinOpKind::Lt,
+                    Box::new(Expr::Lit(Value::Int(2))),
+                ),
                 body: vec![
                     Stmt::Println("in loop".into()),
                 ],
@@ -38,9 +42,11 @@ fn windows_nonmain_while_codegen() {
     let asm = cg.generate(&m).expect("codegen ok");
 
     assert!(asm.contains("\nloop_once:\n"), "function label must exist");
-    let has_loop_labels = asm.contains("LWH") || asm.contains("HEAD") || asm.contains("END");
-    assert!(has_loop_labels, "expected loop head/end labels or equivalent pattern");
-    assert!(asm.contains("cmp") && (asm.contains("je") || asm.contains("jz")), "expected conditional branch out of loop");
+    let has_loop_labels = asm.contains("LWH_HEAD_") && asm.contains("LWH_END_");
+    assert!(has_loop_labels, "expected loop head/end labels");
+    assert!(asm.contains("cmp rax, 0"), "expected cmp rax, 0 before conditional jump");
+    assert!(asm.contains(" je LWH_END_"), "expected exact 'je LWH_END_*' conditional jump to loop end");
+    assert!(asm.contains("jmp LWH_HEAD_"), "expected back-edge jump to loop head");
 }
 
 #[cfg(not(target_os = "windows"))]

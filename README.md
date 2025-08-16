@@ -33,6 +33,7 @@ Choose your OS and follow the steps to be ready to write and run Aether code in 
 - Toolchain packages:
   - sudo apt-get update
   - sudo apt-get install -y build-essential clang lld nasm
+- Note: NASM is optional; only needed if you plan to assemble hand‑written .asm files.
 - Optional cross toolchains:
   - Windows: sudo apt-get install -y mingw-w64
   - AArch64: sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
@@ -79,6 +80,7 @@ Then:
 - pacman -Syu
 - pacman -S --needed git mingw-w64-x86_64-toolchain mingw-w64-x86_64-clang mingw-w64-x86_64-lld mingw-w64-x86_64-nasm make
 
+- Note: NASM is optional; only needed if you plan to assemble hand‑written .asm files.
 3) Install Rust (GNU toolchain) in MINGW64
 - curl https://sh.rustup.rs -sSf | sh -s -- -y
 - Close and reopen the MINGW64 terminal so cargo is on PATH

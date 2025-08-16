@@ -391,7 +391,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 return Ok(Expr::Call(name, args));
-            } else if self.toks.get(self.pos + 1).map(|t| t.kind.clone()) == Some(TokenKind::LBrace) {
+            } else if self.toks.get(self.pos + 1).map(|t| t.kind.clone()) == Some(TokenKind::LBrace) && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
                 self.pos += 2;
                 let mut fields = Vec::new();
                 if !self.eat_kind(&TokenKind::RBrace) {

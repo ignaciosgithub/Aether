@@ -2194,10 +2194,10 @@ r#"
         .global main
         .text
 main:
-        sub rsp, 40
+        sub rsp, {pad}
         mov ecx, -11
         call GetStdHandle
-        add rsp, 40
+        add rsp, {pad}
         mov rbx, rax
 "#);
                 let mut win_order_ls: Vec<(String, String)> = Vec::new();
@@ -2216,7 +2216,7 @@ main:
                                 let len = bytes.len();
                                 let lbl = format!("LS{}", win_order_ls_idx);
                                 out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rcx, rbx
 "#);
                                 out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
@@ -2225,7 +2225,7 @@ r#"        sub rsp, 40
 r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#);
                                 win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
                                 win_order_ls_idx += 1;
@@ -2268,22 +2268,22 @@ r#"        sub rsp, 32
                                 out.push_str(&format!("        call {}\n", name));
                                 out.push_str(
 r#"        add rsp, 32
-        sub rsp, 40
+        sub rsp, {pad}
         mov rdx, rax
         mov r8d, edx
         mov rcx, rbx
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
-        sub rsp, 40
+        add rsp, {pad}
+        sub rsp, {pad}
         mov rcx, rbx
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#);
                                 win_need_lsnl = true;
                             }
@@ -2387,7 +2387,7 @@ r#"        add rsp, 32
                                         let final_off = total_off + off;
                                         if matches!(fty, Type::String) {
                                             out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rcx, rbx
 "#);
                                             out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
@@ -2397,15 +2397,15 @@ r#"        sub rsp, 40
 r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
-        sub rsp, 40
+        add rsp, {pad}
+        sub rsp, {pad}
         mov rcx, rbx
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#);
                                             win_need_lsnl = true;
                                         }
@@ -2548,22 +2548,22 @@ r#"        sub rsp, 32
                             out.push_str(&format!("        call {}\n", name));
                             out.push_str(
 r#"        add rsp, 32
-        sub rsp, 40
+        sub rsp, {pad}
         mov rdx, rax
         mov r8d, edx
         mov rcx, rbx
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
-        sub rsp, 40
+        add rsp, {pad}
+        sub rsp, {pad}
         mov rcx, rbx
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#);
                         }
                     }
@@ -2571,7 +2571,7 @@ r#"        add rsp, 32
                 if !win_emitted_main_in_order && !main_field_prints.is_empty() {
                     for (bn, off) in &main_field_prints {
                         out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rcx, rbx
 "#);
                         out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
@@ -2581,15 +2581,15 @@ r#"        sub rsp, 40
 r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
-        sub rsp, 40
+        add rsp, {pad}
+        sub rsp, {pad}
         mov rcx, rbx
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#);
                     }
                 }
@@ -2597,14 +2597,14 @@ r#"        xor r9d, r9d
                 if !win_emitted_main_in_order && !prints.is_empty() {
                     for (idx, (_s, len)) in prints.iter().enumerate() {
                         out.push_str(&format!(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rcx, rbx
         lea rdx, [rip+LS{}]
         mov r8d, {}
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#, idx, len));
                     }
                 }
@@ -2652,7 +2652,7 @@ r#"        xor eax, eax
                     out.push_str("\n        .text\n");
                     for (sidx, (_hname, fname, arg_opt)) in spawn_sites.iter().enumerate() {
                         out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         xor ecx, ecx
         xor edx, edx
 "#);
@@ -2665,7 +2665,7 @@ r#"        sub rsp, 40
                         out.push_str(
 r#"        mov qword ptr [rsp+32], 0
         call CreateThread
-        add rsp, 40
+        add rsp, {pad}
 "#);
                         out.push_str(&format!("        mov [rip+THANDLE{0}], rax\n", sidx));
                     }
@@ -2676,29 +2676,29 @@ r#"        mov qword ptr [rsp+32], 0
                         }
                         if let Some(sidx) = found {
                             out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
 "#);
                             out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
                             out.push_str(
 r#"        mov rdx, -1
         call WaitForSingleObject
-        add rsp, 40
-        sub rsp, 40
+        add rsp, {pad}
+        sub rsp, {pad}
 "#);
                             out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
                             out.push_str(
 r#"        lea rdx, [rsp+24]
         call GetExitCodeThread
         mov eax, dword ptr [rsp+24]
-        add rsp, 40
+        add rsp, {pad}
 "#);
                             out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
 "#);
                             out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
                             out.push_str(
 r#"        call CloseHandle
-        add rsp, 40
+        add rsp, {pad}
 "#);
                             out.push_str(&format!("        mov dword ptr [rip+TRESJ{}], eax\n", jidx));
                         }
@@ -2710,13 +2710,13 @@ r#"        call CloseHandle
                         }
                         if let Some(sidx) = found {
                             out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
 "#);
                             out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
                             out.push_str(
 r#"        mov edx, 1
         call TerminateThread
-        add rsp, 40
+        add rsp, {pad}
 "#);
                             out.push_str(
 r#"        mov ecx, eax
@@ -2725,12 +2725,12 @@ r#"        mov ecx, eax
         setne al
 "#);
                             out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
 "#);
                             out.push_str(&format!("        mov rcx, qword ptr [rip+THANDLE{}]\n", sidx));
                             out.push_str(
 r#"        call CloseHandle
-        add rsp, 40
+        add rsp, {pad}
 "#);
                             out.push_str(&format!("        mov dword ptr [rip+TRESD{}], eax\n", didx));
                         }
@@ -2775,7 +2775,7 @@ r#"        call CloseHandle
                                 let len = s.as_bytes().len() + 1;
                                 let lbl = format!("LSW_main_{}_{}", widx, bidx);
                                 out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rcx, rbx
 "#);
                                 out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
@@ -2784,7 +2784,7 @@ r#"        sub rsp, 40
 r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#);
                                 while_data.push((lbl, String::from_utf8(bytes).unwrap()));
                             }
@@ -2870,13 +2870,21 @@ r#"        xor r9d, r9d
                     }
 
                     out.push_str(&format!("{}:\n", func.name));
-                    out.push_str(
+                    let has_while = func.body.iter().any(|s| matches!(s, Stmt::While { .. }));
+                    let has_locals = func.body.iter().any(|s| matches!(s, Stmt::Let { .. }));
+                    let no_prologue = has_while && !has_locals;
+                    if no_prologue {
+                        out.push_str("        push rbx\n");
+                    } else {
+                        out.push_str(
 r#"        push rbp
         mov rbp, rsp
         push rbx
 "#);
+                    }
                     let mut local_offsets: HashMap<String, usize> = HashMap::new();
                     let mut local_types: HashMap<String, Type> = HashMap::new();
+                    let call_pad: usize = if no_prologue { 32 } else { 40 };
                     let mut cur_off: usize = 0;
                     for stmt in &func.body {
                         if let Stmt::Let { name, ty, .. } = stmt {
@@ -3028,6 +3036,7 @@ r#"        sub rsp, 40
                             Stmt::While { cond, body } => {
                                 let head = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
                                 let end = format!("LWH_END_{}_{}", func.name, lwh_idx);
+                                out.push_str(&format!("        jmp {}\n", head));
                                 out.push_str(&format!("{}:\n", head));
                                 emit_win_eval_cond_to_rax(&cond, &mut out, &local_offsets, &local_types);
                                 out.push_str("        cmp rax, 0\n");
@@ -3102,14 +3111,14 @@ r#"        sub rsp, 40
                                                             _ => "edx",
                                                         };
                                                         out.push_str(&format!(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rdx, {ptr}
         mov r8d, {len}
         mov rcx, rbx
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#, ptr=ptr_reg, len=len32));
                                                         need_nl = true;
                                                         out.push_str(
@@ -3207,14 +3216,14 @@ r#"        sub rsp, 40
                                                                         _ => "edx",
                                                                     };
                                                                     out.push_str(&format!(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rdx, {ptr}
         mov r8d, {len}
         mov rcx, rbx
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#, ptr=ptr_reg, len=len32));
                                                                     need_nl = true;
                                                                     out.push_str(
@@ -3330,7 +3339,7 @@ r#"        sub rsp, 40
                                                     let len = s.as_bytes().len() + 1;
                                                     let lbl = format!("LSF_{}_{}", func.name, fi);
                                                     out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rcx, rbx
 "#);
                                                     out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
@@ -3339,7 +3348,7 @@ r#"        sub rsp, 40
 r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#);
                                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                                     fi += 1;
@@ -3355,7 +3364,7 @@ r#"        xor r9d, r9d
                                                     let len = s.as_bytes().len() + 1;
                                                     let lbl = format!("LSF_{}_{}", func.name, fi);
                                                     out.push_str(
-r#"        sub rsp, 40
+r#"        sub rsp, {pad}
         mov rcx, rbx
 "#);
                                                     out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
@@ -3364,7 +3373,7 @@ r#"        sub rsp, 40
 r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
-        add rsp, 40
+        add rsp, {pad}
 "#);
                                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                                     fi += 1;
@@ -3415,10 +3424,19 @@ r#"        sub rsp, 32
                                         out.push_str(&format!("        call {}\n", name));
                                         out.push_str(
 r#"        add rsp, 32
-        pop rbx
+"#);
+                                        if no_prologue {
+                                            out.push_str(
+r#"        pop rbx
+        ret
+"#);
+                                        } else {
+                                            out.push_str(
+r#"        pop rbx
         pop rbp
         ret
 "#);
+                                        }
                                     }
                                 } else if let Expr::Lit(Value::String(s)) = expr {
                                     let bytes = s.clone().into_bytes();

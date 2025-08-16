@@ -46,7 +46,14 @@ fn windows_nonmain_while_codegen() {
     assert!(has_loop_labels, "expected loop head/end labels");
     assert!(asm.contains("cmp rax, 0"), "expected cmp rax, 0 before conditional jump");
     assert!(asm.contains(" je LWH_END_"), "expected exact 'je LWH_END_*' conditional jump to loop end");
-    assert!(asm.contains("jmp LWH_HEAD_"), "expected back-edge jump to loop head");
+    let head_jmps = asm.match_indices("jmp LWH_HEAD_").count();
+    assert!(head_jmps >= 2, format!("expected entry and back-edge jumps to loop head, found {}", head_jmps));
+    let func_label = "\nloop_once:\n";
+    let pos = asm.find(func_label).expect("loop_once label present");
+    let after = &asm[pos + func_label.len()..std::cmp::min(pos + func_label.len() + 200, asm.len())];
+    assert!(after.contains("jmp LWH_HEAD_"), "expected immediate entry jmp to loop head after function label");
+    assert!(!after.contains("push rbp"), "no-prologue: should not push rbp for loop_once");
+    assert!(!after.contains("mov rbp, rsp"), "no-prologue: should not set rbp for loop_once");
 }
 
 #[cfg(not(target_os = "windows"))]

@@ -2087,6 +2087,8 @@ r#"        push %rbx
                                 }
 
                             }
+                            Stmt::Assign { .. } => {
+                            }
                             _ => {}
                         }
                     }
@@ -2809,6 +2811,7 @@ r#"        push rbp
                     let mut ret_i: i64 = 0;
                     let mut ret_f: Option<f64> = None;
                     let mut fi: usize = 0;
+                    let mut lwh_idx: usize = 0;
                     for stmt in &func.body {
                         match stmt {
                             Stmt::Println(s) => {
@@ -2828,6 +2831,67 @@ r#"        sub rsp, 40
 "#, lbl, len));
                                 func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                 fi += 1;
+                            }
+                            Stmt::While { cond, body } => {
+                                let head = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
+                                let end = format!("LWH_END_{}_{}", func.name, lwh_idx);
+                                out.push_str(&format!("{}:\n", head));
+                                match cond {
+                                    Expr::BinOp(a, op, b) => {
+                                        if let (Expr::Lit(Value::Int(la)), Expr::Lit(Value::Int(lb))) = (&**a, &**b) {
+                                            out.push_str(&format!("        mov r10, {}\n", la));
+                                            out.push_str(&format!("        mov r11, {}\n", lb));
+                                            out.push_str("        cmp r10, r11\n");
+                                            match op {
+                                                BinOpKind::Lt => out.push_str(&format!("        jge {}\n", end)),
+                                                BinOpKind::Le => out.push_str(&format!("        jg {}\n", end)),
+                                                BinOpKind::Eq => out.push_str(&format!("        jne {}\n", end)),
+                                                _ => out.push_str(&format!("        jmp {}\n", end)),
+                                            }
+                                        } else {
+                                            out.push_str(&format!("        jmp {}\n", end));
+                                        }
+                                    }
+                                    Expr::Lit(Value::Int(v)) => {
+                                        out.push_str(&format!("        mov r10, {}\n", v));
+                                        out.push_str("        cmp r10, 0\n");
+                                        out.push_str(&format!("        je {}\n", end));
+                                    }
+                                    _ => {
+                                        out.push_str(&format!("        jmp {}\n", end));
+                                    }
+                                }
+                                for (bidx, st) in body.iter().enumerate() {
+                                    match st {
+                                        Stmt::Println(s) => {
+                                            let mut bytes = s.clone().into_bytes();
+                                            bytes.push(b'\n');
+                                            let len = s.as_bytes().len() + 1;
+                                            let lbl = format!("LSFWH_{}_{}_{}", func.name, lwh_idx, bidx);
+                                            out.push_str(&format!(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+{}]
+        mov r8d, {}
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#, lbl, len));
+                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                        }
+                                        Stmt::Break => {
+                                            out.push_str(&format!("        jmp {}\n", end));
+                                        }
+                                        Stmt::Continue => {
+                                            out.push_str(&format!("        jmp {}\n", head));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                out.push_str(&format!("        jmp {}\n", head));
+                                out.push_str(&format!("{}:\n", end));
+                                lwh_idx += 1;
                             }
                             Stmt::PrintExpr(e) => {
                                 match e {

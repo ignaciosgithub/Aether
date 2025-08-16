@@ -1,3 +1,26 @@
+Aether Language
+
+Variables and assignment
+- Declare with explicit type:
+  let x: i64 = 1;
+  let y: i32 = 5;
+  let z: f64 = 3.14;
+  let s: String = "Hello";
+- Reassign (type must match):
+  x = x + 1;
+  s = "Bye";
+- Assign to struct fields:
+  pub struct Inner { y: i32 }
+  pub struct Point { x: i32, inner: Inner, name: String }
+  let p: Point = Point { x: 1, inner: Inner { y: 2 }, name: "P0" };
+  p.x = 5;
+  p.inner.y = 9;
+  p.name = "P1";
+- All statements end with a semicolon.
+- Functions return with:
+  return expr;
+
+
 Threading
 
 Builtins recognized by the backends (no surface syntax changes):

@@ -44,8 +44,8 @@ fn windows_nonmain_while_codegen() {
     assert!(asm.contains("\nloop_once:\n"), "function label must exist");
     let has_loop_labels = asm.contains("LWH_HEAD_") && asm.contains("LWH_END_");
     assert!(has_loop_labels, "expected loop head/end labels");
-    let has_cmp_jump = asm.contains("cmp rax, 0") && (asm.contains(" je LWH_END_") || asm.contains("\nje ") || asm.contains("\njz "));
-    assert!(has_cmp_jump, "expected cmp rax, 0 and conditional jump to loop end");
+    assert!(asm.contains("cmp rax, 0"), "expected cmp rax, 0 before conditional jump");
+    assert!(asm.contains(" je LWH_END_"), "expected exact 'je LWH_END_*' conditional jump to loop end");
     assert!(asm.contains("jmp LWH_HEAD_"), "expected back-edge jump to loop head");
 }
 

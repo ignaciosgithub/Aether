@@ -2426,6 +2426,27 @@ r#"        xor r9d, r9d
 ", lbl, bytes.len() as i32));
                                     win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
                                     win_order_ls_idx += 1;
+                                } else if let Expr::Call(name, args) = expr {
+                                    if !args.is_empty() {
+                                        for (i, a) in args.iter().enumerate().take(4) {
+                                            match (i, a) {
+                                                (0, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov ecx, {}\n", *v as i32)),
+                                                (1, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov edx, {}\n", *v as i32)),
+                                                (2, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r8d, {}\n", *v as i32)),
+                                                (3, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r9d, {}\n", *v as i32)),
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    out.push_str(
+r#"        sub rsp, 32
+"#);
+                                    out.push_str(&format!("        call {}\n", name));
+                                    out.push_str(
+r#"        add rsp, 32
+        ret
+"#);
+
                                 }
                             }
                             _ => {}

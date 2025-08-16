@@ -2808,6 +2808,30 @@ r#"        push rbp
         mov rbp, rsp
         push rbx
 "#);
+                    let mut local_offsets: HashMap<String, usize> = HashMap::new();
+                    let mut local_types: HashMap<String, Type> = HashMap::new();
+                    let mut cur_off: usize = 0;
+                    for stmt in &func.body {
+                        if let Stmt::Let { name, ty, .. } = stmt {
+                            let mut sz = match ty {
+                                Type::I32 => 8usize,
+                                Type::I64 | Type::F64 => 8usize,
+                                Type::String => 16usize,
+                                Type::User(un) => {
+                                    if let Some(sz) = struct_sizes.get(un) { *sz } else { 8usize }
+                                }
+                                _ => 8usize,
+                            };
+                            if sz % 8 != 0 { sz += 8 - (sz % 8); }
+                            local_offsets.insert(name.clone(), cur_off + sz);
+                            local_types.insert(name.clone(), ty.clone());
+                            cur_off += sz;
+                        }
+                    }
+                    let mut frame_size = if cur_off % 16 == 0 { cur_off } else { cur_off + (16 - (cur_off % 16)) };
+                    if frame_size > 0 {
+                        out.push_str(&format!("        sub rsp, {}\n", frame_size));
+                    }
                     let mut ret_i: i64 = 0;
                     let mut ret_f: Option<f64> = None;
                     let mut fi: usize = 0;
@@ -2831,7 +2855,109 @@ r#"        sub rsp, 40
 "#, lbl, len));
                                 func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                 fi += 1;
-                            }
+                            },
+                            Stmt::Let { name, ty, init } => {
+                                if let Some(off) = local_offsets.get(name) {
+                                    match (ty, init) {
+                                        (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                            out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off, *v as i32));
+                                        }
+                                        (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                            out.push_str(&format!("        mov rax, {}\n", *v as i64));
+                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                        }
+                                        (Type::String, Expr::Lit(Value::String(s))) => {
+                                            let lbl = format!("LSF_INIT_{}_{}", func.name, fi);
+                                            let bytes = s.clone().into_bytes();
+                                            out.push_str(&format!("        lea rax, [rip+{}]\n", lbl));
+                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                            out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off - 8, bytes.len() as i32));
+                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                            fi += 1;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            },
+                            Stmt::Assign { target, value } => {
+                                match target {
+                                    Expr::Var(vn) => {
+                                        if let Some(off) = local_offsets.get(vn.as_str()) {
+                                            match value {
+                                                Expr::Lit(Value::Int(v)) => {
+                                                    out.push_str(&format!("        mov rax, {}\n", *v as i64));
+                                                    out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                                }
+                                                Expr::Lit(Value::String(s)) => {
+                                                    let lbl = format!("LSF_SET_{}_{}", func.name, fi);
+                                                    let bytes = s.clone().into_bytes();
+                                                    out.push_str(&format!("        lea rax, [rip+{}]\n", lbl));
+                                                    out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                                    out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off - 8, bytes.len() as i32));
+                                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                    fi += 1;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    Expr::Field(_, _) => {
+                                        fn collect_field_chain<'a>(e: &'a Expr, names: &mut Vec<&'a str>) -> Option<&'a str> {
+                                            match e {
+                                                Expr::Var(v) => Some(v.as_str()),
+                                                Expr::Field(b, f) => {
+                                                    let base = collect_field_chain(b, names)?;
+                                                    names.push(f.as_str());
+                                                    Some(base)
+                                                }
+                                                _ => None,
+                                            }
+                                        }
+                                        let mut fields: Vec<&str> = Vec::new();
+                                        if let Some(base_name) = collect_field_chain(target, &mut fields) {
+                                            if let (Some(base_off), Some(mut cur_ty)) = (local_offsets.get(base_name), local_types.get(base_name).cloned()) {
+                                                let mut tot_off: usize = 0;
+                                                let mut ok = true;
+                                                for fname in &fields {
+                                                    if let Type::User(ref sname) = cur_ty {
+                                                        if let Some((foff, fty)) = get_field_info(sname.as_str(), fname, &field_offsets) {
+                                                            tot_off += foff;
+                                                            cur_ty = fty;
+                                                        } else {
+                                                            ok = false; break;
+                                                        }
+                                                    } else {
+                                                        ok = false; break;
+                                                    }
+                                                }
+                                                if ok {
+                                                    let addr_off = base_off + tot_off;
+                                                    match (cur_ty, value) {
+                                                        (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                                            out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", addr_off, *v as i32));
+                                                        }
+                                                        (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                                            out.push_str(&format!("        mov rax, {}\n", *v as i64));
+                                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", addr_off));
+                                                        }
+                                                        (Type::String, Expr::Lit(Value::String(s))) => {
+                                                            let lbl = format!("LSF_SET_{}_{}", func.name, fi);
+                                                            let bytes = s.clone().into_bytes();
+                                                            out.push_str(&format!("        lea rax, [rip+{}]\n", lbl));
+                                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", addr_off));
+                                                            out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", addr_off - 8, bytes.len() as i32));
+                                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                            fi += 1;
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            },
                             Stmt::While { cond, body } => {
                                 let head = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
                                 let end = format!("LWH_END_{}_{}", func.name, lwh_idx);

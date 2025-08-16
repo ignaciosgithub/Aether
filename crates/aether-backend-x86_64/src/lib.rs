@@ -3153,6 +3153,18 @@ r#"        sub rsp, 40
                                     _ => {}
                                 }
                             }
+                            Stmt::Expr(Expr::Call(name, args)) => {
+                                if args.is_empty() {
+                                    out.push_str(
+r#"        sub rsp, 32
+"#);
+                                    out.push_str(&format!("        call {}\n", name));
+                                    out.push_str(
+r#"        add rsp, 32
+"#);
+                                }
+                            }
+
                             Stmt::Return(expr) => {
                                 if let Some(v) = eval_int_expr(expr) {
                                     ret_i = v;
@@ -3160,7 +3172,20 @@ r#"        sub rsp, 40
                                 if let Some(fv) = eval_f64_expr(expr) {
                                     ret_f = Some(fv);
                                 }
-                                if let Expr::Lit(Value::String(s)) = expr {
+                                if let Expr::Call(name, args) = expr {
+                                    if args.is_empty() {
+                                        out.push_str(
+r#"        sub rsp, 32
+"#);
+                                        out.push_str(&format!("        call {}\n", name));
+                                        out.push_str(
+r#"        add rsp, 32
+        pop rbx
+        pop rbp
+        ret
+"#);
+                                    }
+                                } else if let Expr::Lit(Value::String(s)) = expr {
                                     let bytes = s.clone().into_bytes();
                                     let len = bytes.len();
                                     let lbl = format!("LSRET_{}_{}", func.name, fi);

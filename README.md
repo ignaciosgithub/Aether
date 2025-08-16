@@ -93,6 +93,7 @@ Then:
 
 5) Your first program (Windows target)
 - cargo run -p aetherc -- examples/println.ae --arch x86_64 --os windows -o out/windows/println.s
+- If you see “The system cannot find the path specified”: ensure the output directory exists and that you are generating .s (assembly), not .o. For example: mkdir -p out/windows; cargo run -p aetherc -- examples/println.ae --arch x86_64 --os windows -o out/windows/println.s; bash ./scripts/assemble_link.sh x86_64-windows out/windows/println.s out/windows/println.exe
 - bash ./scripts/assemble_link.sh x86_64-windows out/windows/println.s out/windows/println.exe
 - ./out/windows/println.exe
 

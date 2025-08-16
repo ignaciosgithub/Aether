@@ -155,6 +155,52 @@ fn eval_f64_expr(expr: &Expr) -> Option<f64> {
         _ => None,
     }
 }
+fn emit_win_eval_cond_to_rax(
+    expr: &Expr,
+    out: &mut String,
+    local_offsets: &std::collections::HashMap<String, usize>,
+    local_types: &std::collections::HashMap<String, Type>,
+) {
+    match expr {
+        Expr::Lit(Value::Int(v)) => {
+            out.push_str(&format!("        mov rax, {}\n", *v as i64));
+        }
+        Expr::Var(name) => {
+            if let Some(off) = local_offsets.get(name.as_str()) {
+                match local_types.get(name.as_str()) {
+                    Some(Type::I32) => {
+                        out.push_str(&format!("        mov eax, dword ptr [rbp-{}]\n", off));
+                    }
+                    _ => {
+                        out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", off));
+                    }
+                }
+            } else {
+                out.push_str("        xor rax, rax\n");
+            }
+        }
+        Expr::BinOp(a, op, b) => {
+            emit_win_eval_cond_to_rax(a, out, local_offsets, local_types);
+            out.push_str("        mov r10, rax\n");
+            emit_win_eval_cond_to_rax(b, out, local_offsets, local_types);
+            out.push_str("        mov r11, rax\n");
+            out.push_str("        cmp r10, r11\n");
+            match op {
+                BinOpKind::Eq => out.push_str("        sete al\n"),
+                BinOpKind::Lt => out.push_str("        setl al\n"),
+                BinOpKind::Le => out.push_str("        setle al\n"),
+                _ => {
+                    out.push_str("        xor eax, eax\n");
+                }
+            }
+            out.push_str("        movzx eax, al\n");
+        }
+        _ => {
+            out.push_str("        xor rax, rax\n");
+        }
+    }
+}
+
 
 impl CodeGenerator for X86_64LinuxCodegen {
     fn target(&self) -> &Target {
@@ -2962,31 +3008,9 @@ r#"        sub rsp, 40
                                 let head = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
                                 let end = format!("LWH_END_{}_{}", func.name, lwh_idx);
                                 out.push_str(&format!("{}:\n", head));
-                                match cond {
-                                    Expr::BinOp(a, op, b) => {
-                                        if let (Expr::Lit(Value::Int(la)), Expr::Lit(Value::Int(lb))) = (&**a, &**b) {
-                                            out.push_str(&format!("        mov r10, {}\n", la));
-                                            out.push_str(&format!("        mov r11, {}\n", lb));
-                                            out.push_str("        cmp r10, r11\n");
-                                            match op {
-                                                BinOpKind::Lt => out.push_str(&format!("        jge {}\n", end)),
-                                                BinOpKind::Le => out.push_str(&format!("        jg {}\n", end)),
-                                                BinOpKind::Eq => out.push_str(&format!("        jne {}\n", end)),
-                                                _ => out.push_str(&format!("        jmp {}\n", end)),
-                                            }
-                                        } else {
-                                            out.push_str(&format!("        jmp {}\n", end));
-                                        }
-                                    }
-                                    Expr::Lit(Value::Int(v)) => {
-                                        out.push_str(&format!("        mov r10, {}\n", v));
-                                        out.push_str("        cmp r10, 0\n");
-                                        out.push_str(&format!("        je {}\n", end));
-                                    }
-                                    _ => {
-                                        out.push_str(&format!("        jmp {}\n", end));
-                                    }
-                                }
+                                emit_win_eval_cond_to_rax(&cond, &mut out, &local_offsets, &local_types);
+                                out.push_str("        cmp rax, 0\n");
+                                out.push_str(&format!("        je {}\n", end));
                                 for (bidx, st) in body.iter().enumerate() {
                                     match st {
                                         Stmt::Println(s) => {

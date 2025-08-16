@@ -1,4 +1,4 @@
-use aether_frontend::ast::{Module, Item, Function, Stmt, Expr, Type, Value, Param, StructDef, Field};
+use aether_frontend::ast::{Module, Item, Function, Stmt, Expr, Type, Value, Param, StructDef, StructField};
 use aether_backend_x86_64::X86_64LinuxCodegen;
 use aether_codegen::CodeGenerator;
 
@@ -7,16 +7,16 @@ use aether_codegen::CodeGenerator;
 fn windows_nonmain_assignment_codegen() {
     let sd_inner = Item::Struct(StructDef {
         name: "Inner".into(),
-        fields: vec![Field { name: "y".into(), ty: Type::I32 }],
+        fields: vec![StructField { name: "y".into(), ty: Type::I32 }],
         parent: None,
         is_pub: true,
     });
     let sd_point = Item::Struct(StructDef {
         name: "Point".into(),
         fields: vec![
-            Field { name: "x".into(), ty: Type::I32 },
-            Field { name: "inner".into(), ty: Type::User("Inner".into()) },
-            Field { name: "name".into(), ty: Type::String },
+            StructField { name: "x".into(), ty: Type::I32 },
+            StructField { name: "inner".into(), ty: Type::User("Inner".into()) },
+            StructField { name: "name".into(), ty: Type::String },
         ],
         parent: None,
         is_pub: true,

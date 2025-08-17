@@ -1,0 +1,23 @@
+func fibonacci(n: i32) -> i32 {
+    return if (n < 2) { n } else { fibonacci(n - 1) + fibonacci(n - 2) };
+}
+
+func benchmark() -> i32 {
+    let s: i32 = 0;
+    let i: i32 = 0;
+
+    while (i < 100000) {
+        s = s + (i * i);
+        i = i + 1;
+    }
+
+    let fib: i32 = fibonacci(20);
+
+    println("Benchmark done");
+    println("Arithmetic sum + fib:");
+    return s + fib;
+}
+
+pub func main() -> i32 {
+    return benchmark();
+}

@@ -3069,15 +3069,19 @@ r#"        xor eax, eax
         ret
 "#);
                 }
-                for (sidx, (_hname, fname, _)) in spawn_sites.iter().enumerate() {
-                    out.push_str(&format!(
-"        ; thunk for {}
-{0}_thunk:
+                {
+                    let mut emitted_thunks = std::collections::HashSet::new();
+                    for (_sidx, (_hname, fname, _)) in spawn_sites.iter().enumerate() {
+                        if emitted_thunks.insert(fname.clone()) {
+                            out.push_str(&format!(
+"{0}_thunk:
         sub rsp, 40
         call {0}
         add rsp, 40
         ret
 ", fname));
+                        }
+                    }
                 }
 
                 if let Some(fv) = f64_ret {
@@ -3363,6 +3367,8 @@ r#"        push rbp
                     if frame_size > 0 {
                         out.push_str(&format!("        sub rsp, {}\n", frame_size));
                     }
+                    let lret = format!("LRET_{}", func.name);
+
                     let mut ret_i: i64 = 0;
                     let mut ret_f: Option<f64> = None;
                     let mut fi: usize = 0;
@@ -3590,6 +3596,113 @@ r#"        sub rsp, 40
                                 out.push_str(&format!("{}:\n", end));
                                 lwh_idx += 1;
                             }
+                            Stmt::Return(expr) => {
+                                match expr {
+                                    Expr::Lit(Value::Int(v)) => {
+                                        out.push_str(&format!("        mov eax, {}\n", *v as i32));
+                                        out.push_str(&format!("        jmp {}\n", lret));
+                                    }
+                                    Expr::IfElse { cond, then_expr, else_expr } => {
+                                        let lbl_then = format!("LIF_THEN_{}_{}", func.name, lwh_idx);
+                                        let lbl_else = format!("LIF_ELSE_{}_{}", func.name, lwh_idx);
+
+                                        let mut handled_cmp = false;
+                                        if let Expr::BinOp(lhs, op, rhs) = &**cond {
+                                            if let (Expr::Var(vn), Expr::Lit(Value::Int(k))) = (lhs.as_ref(), rhs.as_ref()) {
+                                                if func.params.get(0).map(|p| p.name.as_str()) == Some(vn.as_str()) {
+                                                    match op {
+                                                        aether_frontend::ast::BinOpKind::Lt => {
+                                                            out.push_str(&format!("        cmp rcx, {}\n", *k as i64));
+                                                            out.push_str(&format!("        jl {}\n        jmp {}\n", lbl_then, lbl_else));
+                                                            handled_cmp = true;
+                                                        }
+                                                        aether_frontend::ast::BinOpKind::Le => {
+                                                            out.push_str(&format!("        cmp rcx, {}\n", *k as i64));
+                                                            out.push_str(&format!("        jle {}\n        jmp {}\n", lbl_then, lbl_else));
+                                                            handled_cmp = true;
+                                                        }
+                                                        aether_frontend::ast::BinOpKind::Eq => {
+                                                            out.push_str(&format!("        cmp rcx, {}\n", *k as i64));
+                                                            out.push_str(&format!("        je {}\n        jmp {}\n", lbl_then, lbl_else));
+                                                            handled_cmp = true;
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if !handled_cmp {
+                                            emit_win_eval_cond_to_rax(&cond, &mut out, &local_offsets, &local_types);
+                                            out.push_str("        cmp rax, 0\n");
+                                            out.push_str(&format!("        je {}\n", lbl_else));
+                                        }
+                                        out.push_str(&format!("{}:\n", lbl_then));
+                                        match &**then_expr {
+                                            Expr::Lit(Value::Int(tv)) => {
+                                                out.push_str(&format!("        mov eax, {}\n", *tv as i32));
+                                                out.push_str(&format!("        jmp {}\n", lret));
+                                            }
+                                            _ => {}
+                                        }
+                                        out.push_str(&format!("{}:\n", lbl_else));
+                                        match &**else_expr {
+                                            Expr::BinOp(a, aop, b) if matches!(aop, aether_frontend::ast::BinOpKind::Mul) => {
+                                                let mut lhs_var_is_param = false;
+                                                let mut rhs_call_name: Option<&str> = None;
+                                                let mut rhs_call_arg_is_n_minus_1 = false;
+                                                if let Expr::Var(vn) = a.as_ref() {
+                                                    if let Some(p0) = func.params.get(0) {
+                                                        if p0.name == *vn {
+                                                            lhs_var_is_param = true;
+                                                        }
+                                                    }
+                                                }
+                                                if let Expr::Call(cname, cargs) = b.as_ref() {
+                                                    rhs_call_name = Some(cname.as_str());
+                                                    if cargs.len() == 1 {
+                                                        if let Expr::BinOp(bla, bop, blb) = &cargs[0] {
+                                                            if matches!(bop, aether_frontend::ast::BinOpKind::Sub) {
+                                                                if let (Expr::Var(vn2), Expr::Lit(Value::Int(iv1))) = (bla.as_ref(), blb.as_ref()) {
+                                                                    if *iv1 == 1 {
+                                                                        if let Some(p0) = func.params.get(0) {
+                                                                            if p0.name == *vn2 {
+                                                                                rhs_call_arg_is_n_minus_1 = true;
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                if lhs_var_is_param && rhs_call_name.is_some() && rhs_call_arg_is_n_minus_1 {
+                                                    out.push_str("        mov rbx, rcx\n");
+                                                    out.push_str("        lea rcx, [rcx-1]\n");
+                                                    out.push_str("        sub rsp, 40\n");
+                                                    out.push_str(&format!("        call {}\n", rhs_call_name.unwrap()));
+                                                    out.push_str("        add rsp, 40\n");
+                                                    out.push_str("        imul rax, rbx\n");
+                                                    out.push_str(&format!("        jmp {}\n", lret));
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    _ => {
+                                    }
+                                }
+                            }
+
+
+
+
+
+
+
+
+
+
+
                             Stmt::PrintExpr(e) => {
                                 match e {
                                     Expr::Lit(Value::String(s)) => {

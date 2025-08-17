@@ -548,6 +548,46 @@ _start:
                                 out.push_str(&format!("        mov ${}, %rdx\n", s.as_bytes().len() + 1));
                                 out.push_str("        syscall\n");
                             }
+                            Stmt::Assign { target, value } => {
+                                if let Expr::Var(tn) = target {
+                                    if let Some(off) = main_local_offsets.get(tn) {
+                                        if let Expr::BinOp(a, op, b) = value {
+                                            if let (Expr::Var(vn), Expr::Lit(Value::Int(k))) = (&**a, &**b) {
+                                                match op {
+                                                    BinOpKind::Add | BinOpKind::Sub if vn == tn => {
+                                                        let is_sub = matches!(op, BinOpKind::Sub);
+                                                        let kabs = *k;
+                                                        let disp = -(*off as isize);
+                                                        if let Some(ty) = main_local_types.get(tn) {
+                                                            match ty {
+                                                                Type::I32 => {
+                                                                    out.push_str(&format!("        mov {}(%rbp), %eax\n", disp));
+                                                                    if is_sub {
+                                                                        out.push_str(&format!("        sub ${}, %eax\n", kabs));
+                                                                    } else {
+                                                                        out.push_str(&format!("        add ${}, %eax\n", kabs));
+                                                                    }
+                                                                    out.push_str(&format!("        mov %eax, {}(%rbp)\n", disp));
+                                                                }
+                                                                _ => {
+                                                                    out.push_str(&format!("        mov {}(%rbp), %rax\n", disp));
+                                                                    if is_sub {
+                                                                        out.push_str(&format!("        sub ${}, %rax\n", kabs));
+                                                                    } else {
+                                                                        out.push_str(&format!("        add ${}, %rax\n", kabs));
+                                                                    }
+                                                                    out.push_str(&format!("        mov %rax, {}(%rbp)\n", disp));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             Stmt::Break => out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx)),
                             Stmt::Continue => out.push_str(&format!("        jmp .LWH_HEAD_main_{}\n", widx)),
                             _ => {}
@@ -1630,6 +1670,7 @@ r#"        push %rbx
                                     }
                                     Expr::Var(name) => {
                                         let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                        let xmm_regs = ["%xmm0","%xmm1","%xmm2","%xmm3","%xmm4","%xmm5","%xmm6","%xmm7"];
                                         let mut slot = 0usize;
                                         let mut handled = false;
                                         for p in &func.params {
@@ -1735,6 +1776,57 @@ r#"        push %rbx
         mov $1, %rdi
         syscall
         mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+");
+                                                            need_nl = true;
+                                                            handled = true;
+                                                        }
+                                                    }
+                                                    Type::F64 => {
+                                                        if slot < xmm_regs.len() {
+                                                            let srcx = xmm_regs[slot];
+                                                            out.push_str("        sub $80, %rsp\n");
+                                                            out.push_str(&format!("        cvttsd2si %rax, {}\n", srcx));
+                                                            out.push_str(
+"        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .F64I64_print_loop_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .F64I64_print_done_%=
+.F64I64_print_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .F64I64_print_loop_%=
+.F64I64_print_done_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                                            let dot_lbl = format!(".LSDOT_{}_{}", func.name, fi);
+                                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {dl}(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", dl=dot_lbl));
+                                                            func_rodata.push((dot_lbl, ".".to_string()));
+                                                            out.push_str(
+"        mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
         mov $1, %rdx
@@ -2389,6 +2481,50 @@ r#"        add rsp, 40
         add rsp, 40
 "#);
                                 win_need_lsnl = true;
+                            }
+                            Stmt::PrintExpr(Expr::Var(name)) => {
+                                let mut slot = 0usize;
+                                for p in &f.params {
+                                    if p.name == *name {
+                                        match p.ty {
+                                            Type::I32 | Type::I64 => {
+                                                out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                win_need_lsnl = true;
+                                            }
+                                            Type::F64 => {
+                                                out.push_str(
+r#"        ; float print stub
+        cvttsd2si rax, xmm0
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                win_need_lsnl = true;
+                                            }
+                                            _ => {}
+                                        }
+                                        break;
+                                    } else {
+                                        match p.ty {
+                                            Type::String => slot += 2,
+                                            _ => slot += 1,
+                                        }
+                                    }
+                                }
                             }
                             Stmt::PrintExpr(Expr::Field(recv, fname)) => {
                                 let mut base_name: Option<String> = None;

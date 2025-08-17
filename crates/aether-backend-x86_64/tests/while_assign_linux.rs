@@ -3,7 +3,6 @@ use aether_backend_x86_64::X86_64LinuxCodegen;
 use aether_codegen::CodeGenerator;
 
 #[test]
-#[ignore]
 fn linux_main_while_var_increment_codegen() {
     let main_fn = Item::Function(Function {
         name: "main".into(),
@@ -40,6 +39,8 @@ fn linux_main_while_var_increment_codegen() {
 
     assert!(asm.contains("\n.LWH_HEAD_main_0:\n") || asm.contains("\n.LWH_HEAD_main_0:\r\n"), "expected while head label");
     assert!(asm.contains("\n.LWH_END_main_0:\n") || asm.contains("\n.LWH_END_main_0:\r\n"), "expected while end label");
-    assert!(asm.contains("mov rax, qword ptr [rbp-") && asm.contains("add rax, 1") && asm.contains("mov qword ptr [rbp-"), "expected load/add/store for i = i + 1");
+    let has_add64 = asm.contains("mov -") && asm.contains("(%rbp), %rax") && asm.contains("add $1, %rax") && asm.contains("mov %rax, -");
+    let has_add32 = asm.contains("mov -") && asm.contains("(%rbp), %eax") && asm.contains("add $1, %eax") && asm.contains("mov %eax, -");
+    assert!(has_add64 || has_add32, "expected load/add/store for i = i + 1");
     assert!(asm.contains("jmp .LWH_HEAD_main_0"), "expected backedge to loop head");
 }

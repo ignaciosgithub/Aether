@@ -2514,27 +2514,48 @@ r#"        add rsp, 40
                                 win_need_lsnl = true;
                             }
                             Stmt::PrintExpr(Expr::Var(name)) => {
+                                let regs_gpr = ["rcx","rdx","r8","r9"];
+                                let regs_gpr32 = ["ecx","edx","r8d","r9d"];
+                                let regs_xmm = ["xmm0","xmm1","xmm2","xmm3"];
                                 let mut slot = 0usize;
+                                let mut handled = false;
                                 for p in &f.params {
                                     if p.name == *name {
                                         match p.ty {
-                                            Type::I32 | Type::I64 => {
-                                                out.push_str(
-r#"        sub rsp, 40
+                                            Type::I32 => {
+                                                if slot < regs_gpr32.len() {
+                                                    let s32 = regs_gpr32[slot];
+                                                    out.push_str(
+r#"        sub rsp, 80
+        lea r10, [rsp+79]
+        mov r8d, 10
+        xor rcx, rcx
+"#);
+                                                    out.push_str(&format!("        mov eax, {}\n", s32));
+                                                    out.push_str(
+r#"        test eax, eax
+        jnz .I32_loop_%=
+        mov byte ptr [r10], '0'
+        mov rcx, 1
+        jmp .I32_done_%=
+.I32_loop_%=:
+        xor edx, edx
+        div r8d
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc rcx
+        test eax, eax
+        jnz .I32_loop_%=
+.I32_done_%=:
+        lea rdx, [r10+1]
+        mov r8, rcx
         mov rcx, rbx
-        lea rdx, [rip+LSNL]
-        mov r8d, 1
+        sub rsp, 40
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
-"#);
-                                                win_need_lsnl = true;
-                                            }
-                                            Type::F64 => {
-                                                out.push_str(
-r#"        ; float print stub
-        cvttsd2si rax, xmm0
         sub rsp, 40
         mov rcx, rbx
         lea rdx, [rip+LSNL]
@@ -2543,8 +2564,156 @@ r#"        ; float print stub
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        add rsp, 80
 "#);
-                                                win_need_lsnl = true;
+                                                    win_need_lsnl = true;
+                                                    handled = true;
+                                                }
+                                            }
+                                            Type::I64 => {
+                                                if slot < regs_gpr.len() {
+                                                    let s = regs_gpr[slot];
+                                                    out.push_str(
+r#"        sub rsp, 80
+        lea r10, [rsp+79]
+        mov r8, 10
+        xor rcx, rcx
+"#);
+                                                    out.push_str(&format!("        mov rax, {}\n", s));
+                                                    out.push_str(
+r#"        test rax, rax
+        jnz .I64_loop_%=
+        mov byte ptr [r10], '0'
+        mov rcx, 1
+        jmp .I64_done_%=
+.I64_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc rcx
+        test rax, rax
+        jnz .I64_loop_%=
+.I64_done_%=:
+        lea rdx, [r10+1]
+        mov r8, rcx
+        mov rcx, rbx
+        sub rsp, 40
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        add rsp, 80
+"#);
+                                                    win_need_lsnl = true;
+                                                    handled = true;
+                                                }
+                                            }
+                                            Type::F64 => {
+                                                if slot < regs_xmm.len() {
+                                                    let sx = regs_xmm[slot];
+                                                    out.push_str(
+r#"        sub rsp, 80
+"#);
+                                                    out.push_str(&format!("        cvttsd2si rax, {}\n", sx));
+                                                    out.push_str(
+r#"        lea r10, [rsp+79]
+        mov r8, 10
+        xor rcx, rcx
+        test rax, rax
+        jnz .F64I64_loop_%=
+        mov byte ptr [r10], '0'
+        mov rcx, 1
+        jmp .F64I64_done_%=
+.F64I64_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc rcx
+        test rax, rax
+        jnz .F64I64_loop_%=
+.F64I64_done_%=:
+        lea rdx, [r10+1]
+        mov r8, rcx
+        mov rcx, rbx
+        sub rsp, 40
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                    let dot_lbl = format!("LSDOT_{}_{}", f.name, win_order_ls_idx);
+                                                    out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+"#);
+                                                    out.push_str(&format!("        lea rdx, [rip+{}]\n", dot_lbl));
+                                                    out.push_str(
+r#"        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                    out.push_str(&format!("        movsd xmm0, {}\n", sx));
+                                                    out.push_str(
+r#"        cvtsi2sd xmm1, rax
+        subsd xmm0, xmm1
+        lea rax, [rip+LFTSCALEW]
+        movsd xmm2, qword ptr [rax]
+        mulsd xmm2, xmm0
+        lea rax, [rip+LFHALFW]
+        movsd xmm3, qword ptr [rax]
+        addsd xmm3, xmm0
+        cvttsd2si rcx, xmm0
+        lea r10, [rsp+79]
+        mov r8, 10
+        mov r11, 6
+.F64FRACW_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        dec r11
+        test r11, r11
+        jnz .F64FRACW_loop_%=
+        lea rdx, [r10+1]
+        mov r8, 6
+        mov rcx, rbx
+        sub rsp, 40
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        add rsp, 80
+"#);
+                                                    win_order_ls.push((dot_lbl, ".".to_string()));
+                                                    win_need_lsnl = true;
+                                                    handled = true;
+                                                    if !out.contains("LFTSCALEW:\n") {
+                                                        out.push_str("\n        .data\nLFTSCALEW:\n        .quad 0x412E848000000000\nLFHALFW:\n        .quad 0x3FE0000000000000\n        .text\n");
+                                                    }
+                                                }
                                             }
                                             _ => {}
                                         }
@@ -2556,6 +2725,7 @@ r#"        ; float print stub
                                         }
                                     }
                                 }
+                                let _ = handled;
                             }
                             Stmt::PrintExpr(Expr::Field(recv, fname)) => {
                                 let mut base_name: Option<String> = None;

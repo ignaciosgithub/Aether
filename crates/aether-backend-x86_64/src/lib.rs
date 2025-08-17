@@ -3506,6 +3506,9 @@ r#"        lea rax, [rip+LC1]
                     out.push_str("\n        .text\n");
                 }
                 Ok(out.trim_start().to_string())
+
+
+
             }
             _ => Ok(String::from("; unsupported OS placeholder")),
         }

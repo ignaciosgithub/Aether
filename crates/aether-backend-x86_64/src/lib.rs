@@ -1557,6 +1557,8 @@ r#"        push %rbx
 
                     out.push_str(&format!("{}:\n", func.name));
                     let mut ret_i: i64 = 0;
+                    let mut linux_inbuf_emitted: bool = false;
+
                     let mut ret_f: Option<f64> = None;
                     let mut fi: usize = 0;
                     for stmt in &func.body {
@@ -1629,21 +1631,69 @@ r#"        push %rbx
                                         fi += 1;
                                     }
                                     Expr::Call(name, args) => {
-                                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
-                                        let mut ai = 0usize;
-                                        for a in args {
-                                            match a {
-                                                Expr::Lit(Value::Int(iv)) => {
-                                                    if ai < regs.len() {
-                                                        out.push_str(&format!("        mov ${}, {}\n", iv, regs[ai]));
-                                                        ai += 1;
-                                                    }
-                                                }
-                                                _ => {}
+                                        if name == "readln" && args.is_empty() {
+                                            let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
+                                            if !linux_inbuf_emitted {
+                                                out.push_str(&format!(
+"\n        .bss
+{lbl}:
+        .zero 1024
+        .text
+", lbl=inlbl));
+                                                linux_inbuf_emitted = true;
                                             }
-                                        }
-                                        out.push_str(&format!("        call {}\n", name));
-                                        out.push_str(
+                                            out.push_str(&format!(
+"        mov $0, %rax
+        mov $0, %rdi
+        leaq {lbl}(%rip), %rsi
+        mov $1024, %rdx
+        syscall
+        test %rax, %rax
+        jz .LREAD0_EMPTY_%=
+        mov %rax, %rdx
+        dec %rdx
+        mov %bl, (%rsi,%rdx,1)
+        cmp $10, %bl
+        jne .LREAD0_NO_NL_%=
+        test %rdx, %rdx
+        jz .LREAD0_TRIM_%=
+        mov %bl, -1(%rsi,%rdx,1)
+        cmp $13, %bl
+        jne .LREAD0_TRIM_%=
+        dec %rdx
+.LREAD0_TRIM_%=:
+.LREAD0_NO_NL_%=:
+        jmp .LREAD0_RET_%=
+.LREAD0_EMPTY_%=:
+        xor %rdx, %rdx
+.LREAD0_RET_%=:
+        mov $1, %rax
+        mov $1, %rdi
+        leaq {lbl}(%rip), %rsi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", lbl=inlbl));
+                                            fi += 1;
+                                        } else {
+                                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                            let mut ai = 0usize;
+                                            for a in args {
+                                                match a {
+                                                    Expr::Lit(Value::Int(iv)) => {
+                                                        if ai < regs.len() {
+                                                            out.push_str(&format!("        mov ${}, {}\n", iv, regs[ai]));
+                                                            ai += 1;
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            out.push_str(&format!("        call {}\n", name));
+                                            out.push_str(
 "        sub $80, %rsp
         lea 79(%rsp), %r10
         mov $10, %r8
@@ -1675,9 +1725,10 @@ r#"        push %rbx
         syscall
         add $80, %rsp
 ");
-                                        let nl_lbl = format!(".LNL_{}", fi);
-                                        out.push_str(&format!("{}:\n        .ascii \"\\n\"\n", nl_lbl));
-                                        fi += 1;
+                                            let nl_lbl = format!(".LNL_{}", fi);
+                                            out.push_str(&format!("{}:\n        .ascii \"\\n\"\n", nl_lbl));
+                                            fi += 1;
+                                        }
                                     }
                                     Expr::Var(name) => {
                                         let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
@@ -1891,7 +1942,54 @@ r#"        push %rbx
                                         }
                                     }
                                     Expr::Call(name, args) => {
-                                        if args.is_empty() {
+                                        if name == "readln" && args.is_empty() {
+                                            let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
+                                            if !linux_inbuf_emitted {
+                                                out.push_str(&format!(
+"\n        .bss
+{lbl}:
+        .zero 1024
+        .text
+", lbl=inlbl));
+                                                linux_inbuf_emitted = true;
+                                            }
+                                            out.push_str(&format!(
+"        mov $0, %rax
+        mov $0, %rdi
+        leaq {lbl}(%rip), %rsi
+        mov $1024, %rdx
+        syscall
+        test %rax, %rax
+        jz .LREAD_EMPTY_%=
+        mov %rax, %rdx
+        dec %rdx
+        mov %bl, (%rsi,%rdx,1)
+        cmp $10, %bl
+        jne .LREAD_NO_NL_%=
+        test %rdx, %rdx
+        jz .LREAD_TRIM_%=
+        mov %bl, -1(%rsi,%rdx,1)
+        cmp $13, %bl
+        jne .LREAD_TRIM_%=
+        dec %rdx
+.LREAD_TRIM_%=:
+.LREAD_NO_NL_%=:
+        jmp .LREAD_RET_%=
+.LREAD_EMPTY_%=:
+        xor %rdx, %rdx
+.LREAD_RET_%=:
+        mov $1, %rax
+        mov $1, %rdi
+        leaq {lbl}(%rip), %rsi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", lbl=inlbl));
+                                            need_nl = true;
+                                        } else if args.is_empty() {
                                             out.push_str(
 "        sub $8, %rsp
 ");
@@ -2427,6 +2525,7 @@ r#"
 
         .extern GetStdHandle
         .extern WriteFile
+        .extern ReadFile
         .global main
         .text
 main:
@@ -2435,6 +2534,7 @@ main:
         call GetStdHandle
         add rsp, 40
         mov r12, rax
+
 "#);
                 let mut win_order_ls: Vec<(String, String)> = Vec::new();
                 let mut win_order_ls_idx: usize = 0;
@@ -2443,6 +2543,9 @@ main:
                 let mut win_emitted_main_in_order: bool = false;
 
                 if let Some(f) = main_func {
+                let mut win_stdin_inited: bool = false;
+                let mut win_inbuf_emitted: bool = false;
+
                     win_emitted_main_in_order = true;
 
                     for stmt in &f.body {
@@ -2453,7 +2556,8 @@ main:
                                 let len = bytes.len();
                                 let lbl = format!("LS{}", win_order_ls_idx);
                                 out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
 "#);
                                 out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
@@ -2463,6 +2567,7 @@ r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                 win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
                                 win_order_ls_idx += 1;
@@ -2488,22 +2593,98 @@ r#"        add rsp, 40
 "#);
                             }
                             Stmt::PrintExpr(Expr::Call(name, args)) => {
-                                if !args.is_empty() {
-                                    for (i, a) in args.iter().enumerate().take(4) {
-                                        match (i, a) {
-                                            (0, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov ecx, {}\n", *v as i32)),
-                                            (1, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov edx, {}\n", *v as i32)),
-                                            (2, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r8d, {}\n", *v as i32)),
-                                            (3, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r9d, {}\n", *v as i32)),
-                                            _ => {}
+                                if name == "readln" && args.is_empty() {
+                                    if !win_inbuf_emitted {
+                                        out.push_str(
+r#"
+        .data
+LWININBUF_main:
+        .zero 1024
+LWININLEN_main:
+        .quad 0
+        .text
+"#);
+                                        win_inbuf_emitted = true;
+                                    }
+                                    if !win_stdin_inited {
+                                        out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -10
+        call GetStdHandle
+        add rsp, 40
+        mov r13, rax
+"#);
+                                        win_stdin_inited = true;
+                                    }
+                                    out.push_str(
+r#"        sub rsp, 40
+        mov rcx, r13
+        lea rdx, [rip+LWININBUF_main]
+        mov r8d, 1024
+        lea r9, [rip+LWININLEN_main]
+        mov qword ptr [rsp+32], 0
+        call ReadFile
+        add rsp, 40
+        mov rax, qword ptr [rip+LWININLEN_main]
+        test rax, rax
+        jz .WREAD_EMPTY_main_%=
+        lea rsi, [rip+LWININBUF_main]
+        mov rdx, rax
+        dec rdx
+        mov bl, byte ptr [rsi+rdx]
+        cmp bl, 10
+        jne .WREAD_NO_NL_main_%=
+        test rdx, rdx
+        jz .WREAD_TRIM_NL_main_%=
+        mov bl, byte ptr [rsi+rdx-1]
+        cmp bl, 13
+        jne .WREAD_TRIM_NL_main_%=
+        dec rdx
+.WREAD_TRIM_NL_main_%=:
+.WREAD_NO_NL_main_%=:
+        jmp .WREAD_RET_main_%=
+.WREAD_EMPTY_main_%=:
+        xor rdx, rdx
+.WREAD_RET_main_%=:
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LWININBUF_main]
+        mov r8d, edx
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+                                    win_need_lsnl = true;
+                                } else {
+                                    if !args.is_empty() {
+                                        for (i, a) in args.iter().enumerate().take(4) {
+                                            match (i, a) {
+                                                (0, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov ecx, {}\n", *v as i32)),
+                                                (1, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov edx, {}\n", *v as i32)),
+                                                (2, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r8d, {}\n", *v as i32)),
+                                                (3, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r9d, {}\n", *v as i32)),
+                                                _ => {}
+                                            }
                                         }
                                     }
-                                }
-                                out.push_str(
+                                    out.push_str(
 r#"        sub rsp, 40
 "#);
-                                out.push_str(&format!("        call {}\n", name));
-                                out.push_str(
+                                    out.push_str(&format!("        call {}\n", name));
+                                    out.push_str(
 r#"        add rsp, 40
         sub rsp, 40
         mov rdx, rax
@@ -2513,6 +2694,8 @@ r#"        add rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
@@ -2521,8 +2704,10 @@ r#"        add rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
-                                win_need_lsnl = true;
+                                    win_need_lsnl = true;
+                                }
                             }
                             Stmt::PrintExpr(Expr::Var(name)) => {
                                 let regs_gpr = ["rcx","rdx","r8","r9"];
@@ -2567,6 +2752,8 @@ r#"        test eax, eax
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
@@ -2575,6 +2762,7 @@ r#"        test eax, eax
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
         add rsp, 80
 "#);
                                                     win_need_lsnl = true;
@@ -2615,6 +2803,8 @@ r#"        test rax, rax
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
@@ -2623,6 +2813,7 @@ r#"        test rax, rax
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
         add rsp, 80
 "#);
                                                     win_need_lsnl = true;
@@ -2663,10 +2854,12 @@ r#"        lea r10, [rsp+79]
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                                     let dot_lbl = format!("LSDOT_{}_{}", f.name, win_order_ls_idx);
                                             out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
 "#);
                                                     out.push_str(&format!("        lea rdx, [rip+{}]\n", dot_lbl));
@@ -2676,6 +2869,7 @@ r#"        mov r8d, 1
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                                     out.push_str(&format!("        movsd xmm0, {}\n", sx));
                                                     out.push_str(
@@ -2708,6 +2902,8 @@ r#"        cvtsi2sd xmm1, rax
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
@@ -2716,6 +2912,7 @@ r#"        cvtsi2sd xmm1, rax
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
         add rsp, 80
 "#);
                                                     win_order_ls.push((dot_lbl, ".".to_string()));
@@ -2838,7 +3035,8 @@ r#"        cvtsi2sd xmm1, rax
                                         let final_off = total_off + off;
                                         if matches!(fty, Type::String) {
                                             out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
 "#);
                                             out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
@@ -2849,6 +3047,8 @@ r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
@@ -2857,6 +3057,7 @@ r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                             win_need_lsnl = true;
                                         }
@@ -3007,6 +3208,8 @@ r#"        add rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
@@ -3015,6 +3218,7 @@ r#"        add rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                         }
                     }
@@ -3022,7 +3226,8 @@ r#"        add rsp, 40
                 if !win_emitted_main_in_order && !main_field_prints.is_empty() {
                     for (bn, off) in &main_field_prints {
                         out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
 "#);
                         out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
@@ -3033,6 +3238,8 @@ r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
@@ -3041,6 +3248,7 @@ r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                     }
                 }
@@ -3048,7 +3256,8 @@ r#"        xor r9d, r9d
                 if !win_emitted_main_in_order && !prints.is_empty() {
                     for (idx, (_s, len)) in prints.iter().enumerate() {
                         out.push_str(&format!(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LS{}]
         mov r8d, {}
@@ -3056,6 +3265,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#, idx, len));
                     }
                 }
@@ -3240,7 +3450,8 @@ r#"        call CloseHandle
                                 let len = s.as_bytes().len() + 1;
                                 let lbl = format!("LSW_main_{}_{}", widx, bidx);
                                 out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
 "#);
                                 out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
@@ -3250,6 +3461,7 @@ r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                 while_data.push((lbl, String::from_utf8(bytes).unwrap()));
                             }
@@ -3393,7 +3605,8 @@ r#"        sub rsp, 40
                                     win_stdout_inited = true;
                                 }
                                 out.push_str(&format!(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+{}]
         mov r8d, {}
@@ -3401,6 +3614,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#, lbl, len));
                                 func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                 fi += 1;
@@ -3556,7 +3770,8 @@ r#"        sub rsp, 40
                                                 win_stdout_inited = true;
                                             }
                                             out.push_str(&format!(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+{}]
         mov r8d, {}
@@ -3564,6 +3779,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#, lbl, len));
                                             func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                         }
@@ -3743,7 +3959,8 @@ r#"        sub rsp, 40
                                             win_stdout_inited = true;
                                         }
                                         out.push_str(&format!(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+{}]
         mov r8d, {}
@@ -3751,6 +3968,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#, lbl, len));
                                         func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                         fi += 1;
@@ -3791,10 +4009,12 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#, ptr=ptr_reg, len=len32));
                                                         need_nl = true;
                                                         out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
@@ -3802,6 +4022,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                                     }
                                                     handled = true;
@@ -3835,10 +4056,12 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                             need_nl = true;
                                             out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
@@ -3846,6 +4069,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                         }
                                     }
@@ -3869,7 +4093,8 @@ r#"        sub rsp, 40
                                                         win_stdout_inited = true;
                                                     }
                                                     out.push_str(&format!(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+{}]
         mov r8d, {}
@@ -3877,6 +4102,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#, lbl, len));
                                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                                     fi += 1;
@@ -3916,10 +4142,12 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#, ptr=ptr_reg, len=len32));
                                                                     need_nl = true;
                                                                     out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
@@ -3927,6 +4155,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                                                 }
                                                             }
@@ -3957,10 +4186,12 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                                         need_nl = true;
                                                         out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
@@ -3968,6 +4199,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                                     }
                                                 }
@@ -4041,7 +4273,8 @@ r#"        sub rsp, 40
                                                 win_stdout_inited = true;
                                             }
                                             out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
 "#);
                                                     out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
@@ -4051,6 +4284,7 @@ r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                                     fi += 1;
@@ -4076,7 +4310,8 @@ r#"        sub rsp, 40
                                                 win_stdout_inited = true;
                                             }
                                             out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
 "#);
                                                     out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
@@ -4086,6 +4321,7 @@ r#"        xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                                     fi += 1;
@@ -4095,7 +4331,8 @@ r#"        xor r9d, r9d
                                             out.push_str(&format!("{}:\n", join_lbl));
                                             need_nl = true;
                                             out.push_str(
-r#"        sub rsp, 40
+r#"        mov r11, rcx
+        sub rsp, 40
         mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
@@ -4103,6 +4340,7 @@ r#"        sub rsp, 40
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
+        mov rcx, r11
 "#);
                                         }
                                     },

@@ -544,14 +544,6 @@ _start:
                 }
 
                 if !main_print_calls.is_empty() || !main_field_prints.is_empty() {
-                    out.push_str(
-r#"
-        .section .rodata
-.LSNL:
-        .byte 10
-
-        .text
-"#);
                 }
 
                 let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
@@ -2171,9 +2163,6 @@ r#"        leaq .LC0(%rip), %rax
                         }
                         out.push_str("\"\n");
                     }
-                    if need_nl && !out.contains("\n.LSNL:\n") {
-                        out.push_str(".LSNL:\n        .byte 10\n");
-                    }
                     out.push_str("\n        .text\n");
                 }
                 Ok(out.trim_start().to_string())
@@ -2202,6 +2191,7 @@ main:
 "#);
                 let mut win_order_ls: Vec<(String, String)> = Vec::new();
                 let mut win_order_ls_idx: usize = 0;
+                let mut str_label_map: HashMap<String, String> = HashMap::new();
                 let mut win_need_lsnl: bool = false;
                 let mut win_emitted_main_in_order: bool = false;
 
@@ -2243,11 +2233,11 @@ r#"        xor r9d, r9d
                                     }
                                 }
                                 out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                                 out.push_str(&format!("        call {}\n", name));
                                 out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
 "#);
                             }
                             Stmt::PrintExpr(Expr::Call(name, args)) => {
@@ -2263,11 +2253,11 @@ r#"        add rsp, 32
                                     }
                                 }
                                 out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                                 out.push_str(&format!("        call {}\n", name));
                                 out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
         sub rsp, 40
         mov rdx, rax
         mov r8d, edx
@@ -2439,11 +2429,11 @@ r#"        xor r9d, r9d
                                         }
                                     }
                                     out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                                     out.push_str(&format!("        call {}\n", name));
                                     out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
         ret
 "#);
 
@@ -2488,11 +2478,11 @@ r#"        add rsp, 32
                             }
                         }
                         out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                         out.push_str(&format!("        call {}\n", name));
                         out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
 "#);
                     } else {
                         for (cidx, (name, args)) in calls.iter().enumerate() {
@@ -2520,11 +2510,11 @@ r#"        add rsp, 32
                                 }
                             }
                             out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                             out.push_str(&format!("        call {}\n", name));
                             out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
 "#);
                         }
                     }
@@ -2543,11 +2533,11 @@ r#"        lea rax, [rip+LC0]
                     for (name, args) in &main_print_calls {
                         if args.is_empty() {
                             out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                             out.push_str(&format!("        call {}\n", name));
                             out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
         sub rsp, 40
         mov rdx, rax
         mov r8d, edx
@@ -2622,9 +2612,9 @@ r#"        xor eax, eax
                     out.push_str(&format!(
 "        ; thunk for {}
 {0}_thunk:
-        sub rsp, 32
+        sub rsp, 40
         call {0}
-        add rsp, 32
+        add rsp, 40
         ret
 ", fname));
                 }
@@ -2819,9 +2809,6 @@ r#"        xor r9d, r9d
                     out.push_str("\n        .text\n");
                 }
 
-                if !out.contains("\nLSNL:\n") {
-                    out.push_str("\n        .data\nLSNL:\n        .byte 10\n\n        .text\n");
-                }
 
                 for (lbl, s) in &call_arg_data {
                     out.push_str(&format!("{}:\n        .ascii \"", lbl));
@@ -2870,13 +2857,7 @@ r#"        xor r9d, r9d
                     }
 
                     out.push_str(&format!("{}:\n", func.name));
-                    let has_while = func.body.iter().any(|s| matches!(s, Stmt::While { .. }));
-                    let has_locals = func.body.iter().any(|s| matches!(s, Stmt::Let { .. }));
-                    let no_prologue = has_while && !has_locals;
-                    if no_prologue {
-                        out.push_str("        push rbx\n");
-                    } else {
-                        out.push_str(
+                    out.push_str(
 r#"        push rbp
         mov rbp, rsp
         push rbx
@@ -3174,11 +3155,11 @@ r#"        sub rsp, 40
                                     Expr::Call(name, args) => {
                                         if args.is_empty() {
                                             out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                                             out.push_str(&format!("        call {}\n", name));
                                             out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
 "#);
                                             out.push_str(
 r#"        sub rsp, 40
@@ -3276,11 +3257,11 @@ r#"        sub rsp, 40
                                                 Expr::Call(name, args) => {
                                                     if args.is_empty() {
                                                         out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                                                         out.push_str(&format!("        call {}\n", name));
                                                         out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
 "#);
                                                         out.push_str(
 r#"        sub rsp, 40
@@ -3426,11 +3407,11 @@ r#"        sub rsp, 40
                             Stmt::Expr(Expr::Call(name, args)) => {
                                 if args.is_empty() {
                                     out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                                     out.push_str(&format!("        call {}\n", name));
                                     out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
 "#);
                                 }
                             }
@@ -3445,11 +3426,11 @@ r#"        add rsp, 32
                                 if let Expr::Call(name, args) = expr {
                                     if args.is_empty() {
                                         out.push_str(
-r#"        sub rsp, 32
+r#"        sub rsp, 40
 "#);
                                         out.push_str(&format!("        call {}\n", name));
                                         out.push_str(
-r#"        add rsp, 32
+r#"        add rsp, 40
 "#);
                                         out.push_str(&format!("        add rsp, {}\n", frame_size));
                                         out.push_str(
@@ -3507,8 +3488,6 @@ r#"        pop rbx
 "#);
                     }
                 }
-
-                }
                 if !func_rodata.is_empty() || need_nl {
                     out.push_str("\n        .data\n");
                     for (lbl, s) in &func_rodata {
@@ -3525,11 +3504,15 @@ r#"        pop rbx
                         }
                         out.push_str("\"\n");
                     }
-                    if need_nl && !out.contains("\nLSNL:\n") {
-                        out.push_str("LSNL:\n        .byte 10\n");
+                    if need_nl {
+                        win_need_lsnl = true;
                     }
                     out.push_str("\n        .text\n");
                 }
+                if win_need_lsnl && !out.contains("\nLSNL:\n") {
+                    out.push_str("\n        .data\nLSNL:\n        .byte 10\n        .text\n");
+                }
+
                 Ok(out.trim_start().to_string())
             }
             _ => Ok(String::from("; unsupported OS placeholder")),

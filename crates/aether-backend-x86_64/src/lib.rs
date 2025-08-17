@@ -483,6 +483,28 @@ _start:
                         }
                     }
                 }
+                let mut main_local_offsets: HashMap<String, usize> = HashMap::new();
+                let mut main_local_types: HashMap<String, Type> = HashMap::new();
+                if let Some(f) = main_func {
+                    let mut cur_off: usize = 0;
+                    for stmt in &f.body {
+                        if let Stmt::Let { name, ty, .. } = stmt {
+                            let mut sz = match ty {
+                                Type::I32 => 8usize,
+                                Type::I64 | Type::F64 => 8usize,
+                                Type::String => 16usize,
+                                Type::User(un) => {
+                                    if let Some(sz) = struct_sizes.get(un) { *sz } else { 8usize }
+                                }
+                                _ => 8usize,
+                            };
+                            main_local_types.insert(name.clone(), ty.clone());
+                            if sz % 8 != 0 { sz += 8 - (sz % 8); }
+                            main_local_offsets.insert(name.clone(), cur_off + sz);
+                            cur_off += sz;
+                        }
+                    }
+                }
 
                 let mut while_rodata: Vec<(String, String)> = Vec::new();
                 let mut static_rodata: Vec<(String, String)> = Vec::new();
@@ -1612,27 +1634,118 @@ r#"        push %rbx
                                         let mut handled = false;
                                         for p in &func.params {
                                             if p.name == *name {
-                                                if let Type::String = p.ty {
-                                                    if slot + 1 < regs.len() {
-                                                        let ptr_reg = regs[slot];
-                                                        let len_reg = regs[slot + 1];
-                                                        out.push_str(&format!(
+                                                match p.ty {
+                                                    Type::String => {
+                                                        if slot + 1 < regs.len() {
+                                                            let ptr_reg = regs[slot];
+                                                            let len_reg = regs[slot + 1];
+                                                            out.push_str(&format!(
 "        mov {len}, %rdx
         mov {ptr}, %rsi
         mov $1, %rax
         mov $1, %rdi
         syscall
 ", len=len_reg, ptr=ptr_reg));
-                                                        out.push_str(
+                                                            out.push_str(
 "        mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
         mov $1, %rdx
         syscall
 ");
-                                                        need_nl = true;
+                                                            need_nl = true;
+                                                        }
+                                                        handled = true;
                                                     }
-                                                    handled = true;
+                                                    Type::I32 => {
+                                                        if slot < regs.len() {
+                                                            let src32 = match regs[slot] {
+                                                                "%rdi" => "%edi",
+                                                                "%rsi" => "%esi",
+                                                                "%rdx" => "%edx",
+                                                                "%rcx" => "%ecx",
+                                                                "%r8"  => "%r8d",
+                                                                "%r9"  => "%r9d",
+                                                                _ => "%edi",
+                                                            };
+                                                            out.push_str("        sub $80, %rsp\n");
+                                                            out.push_str(&format!("        mov {}, %eax\n", src32));
+                                                            out.push_str(
+"        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %eax, %eax
+        jnz .I32_print_loop_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .I32_print_done_%=
+.I32_print_loop_%=:
+        xor %edx, %edx
+        div %r8d
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %eax, %eax
+        jnz .I32_print_loop_%=
+.I32_print_done_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+");
+                                                            need_nl = true;
+                                                            handled = true;
+                                                        }
+                                                    }
+                                                    Type::I64 => {
+                                                        if slot < regs.len() {
+                                                            let src = regs[slot];
+                                                            out.push_str("        sub $80, %rsp\n");
+                                                            out.push_str(&format!("        mov {}, %rax\n", src));
+                                                            out.push_str(
+"        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .I64_print_loop_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .I64_print_done_%=
+.I64_print_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .I64_print_loop_%=
+.I64_print_done_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+");
+                                                            need_nl = true;
+                                                            handled = true;
+                                                        }
+                                                    }
+                                                    _ => {}
                                                 }
                                                 break;
                                             } else {
@@ -3066,6 +3179,44 @@ r#"        sub rsp, 40
         add rsp, 40
 "#, lbl, len));
                                             func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                        }
+                                        Stmt::Assign { target, value } => {
+                                            if let Expr::Var(vn) = target {
+                                                if let (Some(off), Some(vty)) = (local_offsets.get(vn), local_types.get(vn)) {
+                                                    match value {
+                                                        Expr::BinOp(a, op, b) => {
+                                                            if let (Expr::Var(rv), Expr::Lit(Value::Int(k))) = (&**a, &**b) {
+                                                                if rv == vn {
+                                                                    match (vty, op) {
+                                                                        (Type::I32, aether_frontend::ast::BinOpKind::Add) => {
+                                                                            out.push_str(&format!("        mov eax, dword ptr [rbp-{}]\n", off));
+                                                                            out.push_str(&format!("        add eax, {}\n", *k as i32));
+                                                                            out.push_str(&format!("        mov dword ptr [rbp-{}], eax\n", off));
+                                                                        }
+                                                                        (Type::I32, aether_frontend::ast::BinOpKind::Sub) => {
+                                                                            out.push_str(&format!("        mov eax, dword ptr [rbp-{}]\n", off));
+                                                                            out.push_str(&format!("        sub eax, {}\n", *k as i32));
+                                                                            out.push_str(&format!("        mov dword ptr [rbp-{}], eax\n", off));
+                                                                        }
+                                                                        (Type::I64, aether_frontend::ast::BinOpKind::Add) => {
+                                                                            out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", off));
+                                                                            out.push_str(&format!("        add rax, {}\n", *k as i64));
+                                                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                                                        }
+                                                                        (Type::I64, aether_frontend::ast::BinOpKind::Sub) => {
+                                                                            out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", off));
+                                                                            out.push_str(&format!("        sub rax, {}\n", *k as i64));
+                                                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                                                        }
+                                                                        _ => {}
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                            }
                                         }
                                         Stmt::Break => {
                                             out.push_str(&format!("        jmp {}\n", end));

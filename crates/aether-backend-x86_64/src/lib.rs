@@ -531,8 +531,19 @@ _start:
                             out.push_str("        cmp $0, %r10\n");
                             out.push_str(&format!("        je .LWH_END_main_{}\n", widx));
                         }
+                        Expr::Lit(Value::Bool(b)) => {
+                            if !b {
+                                out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx));
+                            }
+                        }
                         _ => {
-                            out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx));
+                            if let Some(cv) = eval_int_expr(cond) {
+                                out.push_str(&format!("        mov ${}, %r10\n", cv));
+                                out.push_str("        cmp $0, %r10\n");
+                                out.push_str(&format!("        je .LWH_END_main_{}\n", widx));
+                            } else {
+                                out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx));
+                            }
                         }
                     }
                     for (bidx, st) in body.iter().enumerate() {
@@ -3203,8 +3214,19 @@ r#"        call CloseHandle
                             out.push_str("        cmp r10, 0\n");
                             out.push_str(&format!("        je LWH_END_main_{}\n", widx));
                         }
+                        Expr::Lit(Value::Bool(b)) => {
+                            if !b {
+                                out.push_str(&format!("        jmp LWH_END_main_{}\n", widx));
+                            }
+                        }
                         _ => {
-                            out.push_str(&format!("        jmp LWH_END_main_{}\n", widx));
+                            if let Some(cv) = eval_int_expr(cond) {
+                                out.push_str(&format!("        mov r10, {}\n", cv));
+                                out.push_str("        cmp r10, 0\n");
+                                out.push_str(&format!("        je LWH_END_main_{}\n", widx));
+                            } else {
+                                out.push_str(&format!("        jmp LWH_END_main_{}\n", widx));
+                            }
                         }
                     }
                     for (bidx, st) in body.iter().enumerate() {

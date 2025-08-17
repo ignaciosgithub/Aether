@@ -1,0 +1,17 @@
+pub func loop_sum() -> i32 {
+    let n: i64 = 0;
+    let sum: i64 = 0;
+    while (n < 3) {
+        println("in loop");
+        sum = sum + n;
+        // emulate ++
+        // n = n + 1
+        // using assign since ++ not supported yet
+        n = n + 1;
+    }
+    return 0;
+}
+
+pub func main() -> i32 {
+    return loop_sum();
+}

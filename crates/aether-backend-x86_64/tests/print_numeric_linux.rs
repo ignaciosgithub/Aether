@@ -24,6 +24,7 @@ fn linux_print_numeric_params_codegen() {
     let asm = cg.generate(&m).expect("codegen ok");
 
     assert!(asm.contains("syscall") || asm.contains("write"), "expected write syscall for printing");
-    assert!(asm.contains("cvttsd2si") || asm.contains("cvtsd2si"), "expected float to int conversion for fractional part");
+    assert!(asm.contains("cvttsd2si") || asm.contains("cvtsd2si"), "expected float to int conversion for integer/fractional parts");
+    assert!(asm.contains("mulsd") && (asm.contains("LCFTSCALE") || asm.contains("1000000.0")), "expected scaling by 1e6 for fixed decimals");
     assert!(asm.contains(".ascii \".\"") || asm.contains("'.'") || asm.contains(", 46"), "expected dot emission for float");
 }

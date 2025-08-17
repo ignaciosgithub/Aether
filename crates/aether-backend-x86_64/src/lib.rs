@@ -1826,15 +1826,46 @@ r#"        push %rbx
 ", dl=dot_lbl));
                                                             func_rodata.push((dot_lbl, ".".to_string()));
                                                             out.push_str(
-"        mov $1, %rax
+"        movsd {sx}, %xmm0
+        cvtsi2sd %rax, %xmm1
+        subsd %xmm1, %xmm0
+        leaq .LCFTSCALE(%rip), %rax
+        movsd (%rax), %xmm2
+        mulsd %xmm2, %xmm0
+        leaq .LCFTHALF(%rip), %rax
+        movsd (%rax), %xmm3
+        addsd %xmm3, %xmm0
+        cvttsd2si %rcx, %xmm0
+        lea 79(%rsp), %r10
+        mov $10, %r8
+        mov $6, %r11
+.F64FRAC_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        dec %r11
+        test %r11, %r11
+        jnz .F64FRAC_loop_%=
+        lea 1(%r10), %rsi
+        mov $6, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
         mov $1, %rdx
         syscall
         add $80, %rsp
 ");
+                                                            if !out.contains(".LCFTSCALE:\n") {
+                                                                out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n");
+                                                                out.push_str(".LCFTHALF:\n        .double 0.5\n        .text\n");
+                                                            }
                                                             need_nl = true;
-                                                            handled = true;
+                                                            handled = true
                                                         }
                                                     }
                                                     _ => {}

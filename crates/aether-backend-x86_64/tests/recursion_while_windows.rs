@@ -1,8 +1,8 @@
-#[cfg(target_os = "windows")]
 use aether_frontend::ast::{Module, Item, Function, Stmt, Expr, Type, Value};
 use aether_backend_x86_64::X86_64LinuxCodegen as Codegen;
 use aether_codegen::CodeGenerator;
 
+#[cfg(target_os = "windows")]
 #[test]
 fn windows_recursive_function_has_unified_epilogue_and_loop() {
     let fact = Item::Function(Function {

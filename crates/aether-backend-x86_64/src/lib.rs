@@ -3942,12 +3942,7 @@ r#"        sub rsp, 40
                                         out.push_str(
 r#"        add rsp, 40
 "#);
-                                        out.push_str(&format!("        add rsp, {}\n", frame_size));
-                                        out.push_str(
-r#"        pop rbx
-        pop rbp
-        ret
-"#);
+                                        out.push_str(&format!("        jmp LRET_{}\n", func.name));
                                     }
                                 } else if let Expr::Lit(Value::String(s)) = expr {
                                     let bytes = s.clone().into_bytes();
@@ -3957,12 +3952,7 @@ r#"        pop rbx
 "        lea rax, [rip+{0}]
         mov rdx, {1}
 ", lbl, len));
-                                    out.push_str(&format!("        add rsp, {}\n", frame_size));
-                                    out.push_str(
-r#"        pop rbx
-        pop rbp
-        ret
-"#);
+                                    out.push_str(&format!("        jmp LRET_{}\n", func.name));
                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                     fi += 1;
                                 }
@@ -3976,12 +3966,7 @@ r#"        pop rbx
 r#"        lea rax, [rip+LC1]
         movsd xmm0, qword ptr [rax]
 "#);
-                        out.push_str(&format!("        add rsp, {}\n", frame_size));
-                        out.push_str(
-r#"        pop rbx
-        pop rbp
-        ret
-"#);
+                        out.push_str(&format!("        jmp LRET_{}\n", func.name));
                         let lo = bits as u32;
                         let hi = (bits >> 32) as u32;
                         if !out.contains("\nLC1:\n") {
@@ -3990,13 +3975,15 @@ r#"        pop rbx
                         }
                     } else {
                         out.push_str(&format!("        mov eax, {}\n", ret_i as i32));
-                        out.push_str(&format!("        add rsp, {}\n", frame_size));
-                        out.push_str(
+                        out.push_str(&format!("        jmp LRET_{}\n", func.name));
+                    }
+                    out.push_str(&format!("LRET_{}:\n", func.name));
+                    out.push_str(&format!("        add rsp, {}\n", frame_size));
+                    out.push_str(
 r#"        pop rbx
         pop rbp
         ret
 "#);
-                    }
                 }
                 if !func_rodata.is_empty() || need_nl {
                     out.push_str("\n        .data\n");

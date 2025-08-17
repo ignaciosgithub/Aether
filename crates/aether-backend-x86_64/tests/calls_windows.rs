@@ -34,7 +34,7 @@ fn windows_calls_use_win64_abi_and_text_section() {
 
     assert!(asm.contains("\n        .text\n"), "should emit .text");
     assert!(asm.contains("sub rsp, 40") || asm.contains("sub rsp, 32"), "reserve shadow/alignment before call");
-    assert!(asm.contains("mov rcx, rbx"), "console handle in rcx for WriteFile");
+    assert!(asm.contains("mov rcx, r12"), "console handle in rcx for WriteFile");
     assert!(asm.contains("call WriteFile"), "should call WriteFile");
     assert!(asm.contains("mov rdx, rax") || asm.contains("mov r8d, edx"), "use return for length in printing path");
     assert!(asm.contains("\n        .data\nLSNL:\n        .byte 10\n\n        .text\n") || asm.contains("\n        .data\nLSNL:\n"), "LSNL must be under .data with a return to .text");

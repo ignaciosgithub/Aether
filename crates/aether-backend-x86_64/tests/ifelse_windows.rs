@@ -48,7 +48,7 @@ fn windows_runtime_ifelse_branches_in_text_and_prints() {
     assert!(asm.contains("LIF_THEN_demo_") && asm.contains("LIF_ELSE_demo_") && asm.contains("LIF_JOIN_demo_"), "if/else labels must exist");
     assert!(asm.contains("\n        .data\nLSNL:\n") && asm.contains("\n        .text\n"), "LSNL under .data, back to .text");
     assert!(asm.contains("call WriteFile"), "should print via WriteFile");
-    assert!(asm.contains("mov rcx, rbx"), "WriteFile rcx=handle");
+    assert!(asm.contains("mov rcx, r12"), "WriteFile rcx=r12 handle");
     assert!(asm.contains("sub rsp, 40"), "shadow space before WriteFile");
 }
 

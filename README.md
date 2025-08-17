@@ -157,6 +157,13 @@ See docs/language.md for syntax, types, println, and OO layout details.
 - Quick test on Linux after assembling/linking:
   - echo "hello" | ./out/linux/stdin_echo
 
+### to_int(String) -> i64
+- Strict parsing: optional leading + or -, followed by only decimal digits. The entire string must be digits after the optional sign.
+- Invalid input (e.g., "", "+", "-", "12&3", "123abc") triggers a runtime error message and the program exits with code 1.
+- Example:
+  - println(to_int(readln()));
+- Note on Windows assemblers: if your toolchain errors on unknown pseudo-ops for zero-fill, we emit .space for zeroed buffers to match the README toolchain.
+
 
 We include simple Aether vs C/Rust/Python microbenchmarks. The harness:
 - Verifies correctness via a checksum print (one line) in a separate phase

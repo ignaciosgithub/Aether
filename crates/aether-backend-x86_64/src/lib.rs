@@ -1631,21 +1631,234 @@ r#"        push %rbx
                                         fi += 1;
                                     }
                                     Expr::Call(name, args) => {
-                                        if name == "readln" && args.is_empty() {
+                                        if name == "to_int" || (name == "readln" && args.is_empty()) {
+                                        if name == "to_int" {
+                                            if args.len() == 1 {
+                                                match &args[0] {
+                                                    Expr::Lit(Value::String(s)) => {
+                                                        let lbl = format!(".LTOI_{}_{}", func.name, fi);
+                                                        let bytes = s.clone().into_bytes();
+                                                        let len = bytes.len();
+                                                        func_rodata.push((lbl.clone(), String::from_utf8(bytes).unwrap()));
+                                                        
+                                                        out.push_str(&format!(
+"        leaq {lbl}(%rip), %rsi
+        mov ${len}, %rdx
+        xor %rdi, %rdi
+        mov $1, %r8
+        test %rdx, %rdx
+        jz .TOI_ERR_%=
+        mov (%rsi), %al
+        cmp $'+', %al
+        jne .TOI_CHKMIN_%=
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP_%=
+.TOI_CHKMIN_%=:
+        cmp $'-', %al
+        jne .TOI_LOOP_%=
+        mov $-1, %r8
+        inc %rsi
+        dec %rdx
+.TOI_LOOP_%=:
+        test %rdx, %rdx
+        jz .TOI_FIN_%=
+        mov (%rsi), %al
+        cmp $'0', %al
+        jb .TOI_ERR_%=
+        cmp $'9', %al
+        ja .TOI_ERR_%=
+        imul %rdi, %rdi, 10
+        movzbq %al, %rax
+        sub $'0', %rax
+        add %rax, %rdi
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP_%=
+.TOI_FIN_%=:
+        mov %rdi, %rax
+        cmp $0, %r8
+        jge .TOI_OK_%=
+        neg %rax
+.TOI_OK_%=:
+        sub $80, %rsp
+        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .TOI_I64_loop_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .TOI_I64_done_%=
+.TOI_I64_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .TOI_I64_loop_%=
+.TOI_I64_done_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+        jmp .TOI_END_%=
+.TOI_ERR_%=:
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LTOIERR(%rip), %rsi
+        mov $13, %rdx
+        syscall
+        mov $60, %rax
+        mov $1, %rdi
+        syscall
+.TOI_END_%=:
+"));
+                                                        if !out.contains(".LTOIERR:\n") {
+                                                            out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                                        }
+                                                        fi += 1;
+                                                    }
+                                                    Expr::Call(an, aargs) => {
+                                                        if an == "readln" && aargs.is_empty() {
+                                                            let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
+                                                            if !linux_inbuf_emitted {
+                                                                out.push_str(&format!(
+"\n        .bss
+{inlbl}:
+        .zero 1024
+        .text
+", inlbl=inlbl));
+                                                                linux_inbuf_emitted = true;
+                                                            }
+                                                            out.push_str(&format!(
+"        mov $0, %rax
+        mov $0, %rdi
+        leaq {inlbl}(%rip), %rsi
+        mov $1024, %rdx
+        syscall
+        test %rax, %rax
+        jz .LREAD0_EMPTY_TOI_%=
+        mov %rax, %rdx
+        dec %rdx
+        mov %bl, (%rsi,%rdx,1)
+        cmp $10, %bl
+        jne .LREAD0_NO_NL_TOI_%=
+        test %rdx, %rdx
+        jz .LREAD0_TRIM_TOI_%=
+        mov %bl, -1(%rsi,%rdx,1)
+        cmp $13, %bl
+        jne .LREAD0_TRIM_TOI_%=
+        dec %rdx
+.LREAD0_TRIM_TOI_%=:
+.LREAD0_NO_NL_TOI_%=:
+        jmp .LREAD0_RET_TOI_%=
+.LREAD0_EMPTY_TOI_%=:
+        xor %rdx, %rdx
+.LREAD0_RET_TOI_%=:
+        xor %rdi, %rdi
+        mov $1, %r8
+        test %rdx, %rdx
+        jz .TOI_ERR_%=
+        mov (%rsi), %al
+        cmp $'+', %al
+        jne .TOI_CHKMIN2_%=
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP2_%=
+.TOI_CHKMIN2_%=:
+        cmp $'-', %al
+        jne .TOI_LOOP2_%=
+        mov $-1, %r8
+        inc %rsi
+        dec %rdx
+.TOI_LOOP2_%=:
+        test %rdx, %rdx
+        jz .TOI_FIN2_%=
+        mov (%rsi), %al
+        cmp $'0', %al
+        jb .TOI_ERR_%=
+        cmp $'9', %al
+        ja .TOI_ERR_%=
+        imul %rdi, %rdi, 10
+        movzbq %al, %rax
+        sub $'0', %rax
+        add %rax, %rdi
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP2_%=
+.TOI_FIN2_%=:
+        mov %rdi, %rax
+        cmp $0, %r8
+        jge .TOI_OK2_%=
+        neg %rax
+.TOI_OK2_%=:
+        sub $80, %rsp
+        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .TOI_I64_loop2_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .TOI_I64_done2_%=
+.TOI_I64_loop2_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .TOI_I64_loop2_%=
+.TOI_I64_done2_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+"));
+                                                            if !out.contains(".LTOIERR:\n") {
+                                                                out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                                            }
+                                                            fi += 1;
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+                                                continue;
+                                            }
+                                        }
+
                                             let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
                                             if !linux_inbuf_emitted {
                                                 out.push_str(&format!(
 "\n        .bss
-{lbl}:
+{inlbl}:
         .zero 1024
         .text
-", lbl=inlbl));
+", inlbl=inlbl));
                                                 linux_inbuf_emitted = true;
                                             }
                                             out.push_str(&format!(
 "        mov $0, %rax
         mov $0, %rdi
-        leaq {lbl}(%rip), %rsi
+        leaq {inlbl}(%rip), %rsi
         mov $1024, %rdx
         syscall
         test %rax, %rax
@@ -1669,14 +1882,14 @@ r#"        push %rbx
 .LREAD0_RET_%=:
         mov $1, %rax
         mov $1, %rdi
-        leaq {lbl}(%rip), %rsi
+        leaq {inlbl}(%rip), %rsi
         syscall
         mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
         mov $1, %rdx
         syscall
-", lbl=inlbl));
+", inlbl=inlbl));
                                             fi += 1;
                                         } else {
                                             let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
@@ -1942,21 +2155,233 @@ r#"        push %rbx
                                         }
                                     }
                                     Expr::Call(name, args) => {
-                                        if name == "readln" && args.is_empty() {
+                                        if name == "to_int" || (name == "readln" && args.is_empty()) {
+                                            if name == "to_int" {
+                                                if args.len() == 1 {
+                                                    match &args[0] {
+                                                        Expr::Lit(Value::String(s)) => {
+                                                            let lbl = format!(".LTOI_{}_{}", func.name, fi);
+                                                            let bytes = s.clone().into_bytes();
+                                                            let len = bytes.len();
+                                                            func_rodata.push((lbl.clone(), String::from_utf8(bytes).unwrap()));
+                                                            out.push_str(&format!(
+"        leaq {lbl}(%rip), %rsi
+        mov ${len}, %rdx
+        xor %rdi, %rdi
+        mov $1, %r8
+        test %rdx, %rdx
+        jz .TOI_ERR_%=
+        mov (%rsi), %al
+        cmp $'+', %al
+        jne .TOI_CHKMIN_%=
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP_%=
+.TOI_CHKMIN_%=:
+        cmp $'-', %al
+        jne .TOI_LOOP_%=
+        mov $-1, %r8
+        inc %rsi
+        dec %rdx
+.TOI_LOOP_%=:
+        test %rdx, %rdx
+        jz .TOI_FIN_%=
+        mov (%rsi), %al
+        cmp $'0', %al
+        jb .TOI_ERR_%=
+        cmp $'9', %al
+        ja .TOI_ERR_%=
+        imul %rdi, %rdi, 10
+        movzbq %al, %rax
+        sub $'0', %rax
+        add %rax, %rdi
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP_%=
+.TOI_FIN_%=:
+        mov %rdi, %rax
+        cmp $0, %r8
+        jge .TOI_OK_%=
+        neg %rax
+.TOI_OK_%=:
+        sub $80, %rsp
+        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .TOI_I64_loop_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .TOI_I64_done_%=
+.TOI_I64_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .TOI_I64_loop_%=
+.TOI_I64_done_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+        jmp .TOI_END_%=
+.TOI_ERR_%=:
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LTOIERR(%rip), %rsi
+        mov $13, %rdx
+        syscall
+        mov $60, %rax
+        mov $1, %rdi
+        syscall
+.TOI_END_%=:
+"));
+                                                            if !out.contains(".LTOIERR:\n") {
+                                                                out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                                            }
+                                                            fi += 1;
+                                                        }
+                                                        Expr::Call(an, aargs) => {
+                                                            if an == "readln" && aargs.is_empty() {
+                                                                let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
+                                                                if !linux_inbuf_emitted {
+                                                                    out.push_str(&format!(
+"\n        .bss
+{inlbl}:
+        .zero 1024
+        .text
+", inlbl=inlbl));
+                                                                    linux_inbuf_emitted = true;
+                                                                }
+                                                                out.push_str(&format!(
+"        mov $0, %rax
+        mov $0, %rdi
+        leaq {inlbl}(%rip), %rsi
+        mov $1024, %rdx
+        syscall
+        test %rax, %rax
+        jz .LREAD_EMPTY_TOI_%=
+        mov %rax, %rdx
+        dec %rdx
+        mov %bl, (%rsi,%rdx,1)
+        cmp $10, %bl
+        jne .LREAD_NO_NL_TOI_%=
+        test %rdx, %rdx
+        jz .LREAD_TRIM_TOI_%=
+        mov %bl, -1(%rsi,%rdx,1)
+        cmp $13, %bl
+        jne .LREAD_TRIM_TOI_%=
+        dec %rdx
+.LREAD_TRIM_TOI_%=:
+.LREAD_NO_NL_TOI_%=:
+        jmp .LREAD_RET_TOI_%=
+.LREAD_EMPTY_TOI_%=:
+        xor %rdx, %rdx
+.LREAD_RET_TOI_%=:
+        xor %rdi, %rdi
+        mov $1, %r8
+        test %rdx, %rdx
+        jz .TOI_ERR_%=
+        mov (%rsi), %al
+        cmp $'+', %al
+        jne .TOI_CHKMIN2_%=
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP2_%=
+.TOI_CHKMIN2_%=:
+        cmp $'-', %al
+        jne .TOI_LOOP2_%=
+        mov $-1, %r8
+        inc %rsi
+        dec %rdx
+.TOI_LOOP2_%=:
+        test %rdx, %rdx
+        jz .TOI_FIN2_%=
+        mov (%rsi), %al
+        cmp $'0', %al
+        jb .TOI_ERR_%=
+        cmp $'9', %al
+        ja .TOI_ERR_%=
+        imul %rdi, %rdi, 10
+        movzbq %al, %rax
+        sub $'0', %rax
+        add %rax, %rdi
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP2_%=
+.TOI_FIN2_%=:
+        mov %rdi, %rax
+        cmp $0, %r8
+        jge .TOI_OK2_%=
+        neg %rax
+.TOI_OK2_%=:
+        sub $80, %rsp
+        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .TOI_I64_loop2_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .TOI_I64_done2_%=
+.TOI_I64_loop2_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .TOI_I64_loop2_%=
+.TOI_I64_done2_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+"));
+                                                                if !out.contains(".LTOIERR:\n") {
+                                                                    out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                                                }
+                                                                fi += 1;
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                    continue;
+                                                }
+                                            }
+
                                             let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
                                             if !linux_inbuf_emitted {
                                                 out.push_str(&format!(
 "\n        .bss
-{lbl}:
+{inlbl}:
         .zero 1024
         .text
-", lbl=inlbl));
+", inlbl=inlbl));
                                                 linux_inbuf_emitted = true;
                                             }
                                             out.push_str(&format!(
 "        mov $0, %rax
         mov $0, %rdi
-        leaq {lbl}(%rip), %rsi
+        leaq {inlbl}(%rip), %rsi
         mov $1024, %rdx
         syscall
         test %rax, %rax
@@ -1980,14 +2405,14 @@ r#"        push %rbx
 .LREAD_RET_%=:
         mov $1, %rax
         mov $1, %rdi
-        leaq {lbl}(%rip), %rsi
+        leaq {inlbl}(%rip), %rsi
         syscall
         mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
         mov $1, %rdx
         syscall
-", lbl=inlbl));
+", inlbl=inlbl));
                                             need_nl = true;
                                         } else if args.is_empty() {
                                             out.push_str(
@@ -2266,6 +2691,7 @@ r#"        push %rbx
                                                     _ => {}
                                                 }
                                                 if lhs_loaded && rhs_loaded {
+
                                                     out.push_str("        cmp %r11, %r10\n");
                                                     match op {
                                                         BinOpKind::Eq => {
@@ -2599,7 +3025,7 @@ r#"        add rsp, 40
 r#"
         .data
 LWININBUF_main:
-        .zero 1024
+        .space 1024
 LWININLEN_main:
         .quad 0
         .text
@@ -2649,8 +3075,8 @@ r#"        sub rsp, 40
         mov r11, rcx
         sub rsp, 40
         mov rcx, r12
-        lea rdx, [rip+LWININBUF_main]
         mov r8d, edx
+        lea rdx, [rip+LWININBUF_main]
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile

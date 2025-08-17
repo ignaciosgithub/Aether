@@ -1,0 +1,26 @@
+pub func fact(n: i64) -> i64 {
+    if n <= 1 { return 1; }
+    println("recurse");
+    return n * fact(n - 1);
+}
+
+pub func sum_while(limit: i64) -> i64 {
+    var i: i64 = 0;
+    var s: i64 = 0;
+    while (i < limit) {
+        s = s + i;
+        i = i + 1;
+    }
+    return s;
+}
+
+pub func main() -> i32 {
+    println("recursion and while demo");
+    let f = fact(5);
+    println(f);
+    let s = sum_while(10);
+    println(s);
+    // forever-true while (should print once per iteration if uncommented)
+    // while (1 < 2) { println("loop"); }
+    return 0;
+}

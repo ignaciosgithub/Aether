@@ -149,6 +149,14 @@ See docs/language.md for syntax, types, println, and OO layout details.
 - println(i64) is implemented on Linux x86_64 to make integer work observable (used by benchmarks).
 
 ## Benchmarks
+## Stdin (readln)
+- readln() reads up to 1024 bytes from standard input, trims the trailing newline (LF on Linux, CRLF on Windows), and returns a String-compatible value for println (rax=ptr, rdx=len on x86_64).
+- Example: examples/stdin_echo.ae
+  - Linux assembly: cargo run -p aetherc -- examples/stdin_echo.ae --arch x86_64 --os linux -o out/linux/stdin_echo.s
+  - Windows assembly: cargo run -p aetherc -- examples/stdin_echo.ae --arch x86_64 --os windows -o out/windows/stdin_echo.s
+- Quick test on Linux after assembling/linking:
+  - echo "hello" | ./out/linux/stdin_echo
+
 
 We include simple Aether vs C/Rust/Python microbenchmarks. The harness:
 - Verifies correctness via a checksum print (one line) in a separate phase

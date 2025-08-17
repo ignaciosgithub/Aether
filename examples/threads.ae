@@ -1,0 +1,16 @@
+pub func worker(n: i64) -> i32 {
+    println("worker start");
+    println(n);
+    println("worker end");
+    return 0;
+}
+
+pub func main() -> i32 {
+    // Simulated threading example; actual threading primitives are backend-specific.
+    println("threads demo start");
+    // In a real setup, this would spawn threads; here we just call the worker twice.
+    worker(1);
+    worker(2);
+    println("threads demo end");
+    return 0;
+}

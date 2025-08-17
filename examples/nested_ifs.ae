@@ -1,0 +1,20 @@
+pub func main() -> i32 {
+    let a = 3;
+    let b = 5;
+    if (a < b) {
+        println("a<b");
+        if (b - a > 1) {
+            println("nested-then");
+        } else {
+            println("nested-else");
+        }
+    } else {
+        println("a>=b");
+        if (a == b) {
+            println("equal");
+        } else {
+            println("not-equal");
+        }
+    }
+    return 0;
+}

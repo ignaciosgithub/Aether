@@ -548,6 +548,46 @@ _start:
                                 out.push_str(&format!("        mov ${}, %rdx\n", s.as_bytes().len() + 1));
                                 out.push_str("        syscall\n");
                             }
+                            Stmt::Assign { target, value } => {
+                                if let Expr::Var(tn) = target {
+                                    if let Some(off) = main_local_offsets.get(tn) {
+                                        if let Expr::BinOp(a, op, b) = value {
+                                            if let (Expr::Var(vn), Expr::Lit(Value::Int(k))) = (&**a, &**b) {
+                                                match op {
+                                                    BinOpKind::Add | BinOpKind::Sub if vn == tn => {
+                                                        let is_sub = matches!(op, BinOpKind::Sub);
+                                                        let kabs = *k;
+                                                        let disp = -(*off as isize);
+                                                        if let Some(ty) = main_local_types.get(tn) {
+                                                            match ty {
+                                                                Type::I32 => {
+                                                                    out.push_str(&format!("        mov {}(%rbp), %eax\n", disp));
+                                                                    if is_sub {
+                                                                        out.push_str(&format!("        sub ${}, %eax\n", kabs));
+                                                                    } else {
+                                                                        out.push_str(&format!("        add ${}, %eax\n", kabs));
+                                                                    }
+                                                                    out.push_str(&format!("        mov %eax, {}(%rbp)\n", disp));
+                                                                }
+                                                                _ => {
+                                                                    out.push_str(&format!("        mov {}(%rbp), %rax\n", disp));
+                                                                    if is_sub {
+                                                                        out.push_str(&format!("        sub ${}, %rax\n", kabs));
+                                                                    } else {
+                                                                        out.push_str(&format!("        add ${}, %rax\n", kabs));
+                                                                    }
+                                                                    out.push_str(&format!("        mov %rax, {}(%rbp)\n", disp));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             Stmt::Break => out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx)),
                             Stmt::Continue => out.push_str(&format!("        jmp .LWH_HEAD_main_{}\n", widx)),
                             _ => {}
@@ -1630,6 +1670,7 @@ r#"        push %rbx
                                     }
                                     Expr::Var(name) => {
                                         let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                        let xmm_regs = ["%xmm0","%xmm1","%xmm2","%xmm3","%xmm4","%xmm5","%xmm6","%xmm7"];
                                         let mut slot = 0usize;
                                         let mut handled = false;
                                         for p in &func.params {
@@ -1743,6 +1784,88 @@ r#"        push %rbx
 ");
                                                             need_nl = true;
                                                             handled = true;
+                                                        }
+                                                    }
+                                                    Type::F64 => {
+                                                        if slot < xmm_regs.len() {
+                                                            let srcx = xmm_regs[slot];
+                                                            out.push_str("        sub $80, %rsp\n");
+                                                            out.push_str(&format!("        cvttsd2si %rax, {}\n", srcx));
+                                                            out.push_str(
+"        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .F64I64_print_loop_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .F64I64_print_done_%=
+.F64I64_print_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .F64I64_print_loop_%=
+.F64I64_print_done_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                                            let dot_lbl = format!(".LSDOT_{}_{}", func.name, fi);
+                                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {dl}(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", dl=dot_lbl));
+                                                            func_rodata.push((dot_lbl, ".".to_string()));
+                                                            out.push_str(
+"        movsd {sx}, %xmm0
+        cvtsi2sd %rax, %xmm1
+        subsd %xmm1, %xmm0
+        leaq .LCFTSCALE(%rip), %rax
+        movsd (%rax), %xmm2
+        mulsd %xmm2, %xmm0
+        leaq .LCFTHALF(%rip), %rax
+        movsd (%rax), %xmm3
+        addsd %xmm3, %xmm0
+        cvttsd2si %rcx, %xmm0
+        lea 79(%rsp), %r10
+        mov $10, %r8
+        mov $6, %r11
+.F64FRAC_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        dec %r11
+        test %r11, %r11
+        jnz .F64FRAC_loop_%=
+        lea 1(%r10), %rsi
+        mov $6, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+");
+                                                            if !out.contains(".LCFTSCALE:\n") {
+                                                                out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n");
+                                                                out.push_str(".LCFTHALF:\n        .double 0.5\n        .text\n");
+                                                            }
+                                                            need_nl = true;
+                                                            handled = true
                                                         }
                                                     }
                                                     _ => {}
@@ -2389,6 +2512,220 @@ r#"        add rsp, 40
         add rsp, 40
 "#);
                                 win_need_lsnl = true;
+                            }
+                            Stmt::PrintExpr(Expr::Var(name)) => {
+                                let regs_gpr = ["rcx","rdx","r8","r9"];
+                                let regs_gpr32 = ["ecx","edx","r8d","r9d"];
+                                let regs_xmm = ["xmm0","xmm1","xmm2","xmm3"];
+                                let mut slot = 0usize;
+                                let mut handled = false;
+                                for p in &f.params {
+                                    if p.name == *name {
+                                        match p.ty {
+                                            Type::I32 => {
+                                                if slot < regs_gpr32.len() {
+                                                    let s32 = regs_gpr32[slot];
+                                                    out.push_str(
+r#"        sub rsp, 80
+        lea r10, [rsp+79]
+        mov r8d, 10
+        xor rcx, rcx
+"#);
+                                                    out.push_str(&format!("        mov eax, {}\n", s32));
+                                                    out.push_str(
+r#"        test eax, eax
+        jnz .I32_loop_%=
+        mov byte ptr [r10], '0'
+        mov rcx, 1
+        jmp .I32_done_%=
+.I32_loop_%=:
+        xor edx, edx
+        div r8d
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc rcx
+        test eax, eax
+        jnz .I32_loop_%=
+.I32_done_%=:
+        lea rdx, [r10+1]
+        mov r8, rcx
+        mov rcx, rbx
+        sub rsp, 40
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        add rsp, 80
+"#);
+                                                    win_need_lsnl = true;
+                                                    handled = true;
+                                                }
+                                            }
+                                            Type::I64 => {
+                                                if slot < regs_gpr.len() {
+                                                    let s = regs_gpr[slot];
+                                                    out.push_str(
+r#"        sub rsp, 80
+        lea r10, [rsp+79]
+        mov r8, 10
+        xor rcx, rcx
+"#);
+                                                    out.push_str(&format!("        mov rax, {}\n", s));
+                                                    out.push_str(
+r#"        test rax, rax
+        jnz .I64_loop_%=
+        mov byte ptr [r10], '0'
+        mov rcx, 1
+        jmp .I64_done_%=
+.I64_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc rcx
+        test rax, rax
+        jnz .I64_loop_%=
+.I64_done_%=:
+        lea rdx, [r10+1]
+        mov r8, rcx
+        mov rcx, rbx
+        sub rsp, 40
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        add rsp, 80
+"#);
+                                                    win_need_lsnl = true;
+                                                    handled = true;
+                                                }
+                                            }
+                                            Type::F64 => {
+                                                if slot < regs_xmm.len() {
+                                                    let sx = regs_xmm[slot];
+                                                    out.push_str(
+r#"        sub rsp, 80
+"#);
+                                                    out.push_str(&format!("        cvttsd2si rax, {}\n", sx));
+                                                    out.push_str(
+r#"        lea r10, [rsp+79]
+        mov r8, 10
+        xor rcx, rcx
+        test rax, rax
+        jnz .F64I64_loop_%=
+        mov byte ptr [r10], '0'
+        mov rcx, 1
+        jmp .F64I64_done_%=
+.F64I64_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc rcx
+        test rax, rax
+        jnz .F64I64_loop_%=
+.F64I64_done_%=:
+        lea rdx, [r10+1]
+        mov r8, rcx
+        mov rcx, rbx
+        sub rsp, 40
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                    let dot_lbl = format!("LSDOT_{}_{}", f.name, win_order_ls_idx);
+                                                    out.push_str(
+r#"        sub rsp, 40
+        mov rcx, rbx
+"#);
+                                                    out.push_str(&format!("        lea rdx, [rip+{}]\n", dot_lbl));
+                                                    out.push_str(
+r#"        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                    out.push_str(&format!("        movsd xmm0, {}\n", sx));
+                                                    out.push_str(
+r#"        cvtsi2sd xmm1, rax
+        subsd xmm0, xmm1
+        lea rax, [rip+LFTSCALEW]
+        movsd xmm2, qword ptr [rax]
+        mulsd xmm2, xmm0
+        lea rax, [rip+LFHALFW]
+        movsd xmm3, qword ptr [rax]
+        addsd xmm3, xmm0
+        cvttsd2si rcx, xmm0
+        lea r10, [rsp+79]
+        mov r8, 10
+        mov r11, 6
+.F64FRACW_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        dec r11
+        test r11, r11
+        jnz .F64FRACW_loop_%=
+        lea rdx, [r10+1]
+        mov r8, 6
+        mov rcx, rbx
+        sub rsp, 40
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        sub rsp, 40
+        mov rcx, rbx
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        add rsp, 80
+"#);
+                                                    win_order_ls.push((dot_lbl, ".".to_string()));
+                                                    win_need_lsnl = true;
+                                                    handled = true;
+                                                    if !out.contains("LFTSCALEW:\n") {
+                                                        out.push_str("\n        .data\nLFTSCALEW:\n        .quad 0x412E848000000000\nLFHALFW:\n        .quad 0x3FE0000000000000\n        .text\n");
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                        break;
+                                    } else {
+                                        match p.ty {
+                                            Type::String => slot += 2,
+                                            _ => slot += 1,
+                                        }
+                                    }
+                                }
+                                let _ = handled;
                             }
                             Stmt::PrintExpr(Expr::Field(recv, fname)) => {
                                 let mut base_name: Option<String> = None;

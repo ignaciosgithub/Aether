@@ -1,0 +1,7 @@
+pub func main(a: i64, b: f64) -> i32 {
+    println("int:");
+    println(a);
+    println("float:");
+    println(b);
+    return 0;
+}

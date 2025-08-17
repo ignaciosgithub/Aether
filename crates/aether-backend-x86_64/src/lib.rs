@@ -2883,6 +2883,8 @@ r#"        push rbp
 "#);
 
                     let mut local_offsets: HashMap<String, usize> = HashMap::new();
+                    let mut local_types: HashMap<String, Type> = HashMap::new();
+
 
                     let mut cur_off: usize = 0;
                     for stmt in &func.body {
@@ -2896,6 +2898,8 @@ r#"        push rbp
                                 }
                                 _ => 8usize,
                             };
+                            local_types.insert(name.clone(), ty.clone());
+
                             if sz % 8 != 0 { sz += 8 - (sz % 8); }
                             local_offsets.insert(name.clone(), cur_off + sz);
 
@@ -2973,31 +2977,6 @@ r#"        sub rsp, 40
                                             }
                                             _ => {}
                                         }
-                                    }
-                                }
-                            },
-                            Stmt::While { cond, body } => {
-                                let head = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
-                                let end = format!("LWH_END_{}_{}", func.name, lwh_idx);
-                                out.push_str(&format!("{}:\n", head));
-                                match cond {
-                                    Expr::BinOp(a, op, b) => {
-                                        if let (Expr::Lit(Value::Int(la)), Expr::Lit(Value::Int(lb))) = (&**a, &**b) {
-                                            out.push_str(&format!("        mov r10, {}\n", la));
-                                            out.push_str(&format!("        mov r11, {}\n", lb));
-                                            out.push_str("        cmp r10, r11\n");
-                                            match op {
-                                                BinOpKind::Lt => out.push_str(&format!("        jge {}\n", end)),
-                                                BinOpKind::Le => out.push_str(&format!("        jg {}\n", end)),
-                                                BinOpKind::Eq => out.push_str(&format!("        jne {}\n", end)),
-                                                _ => out.push_str(&format!("        jmp {}\n", end)),
-                                            }
-                                        } else {
-                                            out.push_str(&format!("        jmp {}\n", end));
-
-
-                                        }
-                                        _ => {}
                                     }
                                 }
                             },
@@ -3472,10 +3451,12 @@ r#"        sub rsp, 32
                                         out.push_str(
 r#"        add rsp, 32
 "#);
-
                                         out.push_str(&format!("        add rsp, {}\n", frame_size));
                                         out.push_str(
-                                        }
+r#"        pop rbx
+        pop rbp
+        ret
+"#);
                                     }
                                 } else if let Expr::Lit(Value::String(s)) = expr {
                                     let bytes = s.clone().into_bytes();
@@ -3485,8 +3466,8 @@ r#"        add rsp, 32
 "        lea rax, [rip+{0}]
         mov rdx, {1}
 ", lbl, len));
-                                out.push_str(&format!("        add rsp, {}\n", frame_size));
-                                out.push_str(
+                                    out.push_str(&format!("        add rsp, {}\n", frame_size));
+                                    out.push_str(
 r#"        pop rbx
         pop rbp
         ret
@@ -3494,7 +3475,6 @@ r#"        pop rbx
                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                     fi += 1;
                                 }
-
                             }
                             _ => {}
                         }
@@ -3526,6 +3506,8 @@ r#"        pop rbx
         ret
 "#);
                     }
+                }
+
                 }
                 if !func_rodata.is_empty() || need_nl {
                     out.push_str("\n        .data\n");

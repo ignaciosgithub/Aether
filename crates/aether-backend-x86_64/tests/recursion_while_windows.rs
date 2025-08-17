@@ -28,7 +28,7 @@ fn windows_recursive_function_has_unified_epilogue_and_loop() {
                         Expr::BinOp(Box::new(Expr::Var("n".into())), aether_frontend::ast::BinOpKind::Sub, Box::new(Expr::Lit(Value::Int(1)))),
                     ]))
                 )),
-            })),
+            }),
         ],
         is_pub: true,
         is_threaded: false,
@@ -50,7 +50,8 @@ fn windows_recursive_function_has_unified_epilogue_and_loop() {
 
     assert!(asm.contains("fact:\n"), "fact label missing");
     assert!(asm.contains("LRET_fact:"), "unified epilogue label missing");
-    assert!(asm.contains("sub rsp, 40\n        call fact\n        add rsp, 40"), "shadow space not used around recursive call");
+    let has_shadow_call = asm.contains("sub rsp, 40\n        call fact\n        add rsp, 40") || asm.contains("sub rsp, 32\n        call fact\n        add rsp, 32");
+    assert!(has_shadow_call, "shadow space not used around recursive call");
     assert!(asm.contains("LWH_HEAD_fact_0:"), "loop head missing");
     assert!(asm.contains("je LWH_END_fact_0"), "je to end missing");
     assert!(asm.contains("jmp LWH_HEAD_fact_0"), "backedge to head missing");

@@ -2434,7 +2434,7 @@ main:
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                 let mut win_order_ls: Vec<(String, String)> = Vec::new();
                 let mut win_order_ls_idx: usize = 0;
@@ -2454,7 +2454,7 @@ main:
                                 let lbl = format!("LS{}", win_order_ls_idx);
                                 out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
 "#);
                                 out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
                                 out.push_str(&format!("        mov r8d, {}\n", len as i32));
@@ -2508,13 +2508,13 @@ r#"        add rsp, 40
         sub rsp, 40
         mov rdx, rax
         mov r8d, edx
-        mov rcx, rbx
+        mov rcx, r12
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
         sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -2561,14 +2561,14 @@ r#"        test eax, eax
 .I32_done_%=:
         lea rdx, [r10+1]
         mov r8, rcx
-        mov rcx, rbx
+        mov rcx, r12
         sub rsp, 40
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
         sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -2609,14 +2609,14 @@ r#"        test rax, rax
 .I64_done_%=:
         lea rdx, [r10+1]
         mov r8, rcx
-        mov rcx, rbx
+        mov rcx, r12
         sub rsp, 40
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
         sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -2657,7 +2657,7 @@ r#"        lea r10, [rsp+79]
 .F64I64_done_%=:
         lea rdx, [r10+1]
         mov r8, rcx
-        mov rcx, rbx
+        mov rcx, r12
         sub rsp, 40
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
@@ -2667,7 +2667,7 @@ r#"        lea r10, [rsp+79]
                                                     let dot_lbl = format!("LSDOT_{}_{}", f.name, win_order_ls_idx);
                                             out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
 "#);
                                                     out.push_str(&format!("        lea rdx, [rip+{}]\n", dot_lbl));
                                                     out.push_str(
@@ -2702,14 +2702,14 @@ r#"        cvtsi2sd xmm1, rax
         jnz .F64FRACW_loop_%=
         lea rdx, [r10+1]
         mov r8, 6
-        mov rcx, rbx
+        mov rcx, r12
         sub rsp, 40
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
         sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -2839,7 +2839,7 @@ r#"        cvtsi2sd xmm1, rax
                                         if matches!(fty, Type::String) {
                                             out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
 "#);
                                             out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
                                             out.push_str(&format!("        mov rdx, qword ptr [r10+{}]\n", final_off));
@@ -2850,7 +2850,7 @@ r#"        xor r9d, r9d
         call WriteFile
         add rsp, 40
         sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -3002,13 +3002,13 @@ r#"        add rsp, 40
         sub rsp, 40
         mov rdx, rax
         mov r8d, edx
-        mov rcx, rbx
+        mov rcx, r12
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 40
         sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -3023,7 +3023,7 @@ r#"        add rsp, 40
                     for (bn, off) in &main_field_prints {
                         out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
 "#);
                         out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
                         out.push_str(&format!("        mov rdx, qword ptr [r10+{}]\n", off));
@@ -3034,7 +3034,7 @@ r#"        xor r9d, r9d
         call WriteFile
         add rsp, 40
         sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -3049,7 +3049,7 @@ r#"        xor r9d, r9d
                     for (idx, (_s, len)) in prints.iter().enumerate() {
                         out.push_str(&format!(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LS{}]
         mov r8d, {}
         xor r9d, r9d
@@ -3241,7 +3241,7 @@ r#"        call CloseHandle
                                 let lbl = format!("LSW_main_{}_{}", widx, bidx);
                                 out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
 "#);
                                 out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
                                 out.push_str(&format!("        mov r8d, {}\n", len as i32));
@@ -3336,6 +3336,7 @@ r#"        xor r9d, r9d
 r#"        push rbp
         mov rbp, rsp
         push rbx
+        push r12
 "#);
 
                     let mut local_offsets: HashMap<String, usize> = HashMap::new();
@@ -3387,13 +3388,13 @@ r#"        sub rsp, 40
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                                     win_stdout_inited = true;
                                 }
                                 out.push_str(&format!(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+{}]
         mov r8d, {}
         xor r9d, r9d
@@ -3550,13 +3551,13 @@ r#"        sub rsp, 40
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                                                 win_stdout_inited = true;
                                             }
                                             out.push_str(&format!(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+{}]
         mov r8d, {}
         xor r9d, r9d
@@ -3737,13 +3738,13 @@ r#"        sub rsp, 40
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                                             win_stdout_inited = true;
                                         }
                                         out.push_str(&format!(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+{}]
         mov r8d, {}
         xor r9d, r9d
@@ -3777,7 +3778,7 @@ r#"        sub rsp, 40
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                                                             win_stdout_inited = true;
                                                         }
@@ -3785,7 +3786,7 @@ r#"        sub rsp, 40
 r#"        sub rsp, 40
         mov rdx, {ptr}
         mov r8d, {len}
-        mov rcx, rbx
+        mov rcx, r12
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
@@ -3794,7 +3795,7 @@ r#"        sub rsp, 40
                                                         need_nl = true;
                                                         out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -3829,7 +3830,7 @@ r#"        add rsp, 40
 r#"        sub rsp, 40
         mov rdx, rax
         mov r8d, edx
-        mov rcx, rbx
+        mov rcx, r12
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
@@ -3838,7 +3839,7 @@ r#"        sub rsp, 40
                                             need_nl = true;
                                             out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -3863,13 +3864,13 @@ r#"        sub rsp, 40
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                                                         win_stdout_inited = true;
                                                     }
                                                     out.push_str(&format!(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+{}]
         mov r8d, {}
         xor r9d, r9d
@@ -3902,7 +3903,7 @@ r#"        sub rsp, 40
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                                                             win_stdout_inited = true;
                                                         }
@@ -3910,7 +3911,7 @@ r#"        sub rsp, 40
 r#"        sub rsp, 40
         mov rdx, {ptr}
         mov r8d, {len}
-        mov rcx, rbx
+        mov rcx, r12
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
@@ -3919,7 +3920,7 @@ r#"        sub rsp, 40
                                                                     need_nl = true;
                                                                     out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -3951,7 +3952,7 @@ r#"        add rsp, 40
 r#"        sub rsp, 40
         mov rdx, rax
         mov r8d, edx
-        mov rcx, rbx
+        mov rcx, r12
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
@@ -3960,7 +3961,7 @@ r#"        sub rsp, 40
                                                         need_nl = true;
                                                         out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -4035,13 +4036,13 @@ r#"        sub rsp, 40
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                                                 win_stdout_inited = true;
                                             }
                                             out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
 "#);
                                                     out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
                                                     out.push_str(&format!("        mov r8d, {}\n", len as i32));
@@ -4070,13 +4071,13 @@ r#"        sub rsp, 40
         mov ecx, -11
         call GetStdHandle
         add rsp, 40
-        mov rbx, rax
+        mov r12, rax
 "#);
                                                 win_stdout_inited = true;
                                             }
                                             out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
 "#);
                                                     out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
                                                     out.push_str(&format!("        mov r8d, {}\n", len as i32));
@@ -4095,7 +4096,7 @@ r#"        xor r9d, r9d
                                             need_nl = true;
                                             out.push_str(
 r#"        sub rsp, 40
-        mov rcx, rbx
+        mov rcx, r12
         lea rdx, [rip+LSNL]
         mov r8d, 1
         xor r9d, r9d
@@ -4174,7 +4175,8 @@ r#"        lea rax, [rip+LC1]
                     out.push_str(&format!("LRET_{}:\n", func.name));
                     out.push_str(&format!("        add rsp, {}\n", frame_size));
                     out.push_str(
-r#"        pop rbx
+r#"        pop r12
+        pop rbx
         pop rbp
         ret
 "#);

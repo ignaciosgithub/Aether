@@ -40,7 +40,7 @@ fn windows_emits_print_call_print_in_order() {
     let i_after = asm.rfind("lea rdx, [rip+").expect("second print present");
     assert!(i_before < i_call && i_call < i_after, "expected print before call and another print after call in assembly");
 
-    assert!(asm.contains("mov rcx, rbx"), "WriteFile should use console handle in rbx");
+    assert!(asm.contains("mov rcx, r12"), "WriteFile should use console handle in r12");
     assert!(asm.contains("\n        .data\nLSNL:\n        .byte 10\n") || asm.contains("LSNL:\n        .byte 10"), "should emit LSNL in data");
 }
 

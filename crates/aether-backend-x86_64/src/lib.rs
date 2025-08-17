@@ -2665,7 +2665,7 @@ r#"        lea r10, [rsp+79]
         add rsp, 40
 "#);
                                                     let dot_lbl = format!("LSDOT_{}_{}", f.name, win_order_ls_idx);
-                                                    out.push_str(
+                                            out.push_str(
 r#"        sub rsp, 40
         mov rcx, rbx
 "#);
@@ -3092,7 +3092,6 @@ r#"        xor eax, eax
                     out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                     out.push_str("\n        .text\n");
                 } else {
-                    out.push_str("\n        .data\n");
                 if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
                     out.push_str("\n        .data\n");
                     for (sidx, _) in spawn_sites.iter().enumerate() {
@@ -3367,6 +3366,8 @@ r#"        push rbp
                     if frame_size > 0 {
                         out.push_str(&format!("        sub rsp, {}\n", frame_size));
                     }
+                    let mut win_stdout_inited = false;
+
                     let lret = format!("LRET_{}", func.name);
 
                     let mut ret_i: i64 = 0;
@@ -3380,6 +3381,16 @@ r#"        push rbp
                                 bytes.push(b'\n');
                                 let len = s.as_bytes().len() + 1;
                                 let lbl = format!("LSF_{}_{}", func.name, fi);
+                                if !win_stdout_inited {
+                                    out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                                    win_stdout_inited = true;
+                                }
                                 out.push_str(&format!(
 r#"        sub rsp, 40
         mov rcx, rbx
@@ -3533,6 +3544,16 @@ r#"        sub rsp, 40
                                             bytes.push(b'\n');
                                             let len = s.as_bytes().len() + 1;
                                             let lbl = format!("LSFWH_{}_{}_{}", func.name, lwh_idx, bidx);
+                                            if !win_stdout_inited {
+                                                out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                                                win_stdout_inited = true;
+                                            }
                                             out.push_str(&format!(
 r#"        sub rsp, 40
         mov rcx, rbx
@@ -3710,6 +3731,16 @@ r#"        sub rsp, 40
                                         bytes.push(b'\n');
                                         let len = s.as_bytes().len() + 1;
                                         let lbl = format!("LSF_{}_{}", func.name, fi);
+                                        if !win_stdout_inited {
+                                            out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                                            win_stdout_inited = true;
+                                        }
                                         out.push_str(&format!(
 r#"        sub rsp, 40
         mov rcx, rbx
@@ -3740,6 +3771,16 @@ r#"        sub rsp, 40
                                                             "r9" => "r9d",
                                                             _ => "edx",
                                                         };
+                                                        if !win_stdout_inited {
+                                                            out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                                                            win_stdout_inited = true;
+                                                        }
                                                         out.push_str(&format!(
 r#"        sub rsp, 40
         mov rdx, {ptr}
@@ -3816,6 +3857,16 @@ r#"        sub rsp, 40
                                                     bytes.push(b'\n');
                                                     let len = s.as_bytes().len() + 1;
                                                     let lbl = format!("LSF_{}_{}", func.name, fi);
+                                                    if !win_stdout_inited {
+                                                        out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                                                        win_stdout_inited = true;
+                                                    }
                                                     out.push_str(&format!(
 r#"        sub rsp, 40
         mov rcx, rbx
@@ -3845,7 +3896,17 @@ r#"        sub rsp, 40
                                                                         "r9" => "r9d",
                                                                         _ => "edx",
                                                                     };
-                                                                    out.push_str(&format!(
+                                                                    if !win_stdout_inited {
+                                                            out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                                                            win_stdout_inited = true;
+                                                        }
+                                                        out.push_str(&format!(
 r#"        sub rsp, 40
         mov rdx, {ptr}
         mov r8d, {len}
@@ -3968,7 +4029,17 @@ r#"        sub rsp, 40
                                                     bytes.push(b'\n');
                                                     let len = s.as_bytes().len() + 1;
                                                     let lbl = format!("LSF_{}_{}", func.name, fi);
-                                                    out.push_str(
+                                                    if !win_stdout_inited {
+                                                out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                                                win_stdout_inited = true;
+                                            }
+                                            out.push_str(
 r#"        sub rsp, 40
         mov rcx, rbx
 "#);
@@ -3993,7 +4064,17 @@ r#"        xor r9d, r9d
                                                     bytes.push(b'\n');
                                                     let len = s.as_bytes().len() + 1;
                                                     let lbl = format!("LSF_{}_{}", func.name, fi);
-                                                    out.push_str(
+                                                    if !win_stdout_inited {
+                                                out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov rbx, rax
+"#);
+                                                win_stdout_inited = true;
+                                            }
+                                            out.push_str(
 r#"        sub rsp, 40
         mov rcx, rbx
 "#);

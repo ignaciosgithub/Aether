@@ -3092,7 +3092,6 @@ r#"        xor eax, eax
                     out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                     out.push_str("\n        .text\n");
                 } else {
-                    out.push_str("\n        .data\n");
                 if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
                     out.push_str("\n        .data\n");
                     for (sidx, _) in spawn_sites.iter().enumerate() {

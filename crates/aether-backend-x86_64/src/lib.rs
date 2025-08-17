@@ -2881,10 +2881,9 @@ r#"        push rbp
         mov rbp, rsp
         push rbx
 "#);
-                    }
+
                     let mut local_offsets: HashMap<String, usize> = HashMap::new();
-                    let mut local_types: HashMap<String, Type> = HashMap::new();
-                    let pad: usize = 40usize;
+
                     let mut cur_off: usize = 0;
                     for stmt in &func.body {
                         if let Stmt::Let { name, ty, .. } = stmt {
@@ -2899,7 +2898,7 @@ r#"        push rbp
                             };
                             if sz % 8 != 0 { sz += 8 - (sz % 8); }
                             local_offsets.insert(name.clone(), cur_off + sz);
-                            local_types.insert(name.clone(), ty.clone());
+
                             cur_off += sz;
                         }
                     }
@@ -2949,6 +2948,54 @@ r#"        sub rsp, 40
                                             out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off - 8, bytes.len() as i32));
                                             func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                             fi += 1;
+
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            },
+                            Stmt::Assign { target, value } => {
+                                if let Expr::Var(vn) = target {
+                                    if let Some(off) = local_offsets.get(vn.as_str()) {
+                                        match value {
+                                            Expr::Lit(Value::Int(v)) => {
+                                                out.push_str(&format!("        mov rax, {}\n", *v as i64));
+                                                out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                            }
+                                            Expr::Lit(Value::String(s)) => {
+                                                let lbl = format!("LSF_SET_{}_{}", func.name, fi);
+                                                let bytes = s.clone().into_bytes();
+                                                out.push_str(&format!("        lea rax, [rip+{}]\n", lbl));
+                                                out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", off));
+                                                out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off - 8, bytes.len() as i32));
+                                                func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                fi += 1;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            },
+                            Stmt::While { cond, body } => {
+                                let head = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
+                                let end = format!("LWH_END_{}_{}", func.name, lwh_idx);
+                                out.push_str(&format!("{}:\n", head));
+                                match cond {
+                                    Expr::BinOp(a, op, b) => {
+                                        if let (Expr::Lit(Value::Int(la)), Expr::Lit(Value::Int(lb))) = (&**a, &**b) {
+                                            out.push_str(&format!("        mov r10, {}\n", la));
+                                            out.push_str(&format!("        mov r11, {}\n", lb));
+                                            out.push_str("        cmp r10, r11\n");
+                                            match op {
+                                                BinOpKind::Lt => out.push_str(&format!("        jge {}\n", end)),
+                                                BinOpKind::Le => out.push_str(&format!("        jg {}\n", end)),
+                                                BinOpKind::Eq => out.push_str(&format!("        jne {}\n", end)),
+                                                _ => out.push_str(&format!("        jmp {}\n", end)),
+                                            }
+                                        } else {
+                                            out.push_str(&format!("        jmp {}\n", end));
+
+
                                         }
                                         _ => {}
                                     }
@@ -3425,17 +3472,9 @@ r#"        sub rsp, 32
                                         out.push_str(
 r#"        add rsp, 32
 "#);
-                                        if no_prologue {
-                                            out.push_str(
-r#"        pop rbx
-        ret
-"#);
-                                        } else {
-                                            out.push_str(
-r#"        pop rbx
-        pop rbp
-        ret
-"#);
+
+                                        out.push_str(&format!("        add rsp, {}\n", frame_size));
+                                        out.push_str(
                                         }
                                     }
                                 } else if let Expr::Lit(Value::String(s)) = expr {
@@ -3445,10 +3484,13 @@ r#"        pop rbx
                                     out.push_str(&format!(
 "        lea rax, [rip+{0}]
         mov rdx, {1}
-        pop rbx
+", lbl, len));
+                                out.push_str(&format!("        add rsp, {}\n", frame_size));
+                                out.push_str(
+r#"        pop rbx
         pop rbp
         ret
-", lbl, len));
+"#);
                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                     fi += 1;
                                 }
@@ -3462,7 +3504,10 @@ r#"        pop rbx
                         out.push_str(
 r#"        lea rax, [rip+LC1]
         movsd xmm0, qword ptr [rax]
-        pop rbx
+"#);
+                        out.push_str(&format!("        add rsp, {}\n", frame_size));
+                        out.push_str(
+r#"        pop rbx
         pop rbp
         ret
 "#);
@@ -3473,7 +3518,13 @@ r#"        lea rax, [rip+LC1]
                             out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                         }
                     } else {
-                        out.push_str(&format!("        mov eax, {}\n        pop rbx\n        pop rbp\n        ret\n", ret_i as i32));
+                        out.push_str(&format!("        mov eax, {}\n", ret_i as i32));
+                        out.push_str(&format!("        add rsp, {}\n", frame_size));
+                        out.push_str(
+r#"        pop rbx
+        pop rbp
+        ret
+"#);
                     }
                 }
                 if !func_rodata.is_empty() || need_nl {

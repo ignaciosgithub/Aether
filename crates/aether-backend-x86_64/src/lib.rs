@@ -5098,6 +5098,7 @@ r#"        mov r11, rcx
                                             out.push_str(&format!("        jmp {}\n", head));
                                         }
                                         Stmt::While { cond: ncond, body: nbody } => {
+                                            lwh_idx += 1;
                                             let nhead = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
                                             let nend = format!("LWH_END_{}_{}", func.name, lwh_idx);
                                             out.push_str(&format!("        jmp {}\n", nhead));

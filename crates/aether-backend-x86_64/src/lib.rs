@@ -3166,50 +3166,15 @@ r#"        add rsp, 40
                                                 if slot < regs_gpr32.len() {
                                                     let s32 = regs_gpr32[slot];
                                                     out.push_str(
-r#"        sub rsp, 80
-        lea r10, [rsp+79]
-        mov r8d, 10
-        xor rcx, rcx
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov r12, rax
 "#);
                                                     out.push_str(&format!("        mov eax, {}\n", s32));
-                                                    out.push_str(
-r#"        test eax, eax
-        jnz I32_loop_%=
-        mov byte ptr [r10], '0'
-        mov rcx, 1
-        jmp I32_done_%=
-I32_loop_%=:
-        xor edx, edx
-        div r8d
-        add dl, '0'
-        mov byte ptr [r10], dl
-        dec r10
-        inc rcx
-        test eax, eax
-        jnz I32_loop_%=
-I32_done_%=:
-        lea rdx, [r10+1]
-        mov r8, rcx
-        mov rcx, r12
-        sub rsp, 40
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        lea rdx, [rip+LSNL]
-        mov r8d, 1
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        add rsp, 80
-"#);
-                                                    win_need_lsnl = true;
+                                                    out.push_str("        cdqe\n");
+                                                    win_emit_print_i64(&mut out);
                                                     handled = true;
                                                 }
                                             }
@@ -3217,50 +3182,14 @@ I32_done_%=:
                                                 if slot < regs_gpr.len() {
                                                     let s = regs_gpr[slot];
                                                     out.push_str(
-r#"        sub rsp, 80
-        lea r10, [rsp+79]
-        mov r8, 10
-        xor rcx, rcx
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov r12, rax
 "#);
                                                     out.push_str(&format!("        mov rax, {}\n", s));
-                                                    out.push_str(
-r#"        test rax, rax
-        jnz I64_loop_%=
-        mov byte ptr [r10], '0'
-        mov rcx, 1
-        jmp I64_done_%=
-I64_loop_%=:
-        xor rdx, rdx
-        div r8
-        add dl, '0'
-        mov byte ptr [r10], dl
-        dec r10
-        inc rcx
-        test rax, rax
-        jnz I64_loop_%=
-I64_done_%=:
-        lea rdx, [r10+1]
-        mov r8, rcx
-        mov rcx, r12
-        sub rsp, 40
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        lea rdx, [rip+LSNL]
-        mov r8d, 1
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        add rsp, 80
-"#);
-                                                    win_need_lsnl = true;
+                                                    win_emit_print_i64(&mut out);
                                                     handled = true;
                                                 }
                                             }

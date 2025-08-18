@@ -2415,32 +2415,9 @@ linux_emit_print_i64(&mut out);
 ", inlbl=inlbl));
                                                 linux_inbuf_emitted = true;
                                             }
+                                            linux_emit_readln_into(&mut out, &inlbl);
                                             out.push_str(&format!(
-"        mov $0, %rax
-        mov $0, %rdi
-        leaq {inlbl}(%rip), %rsi
-        mov $1024, %rdx
-        syscall
-        test %rax, %rax
-        jz .LREAD_EMPTY_%=
-        mov %rax, %rdx
-        dec %rdx
-        mov %bl, (%rsi,%rdx,1)
-        cmp $10, %bl
-        jne .LREAD_NO_NL_%=
-        test %rdx, %rdx
-        jz .LREAD_TRIM_%=
-        mov %bl, -1(%rsi,%rdx,1)
-        cmp $13, %bl
-        jne .LREAD_TRIM_%=
-        dec %rdx
-.LREAD_TRIM_%=:
-.LREAD_NO_NL_%=:
-        jmp .LREAD_RET_%=
-.LREAD_EMPTY_%=:
-        xor %rdx, %rdx
-.LREAD_RET_%=:
-        mov $1, %rax
+"        mov $1, %rax
         mov $1, %rdi
         leaq {inlbl}(%rip), %rsi
         syscall
@@ -3079,37 +3056,9 @@ r#"        sub rsp, 40
 "#);
                                         win_stdin_inited = true;
                                     }
+                                    win_emit_readln_to_rsi_rdx(&mut out, "LWININBUF_main", "LWININLEN_main");
                                     out.push_str(
-r#"        sub rsp, 40
-        mov rcx, r13
-        lea rdx, [rip+LWININBUF_main]
-        mov r8d, 1024
-        lea r9, [rip+LWININLEN_main]
-        mov qword ptr [rsp+32], 0
-        call ReadFile
-        add rsp, 40
-        mov rax, qword ptr [rip+LWININLEN_main]
-        test rax, rax
-        jz WREAD_EMPTY_main_%=
-        lea rsi, [rip+LWININBUF_main]
-        mov rdx, rax
-        dec rdx
-        mov bl, byte ptr [rsi+rdx]
-        cmp bl, 10
-        jne WREAD_NO_NL_main_%=
-        test rdx, rdx
-        jz WREAD_TRIM_NL_main_%=
-        mov bl, byte ptr [rsi+rdx-1]
-        cmp bl, 13
-        jne WREAD_TRIM_NL_main_%=
-        dec rdx
-WREAD_TRIM_NL_main_%=:
-WREAD_NO_NL_main_%=:
-        jmp WREAD_RET_main_%=
-WREAD_EMPTY_main_%=:
-        xor rdx, rdx
-WREAD_RET_main_%=:
-        mov r11, rcx
+r#"        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         mov r8d, edx
@@ -3168,38 +3117,7 @@ r#"        sub rsp, 40
 "#);
                                                     win_stdin_inited = true;
                                                 }
-                                                out.push_str(
-r#"        sub rsp, 40
-        mov rcx, r13
-        lea rdx, [rip+LWININBUF_main]
-        mov r8d, 1024
-        lea r9, [rip+LWININLEN_main]
-        mov qword ptr [rsp+32], 0
-        call ReadFile
-        add rsp, 40
-        mov rax, qword ptr [rip+LWININLEN_main]
-        test rax, rax
-        jz .WREAD_EMPTY_TOI_%=
-        lea rbx, [rip+LWININBUF_main]
-        mov rcx, rax
-        dec rcx
-        mov bl, byte ptr [rbx+rcx]
-        cmp bl, 10
-        jne .WREAD_NO_NL_TOI_%=
-        test rcx, rcx
-        jz .WREAD_TRIM_NL_TOI_%=
-        mov bl, byte ptr [rbx+rcx-1]
-        cmp bl, 13
-        jne .WREAD_TRIM_NL_TOI_%=
-        dec rcx
-WREAD_TRIM_NL_TOI_%=:
-WREAD_NO_NL_TOI_%=:
-        jmp WREAD_RET_TOI_%=
-WREAD_EMPTY_TOI_%=:
-        xor rcx, rcx
-        lea rbx, [rip+LWININBUF_main]
-WREAD_RET_TOI_%=:
-"#);
+                                                win_emit_readln_to_rbx_rcx(&mut out, "LWININBUF_main", "LWININLEN_main");
                                             }
                                             _ => {}
                                         }

@@ -2459,8 +2459,146 @@ r#"        push %rbx
 
                     let mut ret_f: Option<f64> = None;
                     let mut fi: usize = 0;
+                    let mut lwh_idx: usize = 0;
                     for stmt in &func.body {
                         match stmt {
+                            Stmt::While { cond, body } => {
+                                let head = format!(".LWH_HEAD_{}_{}", func.name, lwh_idx);
+                                let end = format!(".LWH_END_{}_{}", func.name, lwh_idx);
+                                out.push_str(&format!("{}:\n", head));
+                                let mut handled_cond = false;
+                                match cond {
+                                    Expr::BinOp(a, op, b) => {
+                                        match (a.as_ref(), op, b.as_ref()) {
+                                            (Expr::Lit(Value::Int(k)), aether_frontend::ast::BinOpKind::Lt, Expr::Var(vn)) => {
+                                                let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                let mut slot = 0usize;
+                                                for p in &func.params {
+                                                    if p.name == *vn {
+                                                        let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                        out.push_str(&format!("        cmp {}, {}\n", r, *k as i64));
+                                                        out.push_str(&format!("        jle {}\n", end));
+                                                        handled_cond = true;
+                                                        break;
+                                                    } else {
+                                                        match p.ty {
+                                                            Type::String => slot += 2,
+                                                            _ => slot += 1,
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            (Expr::Var(vn), aether_frontend::ast::BinOpKind::Le, Expr::Lit(Value::Int(k))) => {
+                                                let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                let mut slot = 0usize;
+                                                for p in &func.params {
+                                                    if p.name == *vn {
+                                                        let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                        out.push_str(&format!("        cmp {}, {}\n", r, *k as i64));
+                                                        out.push_str(&format!("        jg {}\n", end));
+                                                        handled_cond = true;
+                                                        break;
+                                                    } else {
+                                                        match p.ty {
+                                                            Type::String => slot += 2,
+                                                            _ => slot += 1,
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    Expr::Lit(Value::Int(cv)) => {
+                                        out.push_str(&format!("        mov ${}, %r10\n", *cv as i64));
+                                        out.push_str("        cmp $0, %r10\n");
+                                        out.push_str(&format!("        je {}\n", end));
+                                        handled_cond = true;
+                                    }
+                                    _ => {}
+                                }
+                                if !handled_cond {
+                                    out.push_str(&format!("        jmp {}\n", end));
+                                }
+                                for bstmt in body {
+                                    match bstmt {
+                                        Stmt::Println(s) => {
+                                            let mut bytes = s.clone().into_bytes();
+                                            bytes.push(b'\n');
+                                            let len = s.as_bytes().len() + 1;
+                                            let lbl = format!(".LSP_{}_{}_{}", func.name, lwh_idx, fi);
+                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", lbl, len));
+                                            func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                            fi += 1;
+                                        }
+                                        Stmt::Assign { target, value } => {
+                                            if let Expr::Var(vn) = target {
+                                                if let Expr::BinOp(a, op, b) = value {
+                                                    if let (Expr::Var(rv), Expr::Lit(Value::Int(k))) = (a.as_ref(), b.as_ref()) {
+                                                        if rv == vn {
+                                                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                            let mut slot = 0usize;
+                                                            for p in &func.params {
+                                                                if p.name == *vn {
+                                                                    let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                                    match op {
+                                                                        aether_frontend::ast::BinOpKind::Add => {
+                                                                            out.push_str(&format!("        add ${}, {}\n", *k as i64, r));
+                                                                        }
+                                                                        aether_frontend::ast::BinOpKind::Sub => {
+                                                                            out.push_str(&format!("        sub ${}, {}\n", *k as i64, r));
+                                                                        }
+                                                                        _ => {}
+                                                                    }
+                                                                    break;
+                                                                } else {
+                                                                    match p.ty {
+                                                                        Type::String => slot += 2,
+                                                                        _ => slot += 1,
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Stmt::Expr(Expr::Call(name, args)) => {
+                                            if name == "fact" {
+                                                if args.len() == 1 {
+                                                    match &args[0] {
+                                                        Expr::Lit(Value::Int(iv)) => {
+                                                            out.push_str(&format!("        mov ${}, %rdi\n", *iv as i64));
+                                                        }
+                                                        Expr::Var(_vn) => {
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                out.push_str("        sub $8, %rsp\n");
+                                                out.push_str("        call fact\n");
+                                                out.push_str("        add $8, %rsp\n");
+                                            }
+                                        }
+                                        Stmt::Break => {
+                                            out.push_str(&format!("        jmp {}\n", end));
+                                        }
+                                        Stmt::Continue => {
+                                            out.push_str(&format!("        jmp {}\n", head));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                out.push_str(&format!("        jmp {}\n", head));
+                                out.push_str(&format!("{}:\n", end));
+                                lwh_idx += 1;
+                            },
                             Stmt::Println(s) => {
                                 let mut bytes = s.clone().into_bytes();
                                 bytes.push(b'\n');

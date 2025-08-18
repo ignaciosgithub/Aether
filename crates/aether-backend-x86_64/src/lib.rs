@@ -1614,38 +1614,8 @@ r#"        push %rbx
                                         fi += 1;
                                     }
                                     Expr::Lit(Value::Int(v)) => {
-                                        out.push_str(
-"        sub $80, %rsp
-        mov $0, %rax
-");
                                         out.push_str(&format!("        mov ${}, %rax\n", v));
-                                        out.push_str(
-"        lea 79(%rsp), %r10
-        mov $10, %r8
-        xor %rcx, %rcx
-.LitI64_print_loop:
-        xor %rdx, %rdx
-        div %r8
-        add $'0', %dl
-        mov %dl, (%r10)
-        dec %r10
-        inc %rcx
-        test %rax, %rax
-        jnz .LitI64_print_loop
-        lea 1(%r10), %rsi
-        mov %rcx, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-        add $80, %rsp
-");
-                                        let nl_lbl = format!(".LNL_{}", fi);
-                                        out.push_str(&format!("{}:\n        .ascii \"\\n\"\n", nl_lbl));
+                                        linux_emit_print_i64(&mut out);
                                         fi += 1;
                                     }
                                     Expr::Call(name, args) => {
@@ -1867,40 +1837,7 @@ linux_emit_print_i64(&mut out);
                                                 }
                                             }
                                             out.push_str(&format!("        call {}\n", name));
-                                            out.push_str(
-"        sub $80, %rsp
-        lea 79(%rsp), %r10
-        mov $10, %r8
-        xor %rcx, %rcx
-        test %rax, %rax
-        jnz .I64_print_loop_%=
-        movb $'0', (%r10)
-        mov $1, %rcx
-        jmp .I64_print_done_%=
-.I64_print_loop_%=:
-        xor %rdx, %rdx
-        div %r8
-        add $'0', %dl
-        mov %dl, (%r10)
-        dec %r10
-        inc %rcx
-        test %rax, %rax
-        jnz .I64_print_loop_%=
-.I64_print_done_%=:
-        lea 1(%r10), %rsi
-        mov %rcx, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-        add $80, %rsp
-");
-                                            let nl_lbl = format!(".LNL_{}", fi);
-                                            out.push_str(&format!("{}:\n        .ascii \"\\n\"\n", nl_lbl));
+                                            linux_emit_print_i64(&mut out);
                                             fi += 1;
                                         }
                                     }

@@ -2569,6 +2569,94 @@ r#"        push %rbx
                                                 }
                                             }
                                         }
+                                        Stmt::While { cond: ncond, body: nbody } => {
+                                            let nhead = format!(".LWH_HEAD_{}_{}", func.name, lwh_idx);
+                                            let nend = format!(".LWH_END_{}_{}", func.name, lwh_idx);
+                                            out.push_str(&format!("{}:\n", nhead));
+                                            let mut nhandled = false;
+                                            match ncond {
+                                                Expr::BinOp(a, op, b) => {
+                                                    match (a.as_ref(), op, b.as_ref()) {
+                                                        (Expr::Lit(Value::Int(k)), aether_frontend::ast::BinOpKind::Lt, Expr::Var(vn)) => {
+                                                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                            let mut slot = 0usize;
+                                                            for p in &func.params {
+                                                                if p.name == *vn {
+                                                                    let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                                    out.push_str(&format!("        cmp {}, {}\n", r, *k as i64));
+                                                                    out.push_str(&format!("        jle {}\n", nend));
+                                                                    nhandled = true;
+                                                                    break;
+                                                                } else {
+                                                                    match p.ty {
+                                                                        Type::String => slot += 2,
+                                                                        _ => slot += 1,
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        (Expr::Var(vn), aether_frontend::ast::BinOpKind::Le, Expr::Lit(Value::Int(k))) => {
+                                                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                            let mut slot = 0usize;
+                                                            for p in &func.params {
+                                                                if p.name == *vn {
+                                                                    let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                                    out.push_str(&format!("        cmp {}, {}\n", r, *k as i64));
+                                                                    out.push_str(&format!("        jg {}\n", nend));
+                                                                    nhandled = true;
+                                                                    break;
+                                                                } else {
+                                                                    match p.ty {
+                                                                        Type::String => slot += 2,
+                                                                        _ => slot += 1,
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        _ => {}
+                                                    }
+                                                }
+                                                Expr::Lit(Value::Int(cv)) => {
+                                                    out.push_str(&format!("        mov ${}, %r10\n", *cv as i64));
+                                                    out.push_str("        cmp $0, %r10\n");
+                                                    out.push_str(&format!("        je {}\n", nend));
+                                                    nhandled = true;
+                                                }
+                                                _ => {}
+                                            }
+                                            if !nhandled {
+                                                out.push_str(&format!("        jmp {}\n", nend));
+                                            }
+                                            for ib in nbody {
+                                                match ib {
+                                                    Stmt::Println(s) => {
+                                                        let mut bytes = s.clone().into_bytes();
+                                                        bytes.push(b'\n');
+                                                        let len = s.as_bytes().len() + 1;
+                                                        let lbl = format!(".LSP_{}_{}_{}", func.name, lwh_idx, fi);
+                                                        out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+", lbl, len));
+                                                        func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                        fi += 1;
+                                                    }
+                                                    Stmt::Break => {
+                                                        out.push_str(&format!("        jmp {}\n", nend));
+                                                    }
+                                                    Stmt::Continue => {
+                                                        out.push_str(&format!("        jmp {}\n", nhead));
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            out.push_str(&format!("        jmp {}\n", nhead));
+                                            out.push_str(&format!("{}:\n", nend));
+                                            lwh_idx += 1;
+                                        }
                                         Stmt::Expr(Expr::Call(name, args)) => {
                                             if name == "fact" {
                                                 if args.len() == 1 {
@@ -4999,11 +5087,66 @@ r#"        mov r11, rcx
                                                 }
                                             }
                                         }
+                                        Stmt::Expr(Expr::Call(cname, _)) => {
+                                            out.push_str(&format!("        sub rsp, 40\n        call {}\n        add rsp, 40\n", cname));
+                                        }
                                         Stmt::Break => {
                                             out.push_str(&format!("        jmp {}\n", end));
                                         }
                                         Stmt::Continue => {
                                             out.push_str(&format!("        jmp {}\n", head));
+                                        }
+                                        Stmt::While { cond: ncond, body: nbody } => {
+                                            let nhead = format!("LWH_HEAD_{}_{}", func.name, lwh_idx);
+                                            let nend = format!("LWH_END_{}_{}", func.name, lwh_idx);
+                                            out.push_str(&format!("        jmp {}\n", nhead));
+                                            out.push_str(&format!("{}:\n", nhead));
+                                            emit_win_eval_cond_to_rax(&ncond, &mut out, &local_offsets, &local_types);
+                                            out.push_str("        cmp rax, 0\n");
+                                            out.push_str(&format!("        je {}\n", nend));
+                                            for (ibidx, ib) in nbody.iter().enumerate() {
+                                                match ib {
+                                                    Stmt::Println(s) => {
+                                                        let mut bytes = s.clone().into_bytes();
+                                                        bytes.push(b'\n');
+                                                        let len = s.as_bytes().len() + 1;
+                                                        let lbl = format!("LSFWH_{}_{}_{}", func.name, lwh_idx, ibidx);
+                                                        if !win_stdout_inited {
+                                                            out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov r12, rax
+"#);
+                                                            win_stdout_inited = true;
+                                                        }
+                                                        out.push_str(&format!(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+{}]
+        mov r8d, {}
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#, lbl, len));
+                                                        func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                    }
+                                                    Stmt::Break => {
+                                                        out.push_str(&format!("        jmp {}\n", nend));
+                                                    }
+                                                    Stmt::Continue => {
+                                                        out.push_str(&format!("        jmp {}\n", nhead));
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                            out.push_str(&format!("        jmp {}\n", nhead));
+                                            out.push_str(&format!("{}:\n", nend));
+                                            lwh_idx += 1;
                                         }
                                         _ => {}
                                     }

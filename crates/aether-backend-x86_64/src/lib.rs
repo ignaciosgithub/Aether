@@ -314,6 +314,202 @@ LWIN_I64_done_%=:
     win_emit_print_newline(out);
  
 }
+fn linux_emit_readln_into(out: &mut String, buf_label: &str) {
+    out.push_str(&format!(
+"        mov $0, %rax
+        mov $0, %rdi
+        leaq {buf}(%rip), %rsi
+        mov $1024, %rdx
+        syscall
+        test %rax, %rax
+        jz .LREAD_EMPTY_%=
+        mov %rax, %rdx
+        dec %rdx
+        mov %bl, (%rsi,%rdx,1)
+        cmp $10, %bl
+        jne .LREAD_NO_NL_%=
+        test %rdx, %rdx
+        jz .LREAD_TRIM_%=
+        mov %bl, -1(%rsi,%rdx,1)
+        cmp $13, %bl
+        jne .LREAD_TRIM_%=
+        dec %rdx
+.LREAD_TRIM_%=:
+.LREAD_NO_NL_%=:
+        jmp .LREAD_RET_%=
+.LREAD_EMPTY_%=:
+        xor %rdx, %rdx
+.LREAD_RET_%=:
+", buf=buf_label));
+}
+
+fn linux_emit_to_int_from_rsi_rdx(out: &mut String) {
+    out.push_str(
+"        xor %rdi, %rdi
+        mov $1, %r8
+        test %rdx, %rdx
+        jz .TOI_ERR_%=
+        mov (%rsi), %al
+        cmp $'+', %al
+        jne .TOI_CHKMIN_%=
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP_%=
+.TOI_CHKMIN_%=:
+        cmp $'-', %al
+        jne .TOI_LOOP_%=
+        mov $-1, %r8
+        inc %rsi
+        dec %rdx
+.TOI_LOOP_%=:
+        test %rdx, %rdx
+        jz .TOI_FIN_%=
+        mov (%rsi), %al
+        cmp $'0', %al
+        jb .TOI_ERR_%=
+        cmp $'9', %al
+        ja .TOI_ERR_%=
+        imul %rdi, %rdi, 10
+        movzbq %al, %rax
+        sub $'0', %rax
+        add %rax, %rdi
+        inc %rsi
+        dec %rdx
+        jmp .TOI_LOOP_%=
+.TOI_FIN_%=:
+        mov %rdi, %rax
+        cmp $0, %r8
+        jge .TOI_OK_%=
+        neg %rax
+.TOI_OK_%=:
+");
+}
+
+fn win_emit_readln_to_rsi_rdx(out: &mut String, buf_label: &str, len_label: &str) {
+    out.push_str(
+"        sub rsp, 40
+        mov ecx, -10
+        call GetStdHandle
+        add rsp, 40
+        mov r13, rax
+");
+    out.push_str(&format!(
+"        sub rsp, 40
+        mov rcx, r13
+        lea rdx, [rip+{buf}]
+        mov r8d, 1024
+        lea r9,  [rip+{len}]
+        mov qword ptr [rsp+32], 0
+        call ReadFile
+        add rsp, 40
+        mov rax, qword ptr [rip+{len}]
+        test rax, rax
+        jz WREAD_EMPTY_%=
+        lea rsi, [rip+{buf}]
+        mov rdx, rax
+        dec rdx
+        mov bl, byte ptr [rsi+rdx]
+        cmp bl, 10
+        jne WREAD_NO_NL_%=
+        test rdx, rdx
+        jz WREAD_TRIM_NL_%=
+        mov bl, byte ptr [rsi+rdx-1]
+        cmp bl, 13
+        jne WREAD_TRIM_NL_%=
+        dec rdx
+WREAD_TRIM_NL_%=:
+WREAD_NO_NL_%=:
+        jmp WREAD_RET_%=
+WREAD_EMPTY_%=:
+        xor rdx, rdx
+WREAD_RET_%=:
+", buf=buf_label, len=len_label));
+}
+
+fn win_emit_readln_to_rbx_rcx(out: &mut String, buf_label: &str, len_label: &str) {
+    out.push_str(
+"        sub rsp, 40
+        mov ecx, -10
+        call GetStdHandle
+        add rsp, 40
+        mov r13, rax
+");
+    out.push_str(&format!(
+"        sub rsp, 40
+        mov rcx, r13
+        lea rdx, [rip+{buf}]
+        mov r8d, 1024
+        lea r9,  [rip+{len}]
+        mov qword ptr [rsp+32], 0
+        call ReadFile
+        add rsp, 40
+        mov rax, qword ptr [rip+{len}]
+        test rax, rax
+        jz WREAD_EMPTY_%=
+        lea rbx, [rip+{buf}]
+        mov rcx, rax
+        dec rcx
+        mov bl, byte ptr [rbx+rcx]
+        cmp bl, 10
+        jne WREAD_NO_NL_%=
+        test rcx, rcx
+        jz WREAD_TRIM_NL_%=
+        mov bl, byte ptr [rbx+rcx-1]
+        cmp bl, 13
+        jne WREAD_TRIM_NL_%=
+        dec rcx
+WREAD_TRIM_NL_%=:
+WREAD_NO_NL_%=:
+        jmp WREAD_RET_%=
+WREAD_EMPTY_%=:
+        xor rcx, rcx
+        lea rbx, [rip+{buf}]
+WREAD_RET_%=:
+", buf=buf_label, len=len_label));
+}
+
+fn win_emit_to_int_from_mem(out: &mut String, ptr: &str, len: &str) {
+    out.push_str(&format!(
+"        xor rdi, rdi
+        mov r8, 1
+        test {ln}, {ln}
+        jz WTOI_ERR_%=
+        mov al, byte ptr [{pt}]
+        cmp al, '+'
+        jne WTOI_CHKMIN_%=
+        inc {pt}
+        dec {ln}
+        jmp WTOI_LOOP_%=
+WTOI_CHKMIN_%=:
+        cmp al, '-'
+        jne WTOI_LOOP_%=
+        mov r8, -1
+        inc {pt}
+        dec {ln}
+WTOI_LOOP_%=:
+        test {ln}, {ln}
+        jz WTOI_FIN_%=
+        mov al, byte ptr [{pt}]
+        cmp al, '0'
+        jb WTOI_ERR_%=
+        cmp al, '9'
+        ja WTOI_ERR_%=
+        imul rdi, rdi, 10
+        movzx rax, al
+        sub rax, '0'
+        add rdi, rax
+        inc {pt}
+        dec {ln}
+        jmp WTOI_LOOP_%=
+WTOI_FIN_%=:
+        mov rax, rdi
+        cmp r8, 0
+        jge WTOI_OK_%=
+        neg rax
+WTOI_OK_%=:
+", pt=ptr, ln=len));
+}
+
 
 impl CodeGenerator for X86_64LinuxCodegen {
     fn target(&self) -> &Target {

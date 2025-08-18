@@ -1895,32 +1895,9 @@ linux_emit_print_i64(&mut out);
 ", inlbl=inlbl));
                                                                 linux_inbuf_emitted = true;
                                                             }
+                                                            linux_emit_readln_into(&mut out, &inlbl);
                                                             out.push_str(&format!(
-"        mov $0, %rax
-        mov $0, %rdi
-        leaq {inlbl}(%rip), %rsi
-        mov $1024, %rdx
-        syscall
-        test %rax, %rax
-        jz .LREAD0_EMPTY_TOI_%=
-        mov %rax, %rdx
-        dec %rdx
-        mov %bl, (%rsi,%rdx,1)
-        cmp $10, %bl
-        jne .LREAD0_NO_NL_TOI_%=
-        test %rdx, %rdx
-        jz .LREAD0_TRIM_TOI_%=
-        mov %bl, -1(%rsi,%rdx,1)
-        cmp $13, %bl
-        jne .LREAD0_TRIM_TOI_%=
-        dec %rdx
-.LREAD0_TRIM_TOI_%=:
-.LREAD0_NO_NL_TOI_%=:
-        jmp .LREAD0_RET_TOI_%=
-.LREAD0_EMPTY_TOI_%=:
-        xor %rdx, %rdx
-.LREAD0_RET_TOI_%=:
-        xor %rdi, %rdi
+"        xor %rdi, %rdi
         mov $1, %r8
         test %rdx, %rdx
         jz .TOI_ERR_%=
@@ -2328,32 +2305,9 @@ linux_emit_print_i64(&mut out);
 ", inlbl=inlbl));
                                                                     linux_inbuf_emitted = true;
                                                                 }
+                                                                linux_emit_readln_into(&mut out, &inlbl);
                                                                 out.push_str(&format!(
-"        mov $0, %rax
-        mov $0, %rdi
-        leaq {inlbl}(%rip), %rsi
-        mov $1024, %rdx
-        syscall
-        test %rax, %rax
-        jz .LREAD_EMPTY_TOI_%=
-        mov %rax, %rdx
-        dec %rdx
-        mov %bl, (%rsi,%rdx,1)
-        cmp $10, %bl
-        jne .LREAD_NO_NL_TOI_%=
-        test %rdx, %rdx
-        jz .LREAD_TRIM_TOI_%=
-        mov %bl, -1(%rsi,%rdx,1)
-        cmp $13, %bl
-        jne .LREAD_TRIM_TOI_%=
-        dec %rdx
-.LREAD_TRIM_TOI_%=:
-.LREAD_NO_NL_TOI_%=:
-        jmp .LREAD_RET_TOI_%=
-.LREAD_EMPTY_TOI_%=:
-        xor %rdx, %rdx
-.LREAD_RET_TOI_%=:
-        xor %rdi, %rdi
+"        xor %rdi, %rdi
         mov $1, %r8
         test %rdx, %rdx
         jz .TOI_ERR_%=

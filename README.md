@@ -1,5 +1,6 @@
 Threading (portable MVP)
 
+For detailed architecture and backend internals, see docs.md.
 - spawn("func", i64) -> i64 handle
 - join(i64) -> i32
 - destroy(i64) -> i32 (1 success, 0 failure)

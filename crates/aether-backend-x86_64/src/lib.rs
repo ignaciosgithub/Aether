@@ -1191,6 +1191,69 @@ _start:
                                         }
                                     }
                                 }
+                                if !cname.starts_with("vec_") {
+                                    if args.is_empty() {
+                                        out.push_str("        sub $8, %rsp\n");
+                                        out.push_str(&format!("        call {}\n", cname));
+                                        out.push_str("        add $8, %rsp\n");
+                                    } else {
+                                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                        let mut islot = 0usize;
+                                        for a in args {
+                                            match a {
+                                                Expr::Lit(Value::Int(v)) => {
+                                                    if islot < regs.len() {
+                                                        let dst = regs[islot];
+                                                        out.push_str(&format!("        mov ${}, {}\n", v, dst));
+                                                        islot += 1;
+                                                    }
+                                                }
+                                                Expr::Field(recv0, fname0) => {
+                                                    if islot < regs.len() {
+                                                        let mut recv = recv0.as_ref();
+                                                        let mut names: Vec<&str> = Vec::new();
+                                                        while let Expr::Field(inner, name) = recv {
+                                                            names.push(name.as_str());
+                                                            recv = inner.as_ref();
+                                                        }
+                                                        if let Expr::Var(basen) = recv {
+                                                            if let Some(tyname) = static_types.get(basen) {
+                                                                let mut tot_off = 0usize;
+                                                                let mut cur_ty = Type::User(tyname.clone());
+                                                                for fname in names.iter().rev() {
+                                                                    if let Type::User(ref sname) = cur_ty {
+                                                                        if let Some((foff, fty)) = get_field_info(sname.as_str(), fname, &field_offsets) {
+                                                                            tot_off += foff;
+                                                                            cur_ty = fty;
+                                                                        }
+                                                                    }
+                                                                }
+                                                                out.push_str(&format!("        leaq {}(%rip), %rbx\n", basen));
+                                                                match cur_ty {
+                                                                    Type::I32 => {
+                                                                        let dst = ["%edi","%esi","%edx","%ecx","%r8d","%r9d"][islot];
+                                                                        out.push_str(&format!("        mov {}(%rbx), {}\n", tot_off, dst));
+                                                                        islot += 1;
+                                                                    }
+                                                                    Type::I64 => {
+                                                                        let dst = regs[islot];
+                                                                        out.push_str(&format!("        mov {}(%rbx), {}\n", tot_off, dst));
+                                                                        islot += 1;
+                                                                    }
+                                                                    _ => { }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        out.push_str("        sub $8, %rsp\n");
+                                        out.push_str(&format!("        call {}\n", cname));
+                                        out.push_str("        add $8, %rsp\n");
+                                    }
+                                }
                             }
                             Stmt::PrintExpr(Expr::Call(cname, args)) => {
                                 if cname == "vec_len" && args.len() == 1 {

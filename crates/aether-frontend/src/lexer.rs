@@ -36,6 +36,8 @@ pub enum TokenKind {
     F64,
     Any,
     List,
+    VecType,
+    HListType,
     If,
     Else,
     While,
@@ -48,6 +50,7 @@ pub enum TokenKind {
     Lt,   // <
     Eq,   // ==
     StringType, // type keyword: String
+    Ampersand,
     Eof,
 }
 
@@ -124,6 +127,8 @@ impl Lexer {
                     "f64" => TokenKind::F64,
                     "any" => TokenKind::Any,
                     "list" => TokenKind::List,
+                    "vec" | "Vec" => TokenKind::VecType,
+                    "hlist" | "HList" => TokenKind::HListType,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
                     "while" => TokenKind::While,
@@ -247,6 +252,10 @@ impl Lexer {
                 ';' => {
                     i += 1;
                     TokenKind::Semicolon
+                }
+                '&' => {
+                    i += 1;
+                    TokenKind::Ampersand
                 }
                 _ => return Err(anyhow!("unexpected character: {}", c)),
             };

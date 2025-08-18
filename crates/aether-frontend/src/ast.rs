@@ -58,6 +58,10 @@ pub enum Type {
     List(Box<Type>),
     String,
     User(String),
+    Ptr(Box<Type>),
+    Array(Box<Type>, usize),
+    Vector(Box<Type>),
+    HList,
 }
 
 #[derive(Debug, Clone)]
@@ -105,4 +109,8 @@ pub enum Expr {
     Field(Box<Expr>, String),
     StructLit(String, Vec<(String, Expr)>),
     MethodCall(Box<Expr>, String, Vec<Expr>),
+    AddrOf(Box<Expr>),
+    Deref(Box<Expr>),
+    Index(Box<Expr>, Box<Expr>),
+    ArrayLit(Vec<Expr>),
 }

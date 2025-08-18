@@ -200,6 +200,46 @@ fn emit_win_eval_cond_to_rax(
         }
     }
 }
+fn win_emit_print_newline(out: &mut String) {
+    out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+}
+
+fn win_emit_init_stdout(out: &mut String, inited: &mut bool) {
+    if !*inited {
+        out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov r12, rax
+"#);
+        *inited = true;
+    }
+}
+
+fn win_emit_init_stdin(out: &mut String, inited: &mut bool) {
+    if !*inited {
+        out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -10
+        call GetStdHandle
+        add rsp, 40
+        mov r13, rax
+"#);
+        *inited = true;
+    }
+}
 
 
 impl CodeGenerator for X86_64LinuxCodegen {
@@ -4669,6 +4709,8 @@ r#"        mov r11, rcx
                                                             }
                                                             break;
                                                         } else {
+                                                win_emit_print_newline(&mut out);
+
                                                             match p.ty {
                                                                 Type::String => slot += 2,
                                                                 _ => slot += 1,
@@ -4807,6 +4849,8 @@ r#"        xor r9d, r9d
                                                     bytes.push(b'\n');
                                                     let len = s.as_bytes().len() + 1;
                                                     let lbl = format!("LSF_{}_{}", func.name, fi);
+                                            win_emit_print_newline(&mut out);
+
                                                     if !win_stdout_inited {
                                                 out.push_str(
 r#"        sub rsp, 40

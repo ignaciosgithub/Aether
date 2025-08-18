@@ -200,6 +200,46 @@ fn emit_win_eval_cond_to_rax(
         }
     }
 }
+fn win_emit_print_newline(out: &mut String) {
+    out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+}
+
+fn win_emit_init_stdout(out: &mut String, inited: &mut bool) {
+    if !*inited {
+        out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
+        add rsp, 40
+        mov r12, rax
+"#);
+        *inited = true;
+    }
+}
+
+fn win_emit_init_stdin(out: &mut String, inited: &mut bool) {
+    if !*inited {
+        out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -10
+        call GetStdHandle
+        add rsp, 40
+        mov r13, rax
+"#);
+        *inited = true;
+    }
+}
 
 
 impl CodeGenerator for X86_64LinuxCodegen {
@@ -2958,25 +2998,25 @@ r#"        sub rsp, 40
         add rsp, 40
         mov rax, qword ptr [rip+LWININLEN_main]
         test rax, rax
-        jz .WREAD_EMPTY_main_%=
+        jz WREAD_EMPTY_main_%=
         lea rsi, [rip+LWININBUF_main]
         mov rdx, rax
         dec rdx
         mov bl, byte ptr [rsi+rdx]
         cmp bl, 10
-        jne .WREAD_NO_NL_main_%=
+        jne WREAD_NO_NL_main_%=
         test rdx, rdx
-        jz .WREAD_TRIM_NL_main_%=
+        jz WREAD_TRIM_NL_main_%=
         mov bl, byte ptr [rsi+rdx-1]
         cmp bl, 13
-        jne .WREAD_TRIM_NL_main_%=
+        jne WREAD_TRIM_NL_main_%=
         dec rdx
-.WREAD_TRIM_NL_main_%=:
-.WREAD_NO_NL_main_%=:
-        jmp .WREAD_RET_main_%=
-.WREAD_EMPTY_main_%=:
+WREAD_TRIM_NL_main_%=:
+WREAD_NO_NL_main_%=:
+        jmp WREAD_RET_main_%=
+WREAD_EMPTY_main_%=:
         xor rdx, rdx
-.WREAD_RET_main_%=:
+WREAD_RET_main_%=:
         mov r11, rcx
         sub rsp, 40
         mov rcx, r12
@@ -3060,13 +3100,13 @@ r#"        sub rsp, 40
         cmp bl, 13
         jne .WREAD_TRIM_NL_TOI_%=
         dec rcx
-.WREAD_TRIM_NL_TOI_%=:
-.WREAD_NO_NL_TOI_%=:
-        jmp .WREAD_RET_TOI_%=
-.WREAD_EMPTY_TOI_%=:
+WREAD_TRIM_NL_TOI_%=:
+WREAD_NO_NL_TOI_%=:
+        jmp WREAD_RET_TOI_%=
+WREAD_EMPTY_TOI_%=:
         xor rcx, rcx
         lea rbx, [rip+LWININBUF_main]
-.WREAD_RET_TOI_%=:
+WREAD_RET_TOI_%=:
 "#);
                                             }
                                             _ => {}
@@ -3075,50 +3115,50 @@ r#"        sub rsp, 40
 r#"        xor rdi, rdi
         mov r8, 1
         test rcx, rcx
-        jz .WTOI_ERR_%=
+        jz WTOI_ERR_%=
         mov al, byte ptr [rbx]
         cmp al, '+'
-        jne .WTOI_CHKMIN_%=
+        jne WTOI_CHKMIN_%=
         inc rbx
         dec rcx
-        jmp .WTOI_LOOP_%=
-.WTOI_CHKMIN_%=:
+        jmp WTOI_LOOP_%=
+WTOI_CHKMIN_%=:
         cmp al, '-'
         jne .WTOI_LOOP_%=
         mov r8, -1
         inc rbx
         dec rcx
-.WTOI_LOOP_%=:
+WTOI_LOOP_%=:
         test rcx, rcx
-        jz .WTOI_FIN_%=
+        jz WTOI_FIN_%=
         mov al, byte ptr [rbx]
         cmp al, '0'
-        jb .WTOI_ERR_%=
+        jb WTOI_ERR_%=
         cmp al, '9'
-        ja .WTOI_ERR_%=
+        ja WTOI_ERR_%=
         imul rdi, rdi, 10
         movzx rax, al
         sub rax, '0'
         add rdi, rax
         inc rbx
         dec rcx
-        jmp .WTOI_LOOP_%=
-.WTOI_FIN_%=:
+        jmp WTOI_LOOP_%=
+WTOI_FIN_%=:
         mov rax, rdi
         cmp r8, 0
-        jge .WTOI_OK_%=
+        jge WTOI_OK_%=
         neg rax
-.WTOI_OK_%=:
+WTOI_OK_%=:
         sub rsp, 80
         lea r10, [rsp+79]
         mov r8, 10
         xor rcx, rcx
         test rax, rax
-        jnz .WTOI_I64_loop_%=
+        jnz WTOI_I64_loop_%=
         mov byte ptr [r10], '0'
         mov rcx, 1
-        jmp .WTOI_I64_done_%=
-.WTOI_I64_loop_%=:
+        jmp WTOI_I64_done_%=
+WTOI_I64_loop_%=:
         xor rdx, rdx
         div r8
         add dl, '0'
@@ -3126,8 +3166,8 @@ r#"        xor rdi, rdi
         dec r10
         inc rcx
         test rax, rax
-        jnz .WTOI_I64_loop_%=
-.WTOI_I64_done_%=:
+        jnz WTOI_I64_loop_%=
+WTOI_I64_done_%=:
         lea rsi, [r10+1]
         mov rdx, rcx
         mov r11, rcx
@@ -3151,12 +3191,12 @@ r#"        xor rdi, rdi
         add rsp, 40
         mov rcx, r11
         add rsp, 80
-        jmp .WTOI_END_%=
-.WTOI_ERR_%=:
+        jmp WTOI_END_%=
+WTOI_ERR_%=:
         mov r11, rcx
         sub rsp, 40
         mov rcx, r12
-        lea rdx, [rip+.LTOIERRWIN]
+        lea rdx, [rip+LTOIERRWIN]
         mov r8d, 13
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
@@ -3167,10 +3207,10 @@ r#"        xor rdi, rdi
         mov ecx, 1
         call ExitProcess
         add rsp, 40
-.WTOI_END_%=:
+WTOI_END_%=:
 "#);
-                                        if !out.contains(".LTOIERRWIN:\n") {
-                                            out.push_str("\n        .data\n.LTOIERRWIN:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                        if !out.contains("LTOIERRWIN:\n") {
+                                            out.push_str("\n        .data\nLTOIERRWIN:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                         }
                                         win_need_lsnl = true;
                                         continue;
@@ -3238,11 +3278,11 @@ r#"        sub rsp, 80
                                                     out.push_str(&format!("        mov eax, {}\n", s32));
                                                     out.push_str(
 r#"        test eax, eax
-        jnz .I32_loop_%=
+        jnz I32_loop_%=
         mov byte ptr [r10], '0'
         mov rcx, 1
-        jmp .I32_done_%=
-.I32_loop_%=:
+        jmp I32_done_%=
+I32_loop_%=:
         xor edx, edx
         div r8d
         add dl, '0'
@@ -3250,8 +3290,8 @@ r#"        test eax, eax
         dec r10
         inc rcx
         test eax, eax
-        jnz .I32_loop_%=
-.I32_done_%=:
+        jnz I32_loop_%=
+I32_done_%=:
         lea rdx, [r10+1]
         mov r8, rcx
         mov rcx, r12
@@ -3289,11 +3329,11 @@ r#"        sub rsp, 80
                                                     out.push_str(&format!("        mov rax, {}\n", s));
                                                     out.push_str(
 r#"        test rax, rax
-        jnz .I64_loop_%=
+        jnz I64_loop_%=
         mov byte ptr [r10], '0'
         mov rcx, 1
-        jmp .I64_done_%=
-.I64_loop_%=:
+        jmp I64_done_%=
+I64_loop_%=:
         xor rdx, rdx
         div r8
         add dl, '0'
@@ -3301,8 +3341,8 @@ r#"        test rax, rax
         dec r10
         inc rcx
         test rax, rax
-        jnz .I64_loop_%=
-.I64_done_%=:
+        jnz I64_loop_%=
+I64_done_%=:
         lea rdx, [r10+1]
         mov r8, rcx
         mov rcx, r12
@@ -3340,11 +3380,11 @@ r#"        lea r10, [rsp+79]
         mov r8, 10
         xor rcx, rcx
         test rax, rax
-        jnz .F64I64_loop_%=
+        jnz F64I64_loop_%=
         mov byte ptr [r10], '0'
         mov rcx, 1
-        jmp .F64I64_done_%=
-.F64I64_loop_%=:
+        jmp F64I64_done_%=
+F64I64_loop_%=:
         xor rdx, rdx
         div r8
         add dl, '0'
@@ -3352,8 +3392,8 @@ r#"        lea r10, [rsp+79]
         dec r10
         inc rcx
         test rax, rax
-        jnz .F64I64_loop_%=
-.F64I64_done_%=:
+        jnz F64I64_loop_%=
+F64I64_done_%=:
         lea rdx, [r10+1]
         mov r8, rcx
         mov rcx, r12
@@ -3393,7 +3433,7 @@ r#"        cvtsi2sd xmm1, rax
         lea r10, [rsp+79]
         mov r8, 10
         mov r11, 6
-.F64FRACW_loop_%=:
+F64FRACW_loop_%=:
         xor rdx, rdx
         div r8
         add dl, '0'
@@ -3401,7 +3441,7 @@ r#"        cvtsi2sd xmm1, rax
         dec r10
         dec r11
         test r11, r11
-        jnz .F64FRACW_loop_%=
+        jnz F64FRACW_loop_%=
         lea rdx, [r10+1]
         mov r8, 6
         mov rcx, r12
@@ -4669,6 +4709,8 @@ r#"        mov r11, rcx
                                                             }
                                                             break;
                                                         } else {
+                                                win_emit_print_newline(&mut out);
+
                                                             match p.ty {
                                                                 Type::String => slot += 2,
                                                                 _ => slot += 1,
@@ -4807,6 +4849,8 @@ r#"        xor r9d, r9d
                                                     bytes.push(b'\n');
                                                     let len = s.as_bytes().len() + 1;
                                                     let lbl = format!("LSF_{}_{}", func.name, fi);
+                                            win_emit_print_newline(&mut out);
+
                                                     if !win_stdout_inited {
                                                 out.push_str(
 r#"        sub rsp, 40

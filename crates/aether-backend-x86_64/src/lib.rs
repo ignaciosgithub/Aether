@@ -17,10 +17,8 @@ impl X86_64LinuxCodegen {
         Self {
             target: Target { arch: TargetArch::X86_64, os: TargetOs::Windows }
         }
-}
- 
     }
-
+}
 fn collect_structs<'m>(module: &'m Module) -> HashMap<String, &'m aether_frontend::ast::StructDef> {
     let mut map = HashMap::new();
     for item in &module.items {
@@ -221,6 +219,8 @@ r#"        mov r11, rcx
         add rsp, 40
         mov rcx, r11
 "#);
+}
+
 fn linux_emit_oob_error(out: &mut String) {
     if !out.contains(".LOOBERR:\n") {
         out.push_str("\n        .section .rodata\n.LOOBERR:\n        .ascii \"index out of bounds\\n\"\n        .text\n");
@@ -254,9 +254,6 @@ r#"        mov r11, rcx
         add rsp, 40
 "#);
 }
-
-}
-
 
 fn win_emit_init_stdout(out: &mut String, inited: &mut bool) {
     if !*inited {
@@ -357,6 +354,7 @@ LWIN_I64_done_%=:
  
     if !out.contains("W_OOBERR:\n") {
         out.push_str("\n        .data\nW_OOBERR:\n        .ascii \"index out of bounds\\n\"\n        .text\n");
+
     }
 
 }
@@ -555,7 +553,193 @@ WTOI_FIN_%=:
 WTOI_OK_%=:
 ", pt=ptr, ln=len));
 }
+fn win_emit_to_int_from_rbx_rcx(out: &mut String) {
+    out.push_str(
+r#"        xor rdi, rdi
+        mov r8, 1
+        test rcx, rcx
+        jz WTOI_ERR_%=
+        mov al, byte ptr [rbx]
+        cmp al, '+'
+        jne WTOI_CHKMIN_%=
+        inc rbx
+        dec rcx
+        jmp WTOI_LOOP_%=
+WTOI_CHKMIN_%=:
+        cmp al, '-'
+        jne WTOI_LOOP_%=
+        mov r8, -1
+        inc rbx
+        dec rcx
+WTOI_LOOP_%=:
+        test rcx, rcx
+        jz WTOI_FIN_%=
+        mov al, byte ptr [rbx]
+        cmp al, '0'
+        jb WTOI_ERR_%=
+        cmp al, '9'
+        ja WTOI_ERR_%=
+        imul rdi, rdi, 10
+        movzx rax, al
+        sub rax, '0'
+        add rdi, rax
+        inc rbx
+        dec rcx
+        jmp WTOI_LOOP_%=
+WTOI_FIN_%=:
+        mov rax, rdi
+        cmp r8, 0
+        jge WTOI_OK_%=
+        neg rax
+WTOI_OK_%=:
+        sub rsp, 80
+        lea r10, [rsp+79]
+        mov r8, 10
+        xor rcx, rcx
+        test rax, rax
+        jnz WTOI_I64_loop_%=
+        mov byte ptr [r10], '0'
+        mov rcx, 1
+        jmp WTOI_I64_done_%=
+WTOI_I64_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc rcx
+        test rax, rax
+        jnz WTOI_I64_loop_%=
+WTOI_I64_done_%=:
+        lea rsi, [r10+1]
+        mov rdx, rcx
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        mov r8d, edx
+        mov rdx, rsi
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        add rsp, 80
+        jmp WTOI_END_%=
+WTOI_ERR_%=:
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LTOIERRWIN]
+        mov r8d, 13
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        sub rsp, 40
+        mov ecx, 1
+        call ExitProcess
+        add rsp, 40
+WTOI_END_%=:
+"#);
+}
 
+
+fn win_emit_print_call_result(out: &mut String, name: &str, args: &[Expr]) {
+    if !args.is_empty() {
+        for (i, a) in args.iter().enumerate().take(4) {
+            match (i, a) {
+                (0, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov ecx, {}\n", *v as i32)),
+                (1, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov edx, {}\n", *v as i32)),
+                (2, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r8d, {}\n", *v as i32)),
+                (3, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r9d, {}\n", *v as i32)),
+                _ => {}
+            }
+        }
+    }
+    out.push_str("        sub rsp, 40\n");
+    out.push_str(&format!("        call {}\n", name));
+    out.push_str("        add rsp, 40\n");
+    out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        mov r8d, edx
+        mov rdx, rax
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+}
+fn win_emit_print_readln(out: &mut String, win_inbuf_emitted: &mut bool, win_stdin_inited: &mut bool) {
+    if !*win_inbuf_emitted {
+        out.push_str(
+r#"
+        .data
+LWININBUF_main:
+        .space 1024
+LWININLEN_main:
+        .quad 0
+        .text
+"#);
+        *win_inbuf_emitted = true;
+    }
+    if !*win_stdin_inited {
+        out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -10
+        call GetStdHandle
+        add rsp, 40
+        mov r13, rax
+"#);
+        *win_stdin_inited = true;
+    }
+    win_emit_readln_to_rsi_rdx(out, "LWININBUF_main", "LWININLEN_main");
+    out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        mov r8d, edx
+        lea rdx, [rip+LWININBUF_main]
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+}
 
 impl CodeGenerator for X86_64LinuxCodegen {
     fn target(&self) -> &Target {
@@ -620,6 +804,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
                         Stmt::Let { name, ty, init } => {
                             if let aether_frontend::ast::Type::User(_tname) = ty {
                                 if let Expr::StructLit(_lit_ty, fields) = init {
+
                                     let mut fmap: HashMap<String, String> = HashMap::new();
                                     for (fname, fexpr) in fields {
                                         if let Expr::Lit(Value::String(sv)) = fexpr {
@@ -2880,7 +3065,7 @@ linux_emit_print_i64(&mut out);
                                     },
                                     _ => {}
                                 }
-                            }
+                            },
                             Stmt::Return(expr) => {
                                 if let Some(v) = eval_int_expr(expr) {
                                     ret_i = v;
@@ -2903,7 +3088,7 @@ linux_emit_print_i64(&mut out);
 
                             }
                             Stmt::Assign { .. } => {
-                            }
+                            },
                             _ => {}
                         }
                     }
@@ -3003,7 +3188,7 @@ r#"        xor r9d, r9d
 "#);
                                 win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
                                 win_order_ls_idx += 1;
-                            }
+                            },
                             Stmt::Expr(Expr::Call(name, args)) => {
                                 if !args.is_empty() {
                                     for (i, a) in args.iter().enumerate().take(4) {
@@ -3023,54 +3208,11 @@ r#"        sub rsp, 40
                                 out.push_str(
 r#"        add rsp, 40
 "#);
-                            }
+                            },
                             Stmt::PrintExpr(Expr::Call(name, args)) => {
+
                                 if name == "readln" && args.is_empty() {
-                                    if !win_inbuf_emitted {
-                                        out.push_str(
-r#"
-        .data
-LWININBUF_main:
-        .space 1024
-LWININLEN_main:
-        .quad 0
-        .text
-"#);
-                                        win_inbuf_emitted = true;
-                                    }
-                                    if !win_stdin_inited {
-                                        out.push_str(
-r#"        sub rsp, 40
-        mov ecx, -10
-        call GetStdHandle
-        add rsp, 40
-        mov r13, rax
-"#);
-                                        win_stdin_inited = true;
-                                    }
-                                    win_emit_readln_to_rsi_rdx(&mut out, "LWININBUF_main", "LWININLEN_main");
-                                    out.push_str(
-r#"        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        mov r8d, edx
-        lea rdx, [rip+LWININBUF_main]
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        lea rdx, [rip+LSNL]
-        mov r8d, 1
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-"#);
+                                    win_emit_print_readln(&mut out, &mut win_inbuf_emitted, &mut win_stdin_inited);
                                     win_need_lsnl = true;
                                 } else if name == "to_int" {
                                     if args.len() == 1 {
@@ -3113,111 +3255,13 @@ r#"        sub rsp, 40
                                             }
                                             _ => {}
                                         }
-                                        out.push_str(
-r#"        xor rdi, rdi
-        mov r8, 1
-        test rcx, rcx
-        jz WTOI_ERR_%=
-        mov al, byte ptr [rbx]
-        cmp al, '+'
-        jne WTOI_CHKMIN_%=
-        inc rbx
-        dec rcx
-        jmp WTOI_LOOP_%=
-WTOI_CHKMIN_%=:
-        cmp al, '-'
-        jne .WTOI_LOOP_%=
-        mov r8, -1
-        inc rbx
-        dec rcx
-WTOI_LOOP_%=:
-        test rcx, rcx
-        jz WTOI_FIN_%=
-        mov al, byte ptr [rbx]
-        cmp al, '0'
-        jb WTOI_ERR_%=
-        cmp al, '9'
-        ja WTOI_ERR_%=
-        imul rdi, rdi, 10
-        movzx rax, al
-        sub rax, '0'
-        add rdi, rax
-        inc rbx
-        dec rcx
-        jmp WTOI_LOOP_%=
-WTOI_FIN_%=:
-        mov rax, rdi
-        cmp r8, 0
-        jge WTOI_OK_%=
-        neg rax
-WTOI_OK_%=:
-        sub rsp, 80
-        lea r10, [rsp+79]
-        mov r8, 10
-        xor rcx, rcx
-        test rax, rax
-        jnz WTOI_I64_loop_%=
-        mov byte ptr [r10], '0'
-        mov rcx, 1
-        jmp WTOI_I64_done_%=
-WTOI_I64_loop_%=:
-        xor rdx, rdx
-        div r8
-        add dl, '0'
-        mov byte ptr [r10], dl
-        dec r10
-        inc rcx
-        test rax, rax
-        jnz WTOI_I64_loop_%=
-WTOI_I64_done_%=:
-        lea rsi, [r10+1]
-        mov rdx, rcx
-        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        mov r8d, edx
-        mov rdx, rsi
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        lea rdx, [rip+LSNL]
-        mov r8d, 1
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        add rsp, 80
-        jmp WTOI_END_%=
-WTOI_ERR_%=:
-        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        lea rdx, [rip+LTOIERRWIN]
-        mov r8d, 13
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        sub rsp, 40
-        mov ecx, 1
-        call ExitProcess
-        add rsp, 40
-WTOI_END_%=:
-"#);
+                                        win_emit_to_int_from_rbx_rcx(&mut out);
                                         if !out.contains("LTOIERRWIN:\n") {
                                             out.push_str("\n        .data\nLTOIERRWIN:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                         }
                                         win_need_lsnl = true;
                                         continue;
                                     }
-
                                 } else {
                                     if !args.is_empty() {
                                         for (i, a) in args.iter().enumerate().take(4) {
@@ -3230,35 +3274,12 @@ WTOI_END_%=:
                                             }
                                         }
                                     }
-                                    out.push_str(
-r#"        sub rsp, 40
-"#);
-                                    out.push_str(&format!("        call {}\n", name));
-                                    out.push_str(
-r#"        add rsp, 40
-        sub rsp, 40
-        mov rdx, rax
-        mov r8d, edx
-        mov rcx, r12
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        lea rdx, [rip+LSNL]
-        mov r8d, 1
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-"#);
+                                    win_emit_print_call_result(&mut out, name, args);
                                     win_need_lsnl = true;
                                 }
-                            }
+                                },
+                            Stmt::PrintExpr(Expr::Index(_, _)) => {
+                            },
                             Stmt::PrintExpr(Expr::Var(name)) => {
                                 let regs_gpr = ["rcx","rdx","r8","r9"];
                                 let regs_gpr32 = ["ecx","edx","r8d","r9d"];
@@ -3413,7 +3434,7 @@ F64FRACW_loop_%=:
                                     }
                                 }
                                 let _ = handled;
-                            }
+                            },
                             Stmt::PrintExpr(Expr::Field(recv, fname)) => {
                                 let mut base_name: Option<String> = None;
                                 let mut cur_ty: Option<String> = None;
@@ -3542,7 +3563,7 @@ r#"        xor r9d, r9d
                                         }
                                     }
                                 }
-                            }
+                            },
                             Stmt::Return(expr) => {
                                 if let Some(v) = eval_int_expr(expr) {
                                     let v32 = v as i32;
@@ -3579,7 +3600,7 @@ r#"        add rsp, 40
 "#);
 
                                 }
-                            }
+                            },
                             _ => {}
                         }
                     }
@@ -3949,7 +3970,7 @@ r#"        xor r9d, r9d
                             }
                             Stmt::Continue => {
                                 out.push_str(&format!("        jmp LWH_HEAD_main_{}\n", widx));
-                            }
+                            },
                             _ => {}
                         }
                     }
@@ -4037,20 +4058,10 @@ r#"        push rbp
                     let mut cur_off: usize = 0;
                     for stmt in &func.body {
                         if let Stmt::Let { name, ty, .. } = stmt {
-                            let mut sz = match ty {
-                                Type::I32 => 8usize,
-                                Type::I64 | Type::F64 => 8usize,
-                                Type::String => 16usize,
-                                Type::User(un) => {
-                                    if let Some(sz) = struct_sizes.get(un) { *sz } else { 8usize }
-                                }
-                                _ => 8usize,
-                            };
+                            let mut sz = size_of_type(ty, &struct_sizes, &collect_structs(module));
                             local_types.insert(name.clone(), ty.clone());
-
                             if sz % 8 != 0 { sz += 8 - (sz % 8); }
                             local_offsets.insert(name.clone(), cur_off + sz);
-
                             cur_off += sz;
                         }
                     }
@@ -4116,7 +4127,28 @@ r#"        mov r11, rcx
                                             out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", off - 8, bytes.len() as i32));
                                             func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                             fi += 1;
-
+                                        }
+                                        (Type::Array(elem_ty, n), Expr::ArrayLit(elems)) => {
+                                            match &**elem_ty {
+                                                Type::I32 => {
+                                                    for (i, e) in elems.iter().enumerate() {
+                                                        if let Expr::Lit(Value::Int(v)) = e {
+                                                            let addr = *off as isize - ((i as isize) * 4);
+                                                            out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", addr, *v as i32));
+                                                        }
+                                                    }
+                                                }
+                                                Type::I64 => {
+                                                    for (i, e) in elems.iter().enumerate() {
+                                                        if let Expr::Lit(Value::Int(v)) = e {
+                                                            let addr = *off as isize - ((i as isize) * 8);
+                                                            out.push_str(&format!("        mov rax, {}\n", *v as i64));
+                                                            out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", addr));
+                                                        }
+                                                    }
+                                                }
+                                                _ => { }
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -4140,6 +4172,55 @@ r#"        mov r11, rcx
                                                 fi += 1;
                                             }
                                             _ => {}
+                                        }
+                                    }
+                                } else if let Expr::Index(base, idx) = target {
+                                    if let Expr::Var(arr_name) = &**base {
+                                        if let (Some(arr_off), Some(Type::Array(elem_ty, n))) = (local_offsets.get(arr_name), local_types.get(arr_name).cloned()) {
+                                            match (elem_ty.as_ref(), value) {
+                                                (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                                    match &**idx {
+                                                        Expr::Lit(Value::Int(k)) => {
+                                                            let addr = (*arr_off as isize) - ((*k as isize) * 4);
+                                                            out.push_str(&format!("        cmp ecx, {}\n", n as i32)); // dummy to keep registers used
+                                                            out.push_str(&format!("        mov dword ptr [rbp-{}], {}\n", addr, *v as i32));
+                                                        }
+                                                        Expr::Var(ixn) => {
+                                                            if let Some(ix_off) = local_offsets.get(ixn) {
+                                                                out.push_str(&format!("        mov ecx, dword ptr [rbp-{}]\n", ix_off));
+                                                                out.push_str(&format!("        cmp ecx, {}\n", n as i32));
+                                                                out.push_str("        jae OOBH_%=\n");
+                                                                out.push_str(&format!("        lea rax, [rbp-{}]\n", arr_off));
+                                                                out.push_str("        lea rax, [rax+rcx*4]\n");
+                                                                out.push_str(&format!("        mov edx, {}\n", *v as i32));
+                                                                out.push_str("        mov dword ptr [rax], edx\n");
+                                                                win_emit_oob_error(&mut out);
+                                                                out.push_str("OOBH_%=:\n");
+                                                            }
+                                                        }
+                                                        _ => { }
+                                                    }
+                                                }
+                                                (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                                    match &**idx {
+                                                        Expr::Var(ixn) => {
+                                                            if let Some(ix_off) = local_offsets.get(ixn) {
+                                                                out.push_str(&format!("        mov ecx, dword ptr [rbp-{}]\n", ix_off));
+                                                                out.push_str(&format!("        cmp ecx, {}\n", n as i32));
+                                                                out.push_str("        jae OOBH_%=\n");
+                                                                out.push_str(&format!("        lea rax, [rbp-{}]\n", arr_off));
+                                                                out.push_str("        lea rax, [rax+rcx*8]\n");
+                                                                out.push_str(&format!("        mov rdx, {}\n", *v as i64));
+                                                                out.push_str("        mov qword ptr [rax], rdx\n");
+                                                                win_emit_oob_error(&mut out);
+                                                                out.push_str("OOBH_%=:\n");
+                                                            }
+                                                        }
+                                                        _ => { }
+                                                    }
+                                                }
+                                                _ => { }
+                                            }
                                         }
                                     }
                                 }
@@ -4312,7 +4393,7 @@ r#"        mov r11, rcx
                                 out.push_str(&format!("        jmp {}\n", head));
                                 out.push_str(&format!("{}:\n", end));
                                 lwh_idx += 1;
-                            }
+                            },
                             Stmt::Return(expr) => {
                                 match expr {
                                     Expr::Lit(Value::Int(v)) => {
@@ -4829,7 +4910,7 @@ r#"        mov r11, rcx
                                     },
                                     _ => {}
                                 }
-                            }
+                            },
                             Stmt::Expr(Expr::Call(name, args)) => {
                                 if args.is_empty() {
                                     out.push_str(
@@ -4872,7 +4953,7 @@ r#"        add rsp, 40
                                     func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
                                     fi += 1;
                                 }
-                            }
+                            },
                             _ => {}
                         }
                     }

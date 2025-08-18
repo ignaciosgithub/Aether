@@ -1,0 +1,8 @@
+func main() -> i32 {
+    let xs: [i32; 4] = [1,2,3,4];
+    let i: i32 = 2;
+    println("val:");
+    println(xs[i]);
+    // println(xs[10]); // OOB example (will error and exit)
+    return 0;
+}

@@ -13,10 +13,10 @@ OUT="$3"
 
 case "$TARGET" in
   x86_64-linux)
-    clang -nostartfiles -static -o "$OUT" "$ASM" -fuse-ld=lld
+    clang -no-integrated-as -nostartfiles -o "$OUT" "$ASM" -fuse-ld=lld
     ;;
   x86_64-windows)
-    x86_64-w64-mingw32-gcc -nostartfiles -o "$OUT" "$ASM" -lkernel32
+    x86_64-w64-mingw32-clang -no-integrated-as -nostartfiles -o "$OUT".exe "$ASM" -lkernel32
     ;;
   aarch64-linux)
     aarch64-linux-gnu-gcc -nostartfiles -static -o "$OUT" "$ASM"

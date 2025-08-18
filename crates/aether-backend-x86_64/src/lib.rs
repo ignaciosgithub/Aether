@@ -283,27 +283,31 @@ r#"        sub rsp, 40
 
 
 fn linux_emit_print_i64(out: &mut String) {
+    if !out.contains(".LSNL:\n") {
+        out.push_str("\n        .section .rodata\n.LSNL:\n        .ascii \"\\n\"\n        .text\n");
+    }
     out.push_str(
 r#"        sub $80, %rsp
-        lea 79(%rsp), %r10
+        leaq 79(%rsp), %r10
         mov $10, %r8
         xor %rcx, %rcx
         test %rax, %rax
-        jnz .I64_print_loop_%=
-        movb $'0', (%r10)
+        jnz 1f
+        movb $48, (%r10)
         mov $1, %rcx
-        jmp .I64_print_done_%=
-.I64_print_loop_%=:
+        dec %r10
+        jmp 2f
+1:
         xor %rdx, %rdx
         div %r8
-        add $'0', %dl
+        add $48, %dl
         mov %dl, (%r10)
         dec %r10
         inc %rcx
         test %rax, %rax
-        jnz .I64_print_loop_%=
-.I64_print_done_%=:
-        lea 1(%r10), %rsi
+        jnz 1b
+2:
+        leaq 1(%r10), %rsi
         mov %rcx, %rdx
         mov $1, %rax
         mov $1, %rdi
@@ -315,6 +319,34 @@ r#"        sub $80, %rsp
         syscall
         add $80, %rsp
 "#);
+}
+fn linux_emit_print_f64_from_mem(out: &mut String, mem: &str) {
+    if !out.contains(".LCFTSCALE:\n") {
+        out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n        .text\n");
+    }
+    out.push_str(&format!(
+r#"        movsd {mem}, %xmm0
+        movapd %xmm0, %xmm1
+        cvttsd2si %xmm1, %rax
+"#, mem=mem));
+    linux_emit_print_i64(out);
+    out.push_str(
+r#"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LCDOT(%rip), %rsi
+        mov $1, %rdx
+        syscall
+"#);
+    out.push_str(
+r#"        movsd .LCFTSCALE(%rip), %xmm2
+        subsd %xmm1, %xmm0
+        mulsd %xmm2, %xmm0
+        cvttsd2si %xmm0, %rax
+"#);
+    linux_emit_print_i64(out);
+    if !out.contains(".LCDOT:\n") {
+        out.push_str("\n        .section .rodata\n.LCDOT:\n        .ascii \".\"\n        .text\n");
+    }
 }
 
 fn win_emit_print_i64(out: &mut String) {
@@ -789,7 +821,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
                                 f64_ret = Some(fv);
                             }
                             if let Expr::Call(name, args) = expr {
-                                calls.push((name.clone(), args.clone()));
+                                if !name.starts_with("vec_") { calls.push((name.clone(), args.clone())); }
                                 main_ret_call = Some((name.clone(), args.clone()));
                             }
                         }
@@ -799,7 +831,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
                             prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
                         }
                         Stmt::Expr(Expr::Call(name, args)) => {
-                            calls.push((name.clone(), args.clone()));
+                            if !name.starts_with("vec_") { calls.push((name.clone(), args.clone())); }
                         }
                         Stmt::Let { name, ty, init } => {
                             if let aether_frontend::ast::Type::User(_tname) = ty {
@@ -858,7 +890,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
                             }
                         }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
-                            main_print_calls.push((name.clone(), args.clone()));
+                            if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
                         }
                         Stmt::PrintExpr(Expr::MethodCall(recv, meth, args)) => {
                             if let Expr::Var(rn) = &**recv {
@@ -928,6 +960,7 @@ r#"
         .text
 _start:
 "#);
+                let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
                 if self.target.os == TargetOs::Linux {
                     if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
                         out.push_str("\n        .bss\n");
@@ -1037,7 +1070,519 @@ _start:
                         }
                     }
                 }
+                // Linux main stack frame and Vec prelude
+                if let Some(_fmain) = main_func {
+                    let locals_size = main_local_offsets.values().copied().max().unwrap_or(0);
+                    if locals_size > 0 {
+                        out.push_str(&format!(
+"        push %rbp
+        mov %rsp, %rbp
+        sub ${}, %rsp
+", locals_size));
+                    }
+                }
+                let mut linux_inbuf_main_emitted: bool = false;
+                if let Some(f) = main_func {
+                    let mut fi = 0usize;
+                    for stmt in &f.body {
+                        match stmt {
+                            Stmt::PrintExpr(Expr::IfElse { cond, then_expr, else_expr }) => {
+                                let then_lbl = format!(".LIF_THEN_{}_{}", f.name, fi);
+                                let else_lbl = format!(".LIF_ELSE_{}_{}", f.name, fi);
+                                let join_lbl = format!(".LIF_JOIN_{}_{}", f.name, fi);
+                                if let Expr::BinOp(lhs, BinOpKind::Lt, rhs) = &**cond {
+                                    let mut lhs_loaded = false;
+                                    let mut rhs_loaded = false;
+                                    match &**lhs {
+                                        Expr::Lit(Value::Int(v)) => {
+                                            out.push_str(&format!("        mov ${}, %r10\n", v));
+                                            lhs_loaded = true;
+                                        }
+                                        Expr::Var(name) => {
+                                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                            let mut slot = 0usize;
+                                            for p in &f.params {
+                                                if p.name == *name {
+                                                    if slot < regs.len() {
+                                                        let src = regs[slot];
+                                                        out.push_str(&format!("        mov {}, %r10\n", src));
+                                                        lhs_loaded = true;
+                                                    }
+                                                    break;
+                                                } else {
+                                                    match p.ty {
+                                                        Type::String => slot += 2,
+                                                        _ => slot += 1,
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    match &**rhs {
+                                        Expr::Lit(Value::Int(v)) => {
+                                            out.push_str(&format!("        mov ${}, %r11\n", v));
+                                            rhs_loaded = true;
+                                        }
+                                        Expr::Var(name) => {
+                                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                            let mut slot = 0usize;
+                                            for p in &f.params {
+                                                if p.name == *name {
+                                                    if slot < regs.len() {
+                                                        let src = regs[slot];
+                                                        out.push_str(&format!("        mov {}, %r11\n", src));
+                                                        rhs_loaded = true;
+                                                    }
+                                                    break;
+                                                } else {
+                                                    match p.ty {
+                                                        Type::String => slot += 2,
+                                                        _ => slot += 1,
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    if lhs_loaded && rhs_loaded {
+                                        out.push_str("        cmp %r11, %r10\n");
+                                        out.push_str(&format!("        jl {}\n", then_lbl));
+                                        out.push_str(&format!("        jmp {}\n", else_lbl));
+                                        if let Expr::Lit(Value::String(s_then)) = &**then_expr {
+                                            out.push_str(&format!("{}:\n", then_lbl));
+                                            let lbl_then_str = format!(".LSIFTH{}_{}", f.name, fi);
+                                            call_arg_rodata.push((lbl_then_str.clone(), s_then.clone()));
+                                            out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+");
+                                            out.push_str(&format!("        leaq {}(%rip), %rsi\n", lbl_then_str));
+                                            out.push_str(&format!("        mov ${}, %rdx\n", s_then.len()));
+                                            out.push_str(
+"        syscall
+        jmp ");
+                                            out.push_str(&format!("{}\n", join_lbl));
+                                        }
+                                        if let Expr::Lit(Value::String(s_else)) = &**else_expr {
+                                            out.push_str(&format!("{}:\n", else_lbl));
+                                            let lbl_else_str = format!(".LSIFEL{}_{}", f.name, fi);
+                                            call_arg_rodata.push((lbl_else_str.clone(), s_else.clone()));
+                                            out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+");
+                                            out.push_str(&format!("        leaq {}(%rip), %rsi\n", lbl_else_str));
+                                            out.push_str(&format!("        mov ${}, %rdx\n", s_else.len()));
+                                            out.push_str(
+"        syscall
+");
+                                        }
+                                        out.push_str(&format!("{}:\n", join_lbl));
+                                        out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                        fi += 1;
+                                        continue;
+                                    }
+                                }
+                            }
 
+                            Stmt::Let { name, ty, init } => {
+                                if let (Type::Vector(inner), Expr::Call(cname, args)) = (ty, init) {
+                                    if cname == "vec_new" && args.len() == 1 {
+                                        if let Some(off) = main_local_offsets.get(name) {
+                                            let elem_sz = size_of_type(inner, &struct_sizes, &collect_structs(module));
+                                            let mut cap_val: Option<i64> = None;
+                                            if let Expr::Lit(Value::Int(v)) = &args[0] {
+                                                cap_val = Some(*v);
+                                            } else if let Some(v) = eval_int_expr(&args[0]) {
+                                                cap_val = Some(v);
+                                            }
+                                            if let Some(mut cap) = cap_val {
+                                                if cap < 1 { cap = 1; }
+                                                let bytes = (cap as usize).saturating_mul(elem_sz) as i64;
+                                                out.push_str("        mov $9, %rax\n");
+                                                out.push_str("        xor %rdi, %rdi\n");
+                                                out.push_str(&format!("        mov ${}, %rsi\n", bytes));
+                                                out.push_str("        mov $3, %rdx\n");
+                                                out.push_str("        mov $0x22, %r10\n");
+                                                out.push_str("        mov $-1, %r8\n");
+                                                out.push_str("        xor %r9, %r9\n");
+                                                out.push_str("        syscall\n");
+                                                out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        movq ${}, -{}(%rbp)\n", cap as i64, off - 16));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Stmt::Expr(Expr::Call(cname, args)) => {
+                                if cname == "vec_push" && args.len() == 2 {
+                                    if let (Expr::Var(vn), val) = (&args[0], &args[1]) {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                match val {
+                                                    Expr::Lit(Value::Int(iv)) => {
+                                                        out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                        out.push_str(&format!("        mov -{}(%rbp), %r11\n", off - 16));
+                                                        out.push_str("        mov %r11, %r12\n");
+                                                        out.push_str("        cmp %r10, %r11\n");
+                                                        out.push_str("        jne 5f\n");
+                                                        out.push_str("        cmp $0, %r11\n");
+                                                        out.push_str("        jne 6f\n");
+                                                        out.push_str("        mov $1, %r11\n");
+                                                        out.push_str("        jmp 7f\n");
+                                                        out.push_str("6:\n");
+                                                        out.push_str("        leaq (%r11,%r11,1), %r11\n");
+                                                        out.push_str("7:\n");
+                                                        out.push_str(&format!("        mov %r11, %rsi\n        imul ${}, %rsi\n", elem_sz));
+                                                        out.push_str(&format!("        mov -{}(%rbp), %rdi\n", off));
+                                                        out.push_str("        test %rdi, %rdi\n");
+                                                        out.push_str("        jz 8f\n");
+                                                        out.push_str(&format!("        mov -{}(%rbp), %rdi\n", off));
+                                                        out.push_str(&format!("        mov %r12, %rsi\n        imul ${}, %rsi\n", elem_sz));
+                                                        out.push_str("        mov %r11, %rdx\n");
+                                                        out.push_str(&format!("        imul ${}, %rdx\n", elem_sz));
+                                                        out.push_str("        mov $25, %rax\n");
+                                                        out.push_str("        mov $1, %r10\n");
+                                                        out.push_str("        xor %r8, %r8\n");
+                                                        out.push_str("        syscall\n");
+                                                        out.push_str("        jmp 9f\n");
+                                                        out.push_str("8:\n");
+                                                        out.push_str("        xor %rdi, %rdi\n");
+                                                        out.push_str("        mov $9, %rax\n");
+                                                        out.push_str("        mov $3, %rdx\n");
+                                                        out.push_str("        mov $0x22, %r10\n");
+                                                        out.push_str("        mov $-1, %r8\n");
+                                                        out.push_str("        xor %r9, %r9\n");
+                                                        out.push_str("        syscall\n");
+                                                        out.push_str("9:\n");
+                                                        out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                                        out.push_str(&format!("        mov %r11, -{}(%rbp)\n", off - 16));
+                                                        out.push_str("5:\n");
+                                                        out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                                                        out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                        out.push_str(&format!("        leaq (%rbx,%r10,{}), %rax\n", elem_sz));
+                                                        out.push_str(&format!("        mov ${}, %rdx\n", *iv as i64));
+                                                        out.push_str("        mov %rdx, (%rax)\n");
+                                                        out.push_str("        inc %r10\n");
+                                                        out.push_str(&format!("        mov %r10, -{}(%rbp)\n", off - 8));
+                                                    }
+                                                    _ => { }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if cname == "vec_pop" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                out.push_str("        cmp $0, %r10\n");
+                                                out.push_str("        je 20f\n");
+                                                out.push_str("        dec %r10\n");
+                                                out.push_str(&format!("        mov %r10, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                                                out.push_str(&format!("        leaq (%rbx,%r10,{}), %rax\n", elem_sz));
+                                                out.push_str("        mov (%rax), %rax\n");
+                                                out.push_str("        jmp 21f\n");
+                                                linux_emit_oob_error(&mut out);
+                                                out.push_str("20:\n");
+                                                out.push_str("21:\n");
+                                            }
+                                        }
+                                    }
+                                }
+                                if cname == "vec_free" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                                out.push_str("        test %rax, %rax\n");
+                                                out.push_str("        jz 40f\n");
+                                                out.push_str("        mov %rax, %rdi\n");
+                                                out.push_str(&format!("        mov -{}(%rbp), %rsi\n", off - 16));
+                                                out.push_str(&format!("        imul ${}, %rsi\n", elem_sz));
+                                                out.push_str("        mov $11, %rax\n");
+                                                out.push_str("        syscall\n");
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 16));
+                                                out.push_str("        mov $1, %rax\n");
+                                                out.push_str("        jmp 41f\n");
+                                                out.push_str("40:\n");
+                                                out.push_str("        xor %eax, %eax\n");
+                                                out.push_str("41:\n");
+                                            }
+                                        }
+                                    }
+                                }
+                                if !cname.starts_with("vec_") {
+                                    if args.is_empty() {
+                                        out.push_str("        sub $8, %rsp\n");
+                                        out.push_str(&format!("        call {}\n", cname));
+                                        out.push_str("        add $8, %rsp\n");
+                                    } else {
+                                        let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                        let mut islot = 0usize;
+                                        for a in args {
+                                            match a {
+                                                Expr::Lit(Value::Int(v)) => {
+                                                    if islot < regs.len() {
+                                                        let dst = regs[islot];
+                                                        out.push_str(&format!("        mov ${}, {}\n", v, dst));
+                                                        islot += 1;
+                                                    }
+                                                }
+                                                Expr::Field(recv0, fname0) => {
+                                                    if islot < regs.len() {
+                                                        let mut recv = recv0.as_ref();
+                                                        let mut names: Vec<&str> = Vec::new();
+                                                        while let Expr::Field(inner, name) = recv {
+                                                            names.push(name.as_str());
+                                                            recv = inner.as_ref();
+                                                        }
+                                                        if let Expr::Var(basen) = recv {
+                                                            if let Some(tyname) = static_types.get(basen) {
+                                                                let mut tot_off = 0usize;
+                                                                let mut cur_ty = Type::User(tyname.clone());
+                                                                for fname in names.iter().rev() {
+                                                                    if let Type::User(ref sname) = cur_ty {
+                                                                        if let Some((foff, fty)) = get_field_info(sname.as_str(), fname, &field_offsets) {
+                                                                            tot_off += foff;
+                                                                            cur_ty = fty;
+                                                                        }
+                                                                    }
+                                                                }
+                                                                out.push_str(&format!("        leaq {}(%rip), %rbx\n", basen));
+                                                                match cur_ty {
+                                                                    Type::I32 => {
+                                                                        let dst = ["%edi","%esi","%edx","%ecx","%r8d","%r9d"][islot];
+                                                                        out.push_str(&format!("        mov {}(%rbx), {}\n", tot_off, dst));
+                                                                        islot += 1;
+                                                                    }
+                                                                    Type::I64 => {
+                                                                        let dst = regs[islot];
+                                                                        out.push_str(&format!("        mov {}(%rbx), {}\n", tot_off, dst));
+                                                                        islot += 1;
+                                                                    }
+                                                                    _ => { }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        out.push_str("        sub $8, %rsp\n");
+                                        out.push_str(&format!("        call {}\n", cname));
+                                        out.push_str("        add $8, %rsp\n");
+                                    }
+                                }
+                                if cname == "readln" && args.len() == 0 {
+                                    let inlbl = ".LININBUF_main";
+                                    if !linux_inbuf_main_emitted {
+                                        out.push_str(
+"\n        .bss
+.LININBUF_main:
+        .zero 1024
+        .text
+");
+                                        linux_inbuf_main_emitted = true;
+                                    }
+                                    linux_emit_readln_into(&mut out, inlbl);
+                                    out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LININBUF_main(%rip), %rsi
+        mov %rdx, %rdx
+        syscall
+");
+                                    continue;
+                                }
+                            },
+                            Stmt::PrintExpr(Expr::Call(cname, args)) => {
+                                if cname == "vec_len" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
+                                            linux_emit_print_i64(&mut out);
+                                        }
+                                    }
+                                }
+                                if cname == "vec_pop" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                out.push_str("        cmp $0, %r10\n");
+                                                out.push_str("        je 30f\n");
+                                                out.push_str("        dec %r10\n");
+                                                out.push_str(&format!("        mov %r10, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                                                out.push_str(&format!("        leaq (%rbx,%r10,{}), %rax\n", elem_sz));
+                                                out.push_str("        mov (%rax), %rax\n");
+                                                linux_emit_print_i64(&mut out);
+                                                out.push_str("        jmp 31f\n");
+                                                linux_emit_oob_error(&mut out);
+                                                out.push_str("30:\n");
+                                                out.push_str("31:\n");
+                                            }
+                                        }
+                                    }
+                                }
+                                if cname == "vec_free" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                                out.push_str("        test %rax, %rax\n");
+                                                out.push_str("        jz 50f\n");
+                                                out.push_str("        mov %rax, %rdi\n");
+                                                out.push_str(&format!("        mov -{}(%rbp), %rsi\n", off - 16));
+                                                out.push_str(&format!("        imul ${}, %rsi\n", elem_sz));
+                                                out.push_str("        mov $11, %rax\n");
+                                                out.push_str("        syscall\n");
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 16));
+                                                out.push_str("        mov $1, %rax\n");
+                                                out.push_str("        jmp 51f\n");
+                                                out.push_str("50:\n");
+                                                out.push_str("        xor %eax, %eax\n");
+                                                out.push_str("51:\n");
+                                                linux_emit_print_i64(&mut out);
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            Stmt::PrintExpr(Expr::Var(name)) => {
+                                let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                let xmm_regs = ["%xmm0","%xmm1","%xmm2","%xmm3","%xmm4","%xmm5","%xmm6","%xmm7"];
+                                let mut slot = 0usize;
+                                for p in &f.params {
+                                    if p.name == *name {
+                                        match p.ty {
+                                            Type::I64 => {
+                                                if slot < regs.len() {
+                                                    let src = regs[slot];
+                                                    out.push_str(&format!("        mov {}, %rax\n", src));
+                                                    linux_emit_print_i64(&mut out);
+                                                }
+                                            }
+                                            Type::F64 => {
+                                                if slot < xmm_regs.len() {
+                                                    let sx = xmm_regs[slot];
+                                                    out.push_str("        sub $80, %rsp\n");
+                                                    out.push_str(&format!("        cvttsd2si {}, %rax\n", sx));
+                                                    out.push_str(
+"        leaq 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .F64I64_print_loop_%=
+        movb $48, (%r10)
+        mov $1, %rcx
+        jmp .F64I64_print_done_%=
+.F64I64_print_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $48, %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .F64I64_print_loop_%=
+.F64I64_print_done_%=:
+        leaq 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                                    if !out.contains(".LCDOT:\n") {
+                                                        out.push_str("\n        .section .rodata\n.LCDOT:\n        .ascii \".\"\n        .text\n");
+                                                    }
+                                                    out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LCDOT(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                    if !out.contains(".LCFTSCALE:\n") {
+                                                        out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n        .text\n");
+                                                    }
+                                                    if !out.contains(".LCFTHALF:\n") {
+                                                        out.push_str("\n        .section .rodata\n.LCFTHALF:\n        .double 0.5\n        .text\n");
+                                                    }
+                                                    out.push_str(&format!(
+"        movapd {}, %xmm0
+        cvtsi2sd %rax, %xmm1
+        subsd %xmm1, %xmm0
+        movsd .LCFTSCALE(%rip), %xmm2
+        mulsd %xmm2, %xmm0
+        movsd .LCFTHALF(%rip), %xmm3
+        addsd %xmm3, %xmm0
+        cvttsd2si %xmm0, %rcx
+        leaq 79(%rsp), %r10
+        mov $10, %r8
+        mov $6, %r11
+        mov %rcx, %rax
+
+.F64FRAC_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $48, %dl
+        mov %dl, (%r10)
+        dec %r10
+        dec %r11
+        test %r11, %r11
+        jnz .F64FRAC_loop_%=
+        leaq 1(%r10), %rsi
+        mov $6, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+", sx));
+                                                }
+                                            }
+                                            Type::String => { slot += 2; continue; }
+                                            _ => {}
+                                        }
+                                        break;
+                                    } else {
+                                        match p.ty {
+                                            Type::String => slot += 2,
+                                            _ => slot += 1,
+                                        }
+                                    }
+                                }
+                            },
+                            _ => { }
+                        }
+                    }
+                }
                 let mut while_rodata: Vec<(String, String)> = Vec::new();
                 let mut static_rodata: Vec<(String, String)> = Vec::new();
                 for (widx, cond, body) in &main_while_blocks {
@@ -1151,10 +1696,34 @@ _start:
                 if !main_print_calls.is_empty() || !main_field_prints.is_empty() {
                 }
 
-                let mut call_arg_rodata: Vec<(String, String)> = Vec::new();
+                let mut toi_idx: usize = 0;
 
                 for (name, args) in &main_print_calls {
-                    if args.is_empty() {
+                    if name == "readln" && args.is_empty() {
+                        let inlbl = ".LININBUF_main";
+                        if !linux_inbuf_main_emitted {
+                            out.push_str(
+"\n        .bss
+.LININBUF_main:
+        .zero 1024
+        .text
+");
+                            linux_inbuf_main_emitted = true;
+                        }
+                        linux_emit_readln_into(&mut out, inlbl);
+                        out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LININBUF_main(%rip), %rsi
+        mov %rdx, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                    } else if args.is_empty() {
                         out.push_str(
 r#"        sub $8, %rsp
 "#);
@@ -1173,6 +1742,86 @@ r#"        add $8, %rsp
         syscall
 "#);
                     } else {
+                        if name == "to_int" && args.len() == 1 {
+                            if let Expr::Call(ref cname0, ref cargs0) = args[0] {
+                                if cname0 == "readln" && cargs0.is_empty() {
+                                    let inlbl = ".LININBUF_main";
+                                    if !linux_inbuf_main_emitted {
+                                        out.push_str(
+"\n        .bss
+.LININBUF_main:
+        .zero 1024
+        .text
+");
+                                        linux_inbuf_main_emitted = true;
+                                    }
+                                    linux_emit_readln_into(&mut out, inlbl);
+                                    linux_emit_to_int_from_rsi_rdx(&mut out);
+                                    linux_emit_print_i64(&mut out);
+                                    out.push_str(
+"        jmp .TOI_END_%=
+.TOI_ERR_%=:
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LTOIERR(%rip), %rsi
+        mov $13, %rdx
+        syscall
+        mov $60, %rax
+        mov $1, %rdi
+        syscall
+.TOI_END_%=:
+");
+                                    if !out.contains(".LTOIERR:\n") {
+                                        out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                    }
+                                    out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                    continue;
+                                }
+                            }
+                            if let Expr::Lit(Value::String(s)) = &args[0] {
+                                let mut bytes = s.clone().into_bytes();
+                                let len = bytes.len();
+                                let lbl = format!(".LTOISTR_main_{}", toi_idx);
+                                call_arg_rodata.push((lbl.clone(), String::from_utf8(bytes).unwrap()));
+                                out.push_str(&format!(
+"        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+", lbl, len));
+                                linux_emit_to_int_from_rsi_rdx(&mut out);
+                                linux_emit_print_i64(&mut out);
+                                out.push_str(
+"        jmp .TOI_END_%=
+.TOI_ERR_%=:
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LTOIERR(%rip), %rsi
+        mov $13, %rdx
+        syscall
+        mov $60, %rax
+        mov $1, %rdi
+        syscall
+.TOI_END_%=:
+");
+                                if !out.contains(".LTOIERR:\n") {
+                                    out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                }
+                                out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                toi_idx += 1;
+                                continue;
+                            }
+                        }
                         let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
                         let mut islot = 0usize;
                         for (aidx, a) in args.iter().enumerate() {
@@ -1416,195 +2065,6 @@ r#"        sub $8, %rsp
                     out.push_str(
 r#"        add $8, %rsp
 "#);
-                } else {
-                    for (cidx, (name, args)) in calls.iter().enumerate() {
-                        if !args.is_empty() {
-                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
-                            let mut islot = 0usize;
-                            for (aidx, a) in args.iter().enumerate() {
-                                match a {
-                                    Expr::Lit(Value::Int(v)) => {
-                                        if islot < regs.len() {
-                                            let dst = regs[islot];
-                                            out.push_str(&format!("        mov ${}, {}\n", v, dst));
-                                            islot += 1;
-                                        }
-                                    }
-                                    Expr::Lit(Value::String(s)) => {
-                                        if islot + 1 < regs.len() {
-                                            let mut bytes = s.clone().into_bytes();
-                                            let len = bytes.len();
-                                            let lbl = format!(".LSARG{}_{}", cidx, aidx);
-                                            out.push_str(&format!(
-"        leaq {}(%rip), {}
-        mov ${}, {}
-", lbl, regs[islot], len, regs[islot+1]));
-                                            call_arg_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
-                                            islot += 2;
-                                        }
-                                    }
-                                    Expr::Var(name) => {
-                                        if islot < regs.len() && static_names.contains(name) {
-                                            let dst = regs[islot];
-                                            out.push_str(&format!("        leaq {}(%rip), {}\n", name, dst));
-                                            islot += 1;
-                                        }
-                                    },
-                                    Expr::Field(recv0, fname0) => {
-                                        let mut recv = recv0.clone();
-                                        let mut fname = fname0.clone();
-                                        let mut base_name: Option<String> = None;
-                                        let mut total_off: usize = 0;
-                                        let mut cur_ty: Option<String> = None;
-                                        loop {
-                                            match &*recv {
-                                                Expr::Var(rn) => {
-                                                    base_name = Some(rn.clone());
-                                                    if let Some(tn) = static_types.get(rn) {
-                                                        cur_ty = Some(tn.clone());
-                                                    }
-                                                    break;
-                                                }
-                                                Expr::Field(inner_recv, inner_name) => {
-                                                    if let Expr::Var(rn2) = &**inner_recv {
-                                                        base_name = Some(rn2.clone());
-                                                        if let Some(tn) = static_types.get(rn2) {
-                                                            cur_ty = Some(tn.clone());
-                                                        }
-                                                    }
-                                                    if let Some(ref tyname) = cur_ty {
-                                                        if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
-                                                            let mut off = 0usize;
-                                                            let mut next_ty: Option<String> = None;
-                                                            for f in &sd.fields {
-                                                                let sz = match f.ty {
-                                                                    Type::I32 => 4,
-                                                                    Type::I64 | Type::F64 => 8,
-                                                                    Type::String => 16,
-                                                                    Type::User(ref un) => {
-                                                                        if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
-                                                                            let mut sz2 = 0usize;
-                                                                            for ff in &sd2.fields {
-                                                                                sz2 += match ff.ty {
-                                                                                    Type::I32 => 4,
-                                                                                    Type::I64 | Type::F64 => 8,
-                                                                                    Type::String => 16,
-                                                                                    _ => 8,
-                                                                                };
-                                                                            }
-                                                                            if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
-                                                                            sz2
-                                                                        } else { 8 }
-                                                                    }
-                                                                    _ => 8,
-                                                                };
-                                                                if f.name == *inner_name {
-                                                                    match f.ty {
-                                                                        Type::User(ref un) => next_ty = Some(un.clone()),
-                                                                        _ => next_ty = None,
-                                                                    }
-                                                                    total_off += off;
-                                                                    break;
-                                                                }
-                                                                off += sz;
-                                                            }
-                                                            cur_ty = next_ty;
-                                                        }
-                                                    }
-                                                    recv = inner_recv.clone();
-                                                    fname = fname.clone();
-                                                    continue;
-                                                }
-                                                _ => break,
-                                            }
-                                        }
-                                        let mut resolved_ty = cur_ty.clone();
-                                        if resolved_ty.is_none() {
-                                            if let Some(ref bn) = base_name {
-                                                if let Some(tn) = static_types.get(bn) {
-                                                    resolved_ty = Some(tn.clone());
-                                                }
-                                            }
-                                        }
-                                        if let (Some(rn), Some(ref tyname)) = (base_name.clone(), resolved_ty) {
-                                            if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *tyname)) {
-                                                let mut off = 0usize;
-                                                let mut fty = Type::I64;
-                                                for f in &sd.fields {
-                                                    let sz = match f.ty {
-                                                        Type::I32 => 4,
-                                                        Type::I64 | Type::F64 => 8,
-                                                        Type::String => 16,
-                                                        Type::User(ref un) => {
-                                                            if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
-                                                                let mut sz2 = 0usize;
-                                                                for ff in &sd2.fields {
-                                                                    sz2 += match ff.ty {
-                                                                        Type::I32 => 4,
-                                                                        Type::I64 | Type::F64 => 8,
-                                                                        Type::String => 16,
-                                                                        _ => 8,
-                                                                    };
-                                                                }
-                                                                if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
-                                                                sz2
-                                                            } else { 8 }
-                                                        }
-                                                        _ => 8,
-                                                    };
-                                                    if f.name == *fname {
-                                                        fty = f.ty.clone();
-                                                        break;
-                                                    }
-                                                    off += sz;
-                                                }
-                                                let final_off = total_off + off;
-                                                if islot < regs.len() {
-                                                    out.push_str(&format!("        leaq {}(%rip), %r10\n", rn));
-                                                    match fty {
-                                                        Type::I32 => {
-                                                            let dst32 = match regs[islot] {
-                                                                "%rdi" => "%edi",
-                                                                "%rsi" => "%esi",
-                                                                "%rdx" => "%edx",
-                                                                "%rcx" => "%ecx",
-                                                                "%r8"  => "%r8d",
-                                                                "%r9"  => "%r9d",
-                                                                _ => "%edi",
-                                                            };
-                                                            out.push_str(&format!("        mov {}(%r10), {}\n", final_off, dst32));
-                                                            islot += 1;
-                                                        }
-                                                        Type::I64 | Type::F64 => {
-                                                            let dst = regs[islot];
-                                                            out.push_str(&format!("        mov {}(%r10), {}\n", final_off, dst));
-                                                            islot += 1;
-                                                        }
-                                                        Type::String => {
-                                                            if islot + 1 < regs.len() {
-                                                                out.push_str(&format!("        mov {}(%r10), {}\n", final_off, regs[islot]));
-                                                                out.push_str(&format!("        mov {}(%r10), {}\n", final_off + 8, regs[islot+1]));
-                                                                islot += 2;
-                                                            }
-                                                        }
-                                                        _ => {}
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    },
-                                    _ => {}
-                                }
-                            }
-                        }
-                        out.push_str(
-r#"        sub $8, %rsp
-"#);
-                        out.push_str(&format!("        call {}\n", name));
-                        out.push_str(
-r#"        add $8, %rsp
-"#);
-                    }
                 }
                 if let Some(fv) = f64_ret {
                     let bits = fv.to_bits();
@@ -1969,6 +2429,7 @@ r#"        leaq .LC0(%rip), %rax
                     funcs_to_emit.push(func);
                 }
                 for func in funcs_to_emit {
+                    if func.name == "main" { continue; }
                     out.push_str("\n");
                     if func.name == "fact" {
                         out.push_str(&format!("{}:\n", func.name));
@@ -2037,9 +2498,29 @@ r#"        push %rbx
                                         linux_emit_print_i64(&mut out);
                                         fi += 1;
                                     }
+
                                     Expr::Call(name, args) => {
-                                        if name == "to_int" || (name == "readln" && args.is_empty()) {
-                                        if name == "to_int" {
+                                        if name == "readln" && args.is_empty() {
+                                            let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
+                                            if !linux_inbuf_emitted {
+                                                out.push_str(&format!(
+"\n        .bss
+{inlbl}:
+        .zero 1024
+        .text
+", inlbl=inlbl));
+                                                linux_inbuf_emitted = true;
+                                            }
+                                            linux_emit_readln_into(&mut out, &inlbl);
+                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {inlbl}(%rip), %rsi
+        mov %rdx, %rdx
+        syscall
+", inlbl=inlbl));
+                                            fi += 1;
+                                        } else if name == "to_int" {
                                             if args.len() == 1 {
                                                 match &args[0] {
                                                     Expr::Lit(Value::String(s)) => {
@@ -2104,6 +2585,7 @@ linux_emit_print_i64(&mut out);
                                                         if !out.contains(".LTOIERR:\n") {
                                                             out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                                         }
+
                                                         fi += 1;
                                                     }
                                                     Expr::Call(an, aargs) => {
@@ -2169,56 +2651,7 @@ linux_emit_print_i64(&mut out);
                                                     _ => {}
                                                 }
                                                 continue;
-                                            }
-                                        }
-
-                                            let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
-                                            if !linux_inbuf_emitted {
-                                                out.push_str(&format!(
-"\n        .bss
-{inlbl}:
-        .zero 1024
-        .text
-", inlbl=inlbl));
-                                                linux_inbuf_emitted = true;
-                                            }
-                                            out.push_str(&format!(
-"        mov $0, %rax
-        mov $0, %rdi
-        leaq {inlbl}(%rip), %rsi
-        mov $1024, %rdx
-        syscall
-        test %rax, %rax
-        jz .LREAD0_EMPTY_%=
-        mov %rax, %rdx
-        dec %rdx
-        mov %bl, (%rsi,%rdx,1)
-        cmp $10, %bl
-        jne .LREAD0_NO_NL_%=
-        test %rdx, %rdx
-        jz .LREAD0_TRIM_%=
-        mov %bl, -1(%rsi,%rdx,1)
-        cmp $13, %bl
-        jne .LREAD0_TRIM_%=
-        dec %rdx
-.LREAD0_TRIM_%=:
-.LREAD0_NO_NL_%=:
-        jmp .LREAD0_RET_%=
-.LREAD0_EMPTY_%=:
-        xor %rdx, %rdx
-.LREAD0_RET_%=:
-        mov $1, %rax
-        mov $1, %rdi
-        leaq {inlbl}(%rip), %rsi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-", inlbl=inlbl));
-                                            fi += 1;
-                                        } else {
+                                            } else {
                                             let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
                                             let mut ai = 0usize;
                                             for a in args {
@@ -2235,6 +2668,7 @@ linux_emit_print_i64(&mut out);
                                             out.push_str(&format!("        call {}\n", name));
                                             linux_emit_print_i64(&mut out);
                                             fi += 1;
+                                        }
                                         }
                                     }
                                     Expr::Var(name) => {
@@ -2281,15 +2715,15 @@ linux_emit_print_i64(&mut out);
                                                             out.push_str("        sub $80, %rsp\n");
                                                             out.push_str(&format!("        mov {}, %eax\n", src32));
                                                             out.push_str(
-"        lea 79(%rsp), %r10
+"        leaq 79(%rsp), %r10
         mov $10, %r8
         xor %rcx, %rcx
         test %eax, %eax
-        jnz .I32_print_loop_%=
+        jnz 201f
         movb $'0', (%r10)
         mov $1, %rcx
-        jmp .I32_print_done_%=
-.I32_print_loop_%=:
+        jmp 202f
+201:
         xor %edx, %edx
         div %r8d
         add $'0', %dl
@@ -2297,9 +2731,9 @@ linux_emit_print_i64(&mut out);
         dec %r10
         inc %rcx
         test %eax, %eax
-        jnz .I32_print_loop_%=
-.I32_print_done_%=:
-        lea 1(%r10), %rsi
+        jnz 201b
+202:
+        leaq 1(%r10), %rsi
         mov %rcx, %rdx
         mov $1, %rax
         mov $1, %rdi
@@ -2321,15 +2755,15 @@ linux_emit_print_i64(&mut out);
                                                             out.push_str("        sub $80, %rsp\n");
                                                             out.push_str(&format!("        mov {}, %rax\n", src));
                                                             out.push_str(
-"        lea 79(%rsp), %r10
+"        leaq 79(%rsp), %r10
         mov $10, %r8
         xor %rcx, %rcx
         test %rax, %rax
-        jnz .I64_print_loop_%=
+        jnz 101f
         movb $'0', (%r10)
         mov $1, %rcx
-        jmp .I64_print_done_%=
-.I64_print_loop_%=:
+        jmp 102f
+101:
         xor %rdx, %rdx
         div %r8
         add $'0', %dl
@@ -2337,9 +2771,9 @@ linux_emit_print_i64(&mut out);
         dec %r10
         inc %rcx
         test %rax, %rax
-        jnz .I64_print_loop_%=
-.I64_print_done_%=:
-        lea 1(%r10), %rsi
+        jnz 101b
+102:
+        leaq 1(%r10), %rsi
         mov %rcx, %rdx
         mov $1, %rax
         mov $1, %rdi
@@ -2359,9 +2793,9 @@ linux_emit_print_i64(&mut out);
                                                         if slot < xmm_regs.len() {
                                                             let srcx = xmm_regs[slot];
                                                             out.push_str("        sub $80, %rsp\n");
-                                                            out.push_str(&format!("        cvttsd2si %rax, {}\n", srcx));
+                                                            out.push_str(&format!("        cvttsd2si {}, %rax\n", srcx));
                                                             out.push_str(
-"        lea 79(%rsp), %r10
+"        leaq 79(%rsp), %r10
         mov $10, %r8
         xor %rcx, %rcx
         test %rax, %rax
@@ -2379,7 +2813,7 @@ linux_emit_print_i64(&mut out);
         test %rax, %rax
         jnz .F64I64_print_loop_%=
 .F64I64_print_done_%=:
-        lea 1(%r10), %rsi
+        leaq 1(%r10), %rsi
         mov %rcx, %rdx
         mov $1, %rax
         mov $1, %rdi
@@ -2394,7 +2828,7 @@ linux_emit_print_i64(&mut out);
         syscall
 ", dl=dot_lbl));
                                                             func_rodata.push((dot_lbl, ".".to_string()));
-                                                            out.push_str(
+                                                            out.push_str(&format!(
 "        movsd {sx}, %xmm0
         cvtsi2sd %rax, %xmm1
         subsd %xmm1, %xmm0
@@ -2404,8 +2838,8 @@ linux_emit_print_i64(&mut out);
         leaq .LCFTHALF(%rip), %rax
         movsd (%rax), %xmm3
         addsd %xmm3, %xmm0
-        cvttsd2si %rcx, %xmm0
-        lea 79(%rsp), %r10
+        cvttsd2si %xmm0, %rcx
+        leaq 79(%rsp), %r10
         mov $10, %r8
         mov $6, %r11
 .F64FRAC_loop_%=:
@@ -2417,7 +2851,7 @@ linux_emit_print_i64(&mut out);
         dec %r11
         test %r11, %r11
         jnz .F64FRAC_loop_%=
-        lea 1(%r10), %rsi
+        leaq 1(%r10), %rsi
         mov $6, %rdx
         mov $1, %rax
         mov $1, %rdi
@@ -2428,7 +2862,7 @@ linux_emit_print_i64(&mut out);
         mov $1, %rdx
         syscall
         add $80, %rsp
-");
+", sx=srcx));
                                                             if !out.contains(".LCFTSCALE:\n") {
                                                                 out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n");
                                                                 out.push_str(".LCFTHALF:\n        .double 0.5\n        .text\n");
@@ -2528,6 +2962,7 @@ linux_emit_print_i64(&mut out);
 ", inlbl=inlbl));
                                                                     linux_inbuf_emitted = true;
                                                                 }
+
                                                                 linux_emit_readln_into(&mut out, &inlbl);
                                                                 out.push_str(&format!(
 "        xor %rdi, %rdi
@@ -2815,6 +3250,48 @@ linux_emit_print_i64(&mut out);
                                         let then_lbl = format!(".LIF_THEN_{}_{}", func.name, fi);
                                         let else_lbl = format!(".LIF_ELSE_{}_{}", func.name, fi);
                                         let join_lbl = format!(".LIF_JOIN_{}_{}", func.name, fi);
+                                        match (&**cond, &**then_expr, &**else_expr) {
+                                            (Expr::BinOp(l, BinOpKind::Lt, r), Expr::Lit(Value::String(s_then)), Expr::Lit(Value::String(s_else))) => {
+                                                let lt_lbl_then = then_lbl.clone();
+                                                let lt_lbl_else = else_lbl.clone();
+                                                let lval = eval_int_expr(l).unwrap_or(0);
+                                                let rval = eval_int_expr(r).unwrap_or(0);
+                                                out.push_str(&format!("        mov ${}, %r10\n", lval));
+                                                out.push_str(&format!("        mov ${}, %r11\n", rval));
+                                                out.push_str("        cmp %r11, %r10\n");
+                                                out.push_str(&format!("        jl {}\n", lt_lbl_then));
+                                                out.push_str(&format!("        jmp {}\n", lt_lbl_else));
+                                                out.push_str(&format!("{}:\n", lt_lbl_then));
+                                                let lbl_then_str = format!(".LSIFTH{}_{}", func.name, fi);
+                                                call_arg_rodata.push((lbl_then_str.clone(), s_then.clone()));
+                                                out.push_str(
+r#"        mov $1, %rax
+        mov $1, %rdi
+"#);
+                                                out.push_str(&format!("        leaq {}(%rip), %rsi\n", lbl_then_str));
+                                                out.push_str(&format!("        mov ${}, %rdx\n", s_then.len()));
+                                                out.push_str(
+r#"        syscall
+        jmp "#);
+                                                out.push_str(&format!("{}\n", join_lbl));
+                                                out.push_str(&format!("{}:\n", lt_lbl_else));
+                                                let lbl_else_str = format!(".LSIFEL{}_{}", func.name, fi);
+                                                call_arg_rodata.push((lbl_else_str.clone(), s_else.clone()));
+                                                out.push_str(
+r#"        mov $1, %rax
+        mov $1, %rdi
+"#);
+                                                out.push_str(&format!("        leaq {}(%rip), %rsi\n", lbl_else_str));
+                                                out.push_str(&format!("        mov ${}, %rdx\n", s_else.len()));
+                                                out.push_str(
+r#"        syscall
+"#);
+                                                out.push_str(&format!("{}:\n", join_lbl));
+                                                need_nl = true;
+                                                continue;
+                                            }
+                                            _ => {}
+                                        }
                                         match &**cond {
                                             Expr::BinOp(lhs, op, rhs) => {
                                                 let mut lhs_loaded = false;
@@ -3146,6 +3623,10 @@ r#"
         .global main
         .text
 main:
+        push rbp
+        mov rbp, rsp
+        push rbx
+        push r12
         sub rsp, 40
         mov ecx, -11
         call GetStdHandle
@@ -3646,8 +4127,7 @@ r#"        sub rsp, 40
                         out.push_str(
 r#"        add rsp, 40
 "#);
-                    } else {
-                        for (cidx, (name, args)) in calls.iter().enumerate() {
+                            for (cidx, (name, args)) in calls.iter().enumerate() {
                             if !args.is_empty() {
                                 match &args[0] {
                                     Expr::Lit(Value::Int(v0)) => {

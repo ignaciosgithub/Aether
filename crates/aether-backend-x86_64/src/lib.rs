@@ -36,6 +36,14 @@ fn size_of_type(ty: &Type, struct_sizes: &HashMap<String, usize>, structs: &Hash
         Type::I32 => 4,
         Type::I64 | Type::F64 => 8,
         Type::String => 16,
+        Type::Ptr(_) => 8,
+        Type::Array(elem, n) => {
+            let mut sz = size_of_type(elem, struct_sizes, structs) * *n;
+            if sz % 8 != 0 { sz += 8 - (sz % 8); }
+            sz
+        }
+        Type::Vector(_) => 24,
+        Type::HList => 24,
         Type::User(ref un) => {
             if let Some(sz) = struct_sizes.get(un) {
                 *sz

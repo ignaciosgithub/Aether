@@ -221,6 +221,40 @@ r#"        mov r11, rcx
         add rsp, 40
         mov rcx, r11
 "#);
+fn linux_emit_oob_error(out: &mut String) {
+    if !out.contains(".LOOBERR:\n") {
+        out.push_str("\n        .section .rodata\n.LOOBERR:\n        .ascii \"index out of bounds\\n\"\n        .text\n");
+    }
+    out.push_str(
+r#"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LOOBERR(%rip), %rsi
+        mov $20, %rdx
+        syscall
+        mov $60, %rax
+        mov $1, %rdi
+        syscall
+"#);
+}
+fn win_emit_oob_error(out: &mut String) {
+    out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+W_OOBERR]
+        mov r8d, 20
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        sub rsp, 40
+        mov ecx, 1
+        call ExitProcess
+        add rsp, 40
+"#);
+}
+
 }
 
 
@@ -321,6 +355,10 @@ LWIN_I64_done_%=:
 "#);
     win_emit_print_newline(out);
  
+    if !out.contains("W_OOBERR:\n") {
+        out.push_str("\n        .data\nW_OOBERR:\n        .ascii \"index out of bounds\\n\"\n        .text\n");
+    }
+
 }
 fn linux_emit_readln_into(out: &mut String, buf_label: &str) {
     out.push_str(&format!(
@@ -806,15 +844,7 @@ _start:
                     let mut cur_off: usize = 0;
                     for stmt in &f.body {
                         if let Stmt::Let { name, ty, .. } = stmt {
-                            let mut sz = match ty {
-                                Type::I32 => 8usize,
-                                Type::I64 | Type::F64 => 8usize,
-                                Type::String => 16usize,
-                                Type::User(un) => {
-                                    if let Some(sz) = struct_sizes.get(un) { *sz } else { 8usize }
-                                }
-                                _ => 8usize,
-                            };
+                            let mut sz = size_of_type(ty, &struct_sizes, &collect_structs(module));
                             main_local_types.insert(name.clone(), ty.clone());
                             if sz % 8 != 0 { sz += 8 - (sz % 8); }
                             main_local_offsets.insert(name.clone(), cur_off + sz);

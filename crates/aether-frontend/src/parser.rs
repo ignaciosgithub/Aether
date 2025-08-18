@@ -154,6 +154,27 @@ impl<'a> Parser<'a> {
 
     fn parse_type(&mut self) -> Result<Type> {
         let kind = self.peek().ok_or_else(|| anyhow!("unexpected eof"))?.kind.clone();
+
+        if let TokenKind::Ampersand = kind {
+            self.pos += 1;
+            let inner = self.parse_type()?;
+            return Ok(Type::Ptr(Box::new(inner)));
+        }
+
+        if let TokenKind::LBracket = kind {
+            self.pos += 1;
+            let inner = self.parse_type()?;
+            self.expect(&TokenKind::Semicolon)?;
+            let n = if let Some(TokenKind::Int(s)) = self.peek().map(|t| t.kind.clone()) {
+                self.pos += 1;
+                s.parse::<usize>().map_err(|_| anyhow!("invalid array size"))?
+            } else {
+                return Err(anyhow!("expected array size"));
+            };
+            self.expect(&TokenKind::RBracket)?;
+            return Ok(Type::Array(Box::new(inner), n));
+        }
+
         let ty = match kind {
             TokenKind::Void => Type::Void,
             TokenKind::I32 => Type::I32,
@@ -167,6 +188,17 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_type()?;
                 self.expect(&TokenKind::RBracket)?;
                 return Ok(Type::List(Box::new(inner)));
+            }
+            TokenKind::VecType => {
+                self.pos += 1;
+                self.expect(&TokenKind::LBracket)?;
+                let inner = self.parse_type()?;
+                self.expect(&TokenKind::RBracket)?;
+                return Ok(Type::Vector(Box::new(inner)));
+            }
+            TokenKind::HListType => {
+                self.pos += 1;
+                return Ok(Type::HList);
             }
             TokenKind::StringType => Type::String,
             TokenKind::Ident(s) => {
@@ -283,6 +315,14 @@ impl<'a> Parser<'a> {
                 return Ok(e);
             }
         }
+        if self.eat_kind(&TokenKind::Ampersand) {
+            let e = self.parse_unary()?;
+            return Ok(Expr::AddrOf(Box::new(e)));
+        }
+        if self.eat_kind(&TokenKind::Star) {
+            let e = self.parse_unary()?;
+            return Ok(Expr::Deref(Box::new(e)));
+        }
         if self.eat_kind(&TokenKind::Minus) {
             let rhs = self.parse_unary()?;
             return Ok(Expr::BinOp(Box::new(Expr::Lit(Value::Int(0))), BinOpKind::Sub, Box::new(rhs)));
@@ -352,9 +392,15 @@ impl<'a> Parser<'a> {
                 } else {
                     node = Expr::Field(Box::new(node), mname);
                 }
-            } else {
-                break;
+                continue;
             }
+            if self.eat_kind(&TokenKind::LBracket) {
+                let idx = self.parse_expr()?;
+                self.expect(&TokenKind::RBracket)?;
+                node = Expr::Index(Box::new(node), Box::new(idx));
+                continue;
+            }
+            break;
         }
         Ok(node)
     }
@@ -381,17 +427,14 @@ impl<'a> Parser<'a> {
             if !self.eat_kind(&TokenKind::RBracket) {
                 loop {
                     let e = self.parse_expr()?;
-                    match e {
-                        Expr::Lit(v) => elems.push(v),
-                        _ => return Err(anyhow!("only literal elements in list for now")),
-                    }
+                    elems.push(e);
                     if self.eat_kind(&TokenKind::RBracket) {
                         break;
                     }
                     self.expect(&TokenKind::Comma)?;
                 }
             }
-            return Ok(Expr::Lit(Value::List(elems)));
+            return Ok(Expr::ArrayLit(elems));
         }
         if let Some(TokenKind::Ident(name)) = self.peek().map(|t| t.kind.clone()) {
             if self.toks.get(self.pos + 1).map(|t| t.kind.clone()) == Some(TokenKind::LParen) {

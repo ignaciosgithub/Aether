@@ -690,101 +690,6 @@ r#"        add $8, %rsp
         mov $1, %rax
         mov $1, %rdi
         leaq .LSNL(%rip), %rsi
-                if self.target.os == TargetOs::Linux {
-                    if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
-                        out.push_str("\n        .bss\n");
-                        for (sidx, _) in spawn_sites.iter().enumerate() {
-                            out.push_str(&format!("TSTACK{}:\n        .skip 65536\n", sidx));
-                            out.push_str(&format!("THANDLE{}:\n        .quad 0\n", sidx));
-                        }
-                        for (jidx, _) in join_sites.iter().enumerate() {
-                            out.push_str(&format!("TRESJ{}:\n        .long 0\n        .long 0\n", jidx));
-                        }
-                        for (didx, _) in destroy_sites.iter().enumerate() {
-                            out.push_str(&format!("TRESD{}:\n        .long 0\n        .long 0\n", didx));
-                        }
-                        out.push_str("\n        .text\n");
-                        for (sidx, (_hname, fname, arg_opt)) in spawn_sites.iter().enumerate() {
-                            out.push_str(&format!(
-"        leaq TSTACK{0}(%rip), %rdi
-        add $65536, %rdi
-        mov $56, %rax
-        mov $17, %rsi
-        syscall
-        test %rax, %rax
-        jnz .LPARENT_{0}
-", sidx));
-                            if let Some(v) = arg_opt {
-                                out.push_str(&format!("        mov ${}, %rdi\n", v));
-                            } else {
-                                out.push_str("        xor %rdi, %rdi\n");
-                            }
-                            out.push_str(&format!(
-"        sub $8, %rsp
-        call {0}
-        add $8, %rsp
-        mov %eax, %edi
-        mov $60, %rax
-        syscall
-.LPARENT_{1}:
-        mov %rax, THANDLE{1}(%rip)
-", fname, sidx));
-                        }
-                        if !join_sites.is_empty() {
-                            for (jidx, (_rname, hname)) in join_sites.iter().enumerate() {
-                                let mut found = None;
-                                for (sidx, (hvar, _fnm, _ao)) in spawn_sites.iter().enumerate() {
-                                    if hvar == hname { found = Some(sidx); break; }
-                                }
-                                if let Some(sidx) = found {
-                                    out.push_str(&format!(
-"        sub $16, %rsp
-        mov $61, %rax
-        mov THANDLE{0}(%rip), %rdi
-        leaq (%rsp), %rsi
-        xor %rdx, %rdx
-        xor %r10, %r10
-        syscall
-        mov (%rsp), %eax
-        shr $8, %eax
-        and $0xff, %eax
-        mov %eax, TRESJ{1}(%rip)
-        add $16, %rsp
-", sidx, jidx));
-                                }
-                            }
-                        }
-                        if !destroy_sites.is_empty() {
-                            for (didx, (_rname, hname)) in destroy_sites.iter().enumerate() {
-                                let mut found = None;
-                                for (sidx, (hvar, _fnm, _ao)) in spawn_sites.iter().enumerate() {
-                                    if hvar == hname { found = Some(sidx); break; }
-                                }
-                                if let Some(sidx) = found {
-                                    out.push_str(&format!(
-"        mov $62, %rax
-        mov THANDLE{0}(%rip), %rdi
-        mov $9, %rsi
-        syscall
-        mov %eax, %ecx
-        xor %eax, %eax
-        test %ecx, %ecx
-        sete %al
-        mov %eax, TRESD{1}(%rip)
-        sub $16, %rsp
-        mov $61, %rax
-        mov THANDLE{0}(%rip), %rdi
-        leaq (%rsp), %rsi
-        xor %rdx, %rdx
-        xor %r10, %r10
-        syscall
-        add $16, %rsp
-", sidx, didx));
-                                }
-                            }
-                        }
-                    }
-                }
         mov $1, %rdx
         syscall
 "#);
@@ -3094,6 +2999,183 @@ r#"        sub rsp, 40
         mov rcx, r11
 "#);
                                     win_need_lsnl = true;
+                                } else if name == "to_int" {
+                                    if args.len() == 1 {
+                                        match &args[0] {
+                                            Expr::Lit(Value::String(s)) => {
+                                                let mut bytes = s.clone().into_bytes();
+                                                let len = bytes.len();
+                                                let lbl = format!("LWIN_TIS_{}_{}", f.name, win_order_ls_idx);
+                                                out.push_str(&format!(
+"        lea rbx, [rip+{lbl}]
+        mov rcx, {len}
+", lbl=lbl, len=len as i32));
+                                                win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                win_order_ls_idx += 1;
+                                            }
+                                            Expr::Call(rn, rargs) if rn == "readln" && rargs.is_empty() => {
+                                                if !win_inbuf_emitted {
+                                                    out.push_str(
+r#"
+        .data
+LWININBUF_main:
+        .space 1024
+LWININLEN_main:
+        .quad 0
+        .text
+"#);
+                                                    win_inbuf_emitted = true;
+                                                }
+                                                if !win_stdin_inited {
+                                                    out.push_str(
+r#"        sub rsp, 40
+        mov ecx, -10
+        call GetStdHandle
+        add rsp, 40
+        mov r13, rax
+"#);
+                                                    win_stdin_inited = true;
+                                                }
+                                                out.push_str(
+r#"        sub rsp, 40
+        mov rcx, r13
+        lea rdx, [rip+LWININBUF_main]
+        mov r8d, 1024
+        lea r9, [rip+LWININLEN_main]
+        mov qword ptr [rsp+32], 0
+        call ReadFile
+        add rsp, 40
+        mov rax, qword ptr [rip+LWININLEN_main]
+        test rax, rax
+        jz .WREAD_EMPTY_TOI_%=
+        lea rbx, [rip+LWININBUF_main]
+        mov rcx, rax
+        dec rcx
+        mov bl, byte ptr [rbx+rcx]
+        cmp bl, 10
+        jne .WREAD_NO_NL_TOI_%=
+        test rcx, rcx
+        jz .WREAD_TRIM_NL_TOI_%=
+        mov bl, byte ptr [rbx+rcx-1]
+        cmp bl, 13
+        jne .WREAD_TRIM_NL_TOI_%=
+        dec rcx
+.WREAD_TRIM_NL_TOI_%=:
+.WREAD_NO_NL_TOI_%=:
+        jmp .WREAD_RET_TOI_%=
+.WREAD_EMPTY_TOI_%=:
+        xor rcx, rcx
+        lea rbx, [rip+LWININBUF_main]
+.WREAD_RET_TOI_%=:
+"#);
+                                            }
+                                            _ => {}
+                                        }
+                                        out.push_str(
+r#"        xor rdi, rdi
+        mov r8, 1
+        test rcx, rcx
+        jz .WTOI_ERR_%=
+        mov al, byte ptr [rbx]
+        cmp al, '+'
+        jne .WTOI_CHKMIN_%=
+        inc rbx
+        dec rcx
+        jmp .WTOI_LOOP_%=
+.WTOI_CHKMIN_%=:
+        cmp al, '-'
+        jne .WTOI_LOOP_%=
+        mov r8, -1
+        inc rbx
+        dec rcx
+.WTOI_LOOP_%=:
+        test rcx, rcx
+        jz .WTOI_FIN_%=
+        mov al, byte ptr [rbx]
+        cmp al, '0'
+        jb .WTOI_ERR_%=
+        cmp al, '9'
+        ja .WTOI_ERR_%=
+        imul rdi, rdi, 10
+        movzx rax, al
+        sub rax, '0'
+        add rdi, rax
+        inc rbx
+        dec rcx
+        jmp .WTOI_LOOP_%=
+.WTOI_FIN_%=:
+        mov rax, rdi
+        cmp r8, 0
+        jge .WTOI_OK_%=
+        neg rax
+.WTOI_OK_%=:
+        sub rsp, 80
+        lea r10, [rsp+79]
+        mov r8, 10
+        xor rcx, rcx
+        test rax, rax
+        jnz .WTOI_I64_loop_%=
+        mov byte ptr [r10], '0'
+        mov rcx, 1
+        jmp .WTOI_I64_done_%=
+.WTOI_I64_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc rcx
+        test rax, rax
+        jnz .WTOI_I64_loop_%=
+.WTOI_I64_done_%=:
+        lea rsi, [r10+1]
+        mov rdx, rcx
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        mov r8d, edx
+        mov rdx, rsi
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        add rsp, 80
+        jmp .WTOI_END_%=
+.WTOI_ERR_%=:
+        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        lea rdx, [rip+.LTOIERRWIN]
+        mov r8d, 13
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+        sub rsp, 40
+        mov ecx, 1
+        call ExitProcess
+        add rsp, 40
+.WTOI_END_%=:
+"#);
+                                        if !out.contains(".LTOIERRWIN:\n") {
+                                            out.push_str("\n        .data\n.LTOIERRWIN:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                        }
+                                        win_need_lsnl = true;
+                                        continue;
+                                    }
+
                                 } else {
                                     if !args.is_empty() {
                                         for (i, a) in args.iter().enumerate().take(4) {

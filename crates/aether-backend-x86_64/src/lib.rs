@@ -215,6 +215,7 @@ r#"        mov r11, rcx
 "#);
 }
 
+
 fn win_emit_init_stdout(out: &mut String, inited: &mut bool) {
     if !*inited {
         out.push_str(
@@ -241,6 +242,78 @@ r#"        sub rsp, 40
     }
 }
 
+
+fn linux_emit_print_i64(out: &mut String) {
+    out.push_str(
+r#"        sub $80, %rsp
+        lea 79(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .I64_print_loop_%=
+        movb $'0', (%r10)
+        mov $1, %rcx
+        jmp .I64_print_done_%=
+.I64_print_loop_%=:
+        xor %rdx, %rdx
+        div %r8
+        add $'0', %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .I64_print_loop_%=
+.I64_print_done_%=:
+        lea 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $80, %rsp
+"#);
+}
+
+fn win_emit_print_i64(out: &mut String) {
+    out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        sub rsp, 80
+        lea r10, [rsp+79]
+        mov r8, 10
+        xor r9, r9
+        test rax, rax
+        jnz LWIN_I64_loop_%=
+        mov byte ptr [r10], '0'
+        mov r9, 1
+        jmp LWIN_I64_done_%=
+LWIN_I64_loop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc r9
+        test rax, rax
+        jnz LWIN_I64_loop_%=
+LWIN_I64_done_%=:
+        lea rdx, [r10+1]
+        mov r8, r9d
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 80
+        add rsp, 40
+        mov rcx, r11
+"#);
+    win_emit_print_newline(out);
+ 
+}
 
 impl CodeGenerator for X86_64LinuxCodegen {
     fn target(&self) -> &Target {
@@ -1626,36 +1699,7 @@ r#"        push %rbx
         jge .TOI_OK_%=
         neg %rax
 .TOI_OK_%=:
-        sub $80, %rsp
-        lea 79(%rsp), %r10
-        mov $10, %r8
-        xor %rcx, %rcx
-        test %rax, %rax
-        jnz .TOI_I64_loop_%=
-        movb $'0', (%r10)
-        mov $1, %rcx
-        jmp .TOI_I64_done_%=
-.TOI_I64_loop_%=:
-        xor %rdx, %rdx
-        div %r8
-        add $'0', %dl
-        mov %dl, (%r10)
-        dec %r10
-        inc %rcx
-        test %rax, %rax
-        jnz .TOI_I64_loop_%=
-.TOI_I64_done_%=:
-        lea 1(%r10), %rsi
-        mov %rcx, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-        add $80, %rsp
+linux_emit_print_i64(&mut out);
         jmp .TOI_END_%=
 .TOI_ERR_%=:
         mov $1, %rax
@@ -1747,37 +1791,9 @@ r#"        push %rbx
         jge .TOI_OK2_%=
         neg %rax
 .TOI_OK2_%=:
-        sub $80, %rsp
-        lea 79(%rsp), %r10
-        mov $10, %r8
-        xor %rcx, %rcx
-        test %rax, %rax
-        jnz .TOI_I64_loop2_%=
-        movb $'0', (%r10)
-        mov $1, %rcx
-        jmp .TOI_I64_done2_%=
-.TOI_I64_loop2_%=:
-        xor %rdx, %rdx
-        div %r8
-        add $'0', %dl
-        mov %dl, (%r10)
-        dec %r10
-        inc %rcx
-        test %rax, %rax
-        jnz .TOI_I64_loop2_%=
-.TOI_I64_done2_%=:
-        lea 1(%r10), %rsi
-        mov %rcx, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-        add $80, %rsp
 "));
+linux_emit_print_i64(&mut out);
+
                                                             if !out.contains(".LTOIERR:\n") {
                                                                 out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                                             }
@@ -2149,36 +2165,7 @@ r#"        push %rbx
         jge .TOI_OK_%=
         neg %rax
 .TOI_OK_%=:
-        sub $80, %rsp
-        lea 79(%rsp), %r10
-        mov $10, %r8
-        xor %rcx, %rcx
-        test %rax, %rax
-        jnz .TOI_I64_loop_%=
-        movb $'0', (%r10)
-        mov $1, %rcx
-        jmp .TOI_I64_done_%=
-.TOI_I64_loop_%=:
-        xor %rdx, %rdx
-        div %r8
-        add $'0', %dl
-        mov %dl, (%r10)
-        dec %r10
-        inc %rcx
-        test %rax, %rax
-        jnz .TOI_I64_loop_%=
-.TOI_I64_done_%=:
-        lea 1(%r10), %rsi
-        mov %rcx, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-        add $80, %rsp
+linux_emit_print_i64(&mut out);
         jmp .TOI_END_%=
 .TOI_ERR_%=:
         mov $1, %rax
@@ -2270,37 +2257,9 @@ r#"        push %rbx
         jge .TOI_OK2_%=
         neg %rax
 .TOI_OK2_%=:
-        sub $80, %rsp
-        lea 79(%rsp), %r10
-        mov $10, %r8
-        xor %rcx, %rcx
-        test %rax, %rax
-        jnz .TOI_I64_loop2_%=
-        movb $'0', (%r10)
-        mov $1, %rcx
-        jmp .TOI_I64_done2_%=
-.TOI_I64_loop2_%=:
-        xor %rdx, %rdx
-        div %r8
-        add $'0', %dl
-        mov %dl, (%r10)
-        dec %r10
-        inc %rcx
-        test %rax, %rax
-        jnz .TOI_I64_loop2_%=
-.TOI_I64_done2_%=:
-        lea 1(%r10), %rsi
-        mov %rcx, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-        add $80, %rsp
 "));
+linux_emit_print_i64(&mut out);
+
                                                                 if !out.contains(".LTOIERR:\n") {
                                                                     out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                                                 }

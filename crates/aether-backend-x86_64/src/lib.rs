@@ -546,6 +546,41 @@ r#"        mov %rax, %rdi
         ret
 "#);
 }
+fn win_emit_concat_function(out: &mut String) {
+    out.push_str("\nconcat:\n");
+    out.push_str(
+r#"        push rbp
+        mov rbp, rsp
+        sub rsp, 40
+        mov [rbp-8], rcx
+        mov [rbp-16], rdx
+        mov [rbp-24], r8
+        mov dword ptr [rbp-32], r9d
+        mov eax, edx
+        add eax, r9d
+        mov dword ptr [rbp-36], eax
+        sub rsp, 40
+        xor ecx, ecx
+        mov r8d, 0x3000
+        mov r9d, 0x4
+        call VirtualAlloc
+        add rsp, 40
+        mov rdi, rax
+        mov rsi, qword ptr [rbp-8]
+        mov rcx, qword ptr [rbp-16]
+        cld
+        rep movsb
+        mov rdi, rax
+        add rdi, qword ptr [rbp-16]
+        mov rsi, qword ptr [rbp-24]
+        mov ecx, dword ptr [rbp-32]
+        rep movsb
+        mov edx, dword ptr [rbp-36]
+        leave
+        ret
+"#);
+}
+
 
 
 fn win_emit_readln_to_rsi_rdx(out: &mut String, buf_label: &str, len_label: &str) {
@@ -858,40 +893,6 @@ r#"        mov r11, rcx
         add rsp, 40
         mov rcx, r11
 "#);
-fn win_emit_concat_function(out: &mut String) {
-    out.push_str("\nconcat:\n");
-    out.push_str(
-r#"        push rbp
-        mov rbp, rsp
-        sub rsp, 40
-        mov [rbp-8], rcx
-        mov [rbp-16], rdx
-        mov [rbp-24], r8
-        mov dword ptr [rbp-32], r9d
-        mov eax, edx
-        add eax, r9d
-        mov dword ptr [rbp-36], eax
-        sub rsp, 40
-        xor ecx, ecx
-        mov r8d, 0x3000
-        mov r9d, 0x4
-        call VirtualAlloc
-        add rsp, 40
-        mov rdi, rax
-        mov rsi, qword ptr [rbp-8]
-        mov rcx, qword ptr [rbp-16]
-        cld
-        rep movsb
-        mov rdi, rax
-        add rdi, qword ptr [rbp-16]
-        mov rsi, qword ptr [rbp-24]
-        mov ecx, dword ptr [rbp-32]
-        rep movsb
-        mov edx, dword ptr [rbp-36]
-        leave
-        ret
-"#);
-}
 
 }
 

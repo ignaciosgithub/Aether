@@ -167,6 +167,45 @@ fn emit_win_eval_cond_to_rax(
     local_offsets: &std::collections::HashMap<String, usize>,
     local_types: &std::collections::HashMap<String, Type>,
 ) {
+    match expr {
+        Expr::Lit(Value::Int(v)) => {
+            out.push_str(&format!("        mov rax, {}\n", *v as i64));
+        }
+        Expr::Var(name) => {
+            if let Some(off) = local_offsets.get(name.as_str()) {
+                match local_types.get(name.as_str()) {
+                    Some(Type::I32) => {
+                        out.push_str(&format!("        mov eax, dword ptr [rbp-{}]\n", off));
+                    }
+                    _ => {
+                        out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", off));
+                    }
+                }
+            } else {
+                out.push_str("        xor rax, rax\n");
+            }
+        }
+        Expr::BinOp(a, op, b) => {
+            emit_win_eval_cond_to_rax(a, out, local_offsets, local_types);
+            out.push_str("        mov r10, rax\n");
+            emit_win_eval_cond_to_rax(b, out, local_offsets, local_types);
+            out.push_str("        mov r11, rax\n");
+            out.push_str("        cmp r10, r11\n");
+            match op {
+                BinOpKind::Eq => out.push_str("        sete al\n"),
+                BinOpKind::Lt => out.push_str("        setl al\n"),
+                BinOpKind::Le => out.push_str("        setle al\n"),
+                _ => {
+                    out.push_str("        xor eax, eax\n");
+                }
+            }
+            out.push_str("        movzx eax, al\n");
+        }
+        _ => {
+            out.push_str("        xor rax, rax\n");
+        }
+    }
+}
 fn expr_uses_concat(e: &aether_frontend::ast::Expr) -> bool {
     use aether_frontend::ast::Expr::*;
     match e {
@@ -211,45 +250,6 @@ fn module_uses_concat(m: &aether_frontend::ast::Module) -> bool {
     false
 }
 
-    match expr {
-        Expr::Lit(Value::Int(v)) => {
-            out.push_str(&format!("        mov rax, {}\n", *v as i64));
-        }
-        Expr::Var(name) => {
-            if let Some(off) = local_offsets.get(name.as_str()) {
-                match local_types.get(name.as_str()) {
-                    Some(Type::I32) => {
-                        out.push_str(&format!("        mov eax, dword ptr [rbp-{}]\n", off));
-                    }
-                    _ => {
-                        out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", off));
-                    }
-                }
-            } else {
-                out.push_str("        xor rax, rax\n");
-            }
-        }
-        Expr::BinOp(a, op, b) => {
-            emit_win_eval_cond_to_rax(a, out, local_offsets, local_types);
-            out.push_str("        mov r10, rax\n");
-            emit_win_eval_cond_to_rax(b, out, local_offsets, local_types);
-            out.push_str("        mov r11, rax\n");
-            out.push_str("        cmp r10, r11\n");
-            match op {
-                BinOpKind::Eq => out.push_str("        sete al\n"),
-                BinOpKind::Lt => out.push_str("        setl al\n"),
-                BinOpKind::Le => out.push_str("        setle al\n"),
-                _ => {
-                    out.push_str("        xor eax, eax\n");
-                }
-            }
-            out.push_str("        movzx eax, al\n");
-        }
-        _ => {
-            out.push_str("        xor rax, rax\n");
-        }
-    }
-}
 fn win_emit_print_newline(out: &mut String) {
     out.push_str(
 r#"        mov r11, rcx
@@ -3823,6 +3823,65 @@ r#"        syscall
                                                     out.push_str(&format!("        jmp {}\n", join_lbl));
                                                     out.push_str(&format!("{}:\n", else_lbl));
                                                     match &**else_expr {
+                                                        Expr::Call(name,args) => {
+                                                            if name == "concat" && args.len() == 2 {
+                                                                let mut s_labels = Vec::new();
+                                                                for a in args {
+                                                                    if let Expr::Lit(Value::String(sv)) = a {
+                                                                        let lbl = format!(".LCC_{}_{}", func.name, fi);
+                                                                        func_rodata.push((lbl.clone(), sv.clone()));
+                                                                        s_labels.push((lbl, sv.as_bytes().len()));
+                                                                        fi += 1;
+                                                                    }
+                                                                }
+                                                                if s_labels.len() == 2 {
+                                                                    out.push_str(&format!(
+"        leaq {}(%rip), %rdi
+        mov ${}, %rsi
+        leaq {}(%rip), %rdx
+        mov ${}, %rcx
+        sub $8, %rsp
+        call concat
+        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+", s_labels[0].0, s_labels[0].1, s_labels[1].0, s_labels[1].1));
+                                                                    need_nl = true;
+                                                                    out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                                }
+                                                            } else if args.is_empty() {
+                                                                out.push_str(
+"        sub $8, %rsp
+");
+                                                                out.push_str(&format!("        call {}\n", name));
+                                                                out.push_str(
+"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                                                need_nl = true;
+                                                                out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                            }
+                                                        }
+
                                                         Expr::Lit(Value::String(s)) => {
                                                             let mut bytes = s.clone().into_bytes();
                                                             bytes.push(b'\n');
@@ -4094,6 +4153,8 @@ LWININLEN_main:
                                                     win_inbuf_emitted = true;
                                                 }
                                                 if !win_stdin_inited {
+
+
                                                     out.push_str(
 r#"        sub rsp, 40
         mov ecx, -10
@@ -4103,6 +4164,45 @@ r#"        sub rsp, 40
 "#);
                                                     win_stdin_inited = true;
                                                 }
+                                if name == "concat" && args.len() == 2 {
+                                    let mut lbls: Vec<(String, usize)> = Vec::new();
+                                    for a in args {
+                                        if let Expr::Lit(Value::String(sv)) = a {
+                                            let lbl = format!("LCC_{}_{}", f.name, win_order_ls_idx);
+                                            win_order_ls.push((lbl.clone(), sv.clone()));
+                                            win_order_ls_idx += 1;
+                                            lbls.push((lbl, sv.as_bytes().len()));
+                                        }
+                                    }
+                                    if lbls.len() == 2 {
+                                        out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+"#);
+                                        out.push_str(&format!("        lea rcx, [rip+{}]\n", lbls[0].0));
+                                        out.push_str(&format!("        mov edx, {}\n", lbls[0].1 as i32));
+                                        out.push_str(&format!("        lea r8, [rip+{}]\n", lbls[1].0));
+                                        out.push_str(&format!("        mov r9d, {}\n", lbls[1].1 as i32));
+                                        out.push_str(
+r#"        call concat
+        add rsp, 40
+        mov rcx, r11
+"#);
+                                        out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        mov r8d, edx
+        mov rdx, rax
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+                                        win_emit_print_newline(&mut out);
+                                        win_need_lsnl = false;
+                                    }
                                                 win_emit_readln_to_rbx_rcx(&mut out, "LWININBUF_main", "LWININLEN_main");
                                             }
                                             _ => {}

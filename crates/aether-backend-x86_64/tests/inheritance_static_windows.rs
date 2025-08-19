@@ -42,4 +42,7 @@ fn windows_inheritance_static_init_and_print_parent_field() {
 
     assert!(asm.contains("call WriteFile"));
     assert!(asm.contains("lea r10, [rip+C]") || asm.contains("leaq C(%rip), %r10"));
+    if let (Some(pos_print), Some(pos_epilog)) = (asm.find("lea r10, [rip+C]"), asm.find("WMAIN_EPILOG")) {
+        assert!(pos_print < pos_epilog, "print of C.s must occur before epilogue/ret");
+    }
 }

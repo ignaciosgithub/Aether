@@ -4529,14 +4529,14 @@ r#"        xor r9d, r9d
                             Stmt::Return(expr) => {
                                 if let Some(v) = eval_int_expr(expr) {
                                     let v32 = v as i32;
-                                    out.push_str(&format!("        mov eax, {}\n        ret\n", v32));
+                                    out.push_str(&format!("        mov eax, {}\n        jmp WMAIN_EPILOG\n", v32));
                                 } else if let Expr::Lit(Value::String(s)) = expr {
                                     let bytes = s.clone().into_bytes();
                                     let lbl = format!("LSRET_main_{}", win_order_ls_idx);
                                     out.push_str(&format!(
 "        lea rax, [rip+{}]
         mov edx, {}
-        ret
+        jmp WMAIN_EPILOG
 ", lbl, bytes.len() as i32));
                                     win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
                                     win_order_ls_idx += 1;
@@ -4558,7 +4558,7 @@ r#"        sub rsp, 40
                                     out.push_str(&format!("        call {}\n", name));
                                     out.push_str(
 r#"        add rsp, 40
-        ret
+        jmp WMAIN_EPILOG
 "#);
 
                                 }
@@ -4587,6 +4587,7 @@ r#"        xor r9d, r9d
                     }
                 }
 
+                    out.push_str("WMAIN_EPILOG:\n        ret\n");
 
                     if win_need_lsnl || !win_order_ls.is_empty() {
                         out.push_str("\n        .data\n");

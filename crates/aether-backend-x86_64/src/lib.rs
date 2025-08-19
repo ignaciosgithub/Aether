@@ -4135,6 +4135,28 @@ r#"        sub rsp, 40
 r#"        add rsp, 40
 "#);
                             },
+                            Stmt::PrintExpr(Expr::Lit(Value::String(s))) => {
+                                let bytes = s.clone().into_bytes();
+                                let len = bytes.len();
+                                let lbl = format!("LSPR_{}_{}", f.name, win_order_ls_idx);
+                                out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+"#);
+                                out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                out.push_str(&format!(
+r#"        mov r8d, {len}
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#, len=len as i32));
+                                win_emit_print_newline(&mut out);
+                                win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
+                                win_order_ls_idx += 1;
+                            },
                             Stmt::PrintExpr(Expr::Call(name, args)) => {
 
                                 if name == "readln" && args.is_empty() {
@@ -4242,7 +4264,8 @@ r#"        mov r11, rcx
                                         }
                                     }
                                     win_emit_print_call_result(&mut out, name, args);
-                                    win_need_lsnl = true;
+                                    win_emit_print_newline(&mut out);
+                                    win_need_lsnl = false;
                                 }
                                 },
                             Stmt::PrintExpr(Expr::Index(_, _)) => {
@@ -4256,6 +4279,28 @@ r#"        mov r11, rcx
                                 for p in &f.params {
                                     if p.name == *name {
                                         match p.ty {
+                                            Type::String => {
+                                                if slot + 1 < regs_gpr.len() {
+                                                    let ptr = regs_gpr[slot];
+                                                    let len32 = regs_gpr32[slot + 1];
+                                                    out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+"#);
+                                                    out.push_str(&format!("        mov rdx, {}\n", ptr));
+                                                    out.push_str(&format!("        mov r8d, {}\n", len32));
+                                                    out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+                                                    win_emit_print_newline(&mut out);
+                                                    handled = true;
+                                                }
+                                            },
                                             Type::I32 => {
                                                 if slot < regs_gpr32.len() {
                                                     let s32 = regs_gpr32[slot];

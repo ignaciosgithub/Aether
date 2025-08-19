@@ -431,7 +431,13 @@ impl<'a> Parser<'a> {
                     if self.eat_kind(&TokenKind::RBracket) {
                         break;
                     }
-                    self.expect(&TokenKind::Comma)?;
+                    if self.eat_kind(&TokenKind::Comma) {
+                        if self.eat_kind(&TokenKind::RBracket) {
+                            break;
+                        }
+                        continue;
+                    }
+                    return Err(anyhow!("expected ',' or ']' in array literal"));
                 }
             }
             return Ok(Expr::ArrayLit(elems));
@@ -468,7 +474,13 @@ impl<'a> Parser<'a> {
                         if self.eat_kind(&TokenKind::RBrace) {
                             break;
                         }
-                        self.expect(&TokenKind::Comma)?;
+                        if self.eat_kind(&TokenKind::Comma) {
+                            if self.eat_kind(&TokenKind::RBrace) {
+                                break;
+                            }
+                            continue;
+                        }
+                        return Err(anyhow!("expected ',' or '}}' in struct literal"));
                     }
                 }
                 return Ok(Expr::StructLit(name, fields));

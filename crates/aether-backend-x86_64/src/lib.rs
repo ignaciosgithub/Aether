@@ -167,6 +167,50 @@ fn emit_win_eval_cond_to_rax(
     local_offsets: &std::collections::HashMap<String, usize>,
     local_types: &std::collections::HashMap<String, Type>,
 ) {
+fn expr_uses_concat(e: &aether_frontend::ast::Expr) -> bool {
+    use aether_frontend::ast::Expr::*;
+    match e {
+        Call(name, args) => {
+            if name == "concat" { return true; }
+            args.iter().any(expr_uses_concat)
+        }
+        MethodCall(recv, _m, args) => expr_uses_concat(recv) || args.iter().any(expr_uses_concat),
+        Field(recv, _f) => expr_uses_concat(recv),
+        Cast(inner, _) => expr_uses_concat(inner),
+        AddrOf(inner) => expr_uses_concat(inner),
+        Deref(inner) => expr_uses_concat(inner),
+        Index(b, i) => expr_uses_concat(b) || expr_uses_concat(i),
+        IfElse { cond, then_expr, else_expr } => expr_uses_concat(cond) || expr_uses_concat(then_expr) || expr_uses_concat(else_expr),
+        BinOp(l, _op, r) => expr_uses_concat(l) || expr_uses_concat(r),
+        ArrayLit(items) => items.iter().any(expr_uses_concat),
+        _ => false,
+    }
+}
+fn stmt_uses_concat(s: &aether_frontend::ast::Stmt) -> bool {
+    use aether_frontend::ast::Stmt::*;
+    match s {
+        Let { init, .. } => expr_uses_concat(init),
+        Assign { target, value } => expr_uses_concat(target) || expr_uses_concat(value),
+        Expr(e) => expr_uses_concat(e),
+        PrintExpr(e) => expr_uses_concat(e),
+        While { cond, body } => expr_uses_concat(cond) || body.iter().any(stmt_uses_concat),
+        Return(e) => expr_uses_concat(e),
+        _ => false,
+    }
+}
+fn module_uses_concat(m: &aether_frontend::ast::Module) -> bool {
+    use aether_frontend::ast::Item::*;
+    for it in &m.items {
+        match it {
+            Function(f) => {
+                if f.body.iter().any(stmt_uses_concat) { return true; }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
     match expr {
         Expr::Lit(Value::Int(v)) => {
             out.push_str(&format!("        mov rax, {}\n", *v as i64));
@@ -460,6 +504,45 @@ fn linux_emit_to_int_from_rsi_rdx(out: &mut String) {
 .TOI_OK_%=:
 ");
 }
+fn linux_emit_concat_function(out: &mut String) {
+    out.push_str("\n        .text\n        .globl concat\nconcat:\n");
+    out.push_str(
+r#"        push %rbp
+        mov %rsp, %rbp
+        sub $32, %rsp
+        mov %rdi, -8(%rbp)
+        mov %rsi, -16(%rbp)
+        mov %rdx, -24(%rbp)
+        mov %rcx, -32(%rbp)
+        mov %rax, %rsi
+        add %rax, -32(%rbp)
+        mov %rdx, %rax
+        mov $9, %rax
+        xor %rdi, %rdi
+        mov %rdx, %rsi
+        mov $3, %rdx
+        mov $34, %r10
+        mov $-1, %r8
+        xor %r9, %r9
+        syscall
+        mov %rdi, %rax
+        mov %rsi, -8(%rbp)
+        mov %rcx, -16(%rbp)
+        cld
+        rep movsb
+        mov %rdi, %rax
+        mov %rdx, -16(%rbp)
+        lea (%rdi,%rdx), %rdi
+        mov %rsi, -24(%rbp)
+        mov %rcx, -32(%rbp)
+        rep movsb
+        mov %rdx, -16(%rbp)
+        add -32(%rbp), %rdx
+        leave
+        ret
+"#);
+}
+
 
 fn win_emit_readln_to_rsi_rdx(out: &mut String, buf_label: &str, len_label: &str) {
     out.push_str(
@@ -771,6 +854,40 @@ r#"        mov r11, rcx
         add rsp, 40
         mov rcx, r11
 "#);
+fn win_emit_concat_function(out: &mut String) {
+    out.push_str("\nconcat:\n");
+    out.push_str(
+r#"        push rbp
+        mov rbp, rsp
+        sub rsp, 32
+        mov [rbp-8], rcx
+        mov [rbp-16], rdx
+        mov [rbp-24], r8
+        mov dword ptr [rbp-32], r9d
+        mov eax, edx
+        add eax, r9d
+        mov edx, eax
+        sub rsp, 40
+        xor ecx, ecx
+        mov r8d, 0x3000
+        mov r9d, 0x4
+        call VirtualAlloc
+        add rsp, 40
+        mov rdi, rax
+        mov rsi, qword ptr [rbp-8]
+        mov rcx, qword ptr [rbp-16]
+        cld
+        rep movsb
+        mov rdi, rax
+        add rdi, qword ptr [rbp-16]
+        mov rsi, qword ptr [rbp-24]
+        mov ecx, dword ptr [rbp-32]
+        rep movsb
+        leave
+        ret
+"#);
+}
+
 }
 
 impl CodeGenerator for X86_64LinuxCodegen {
@@ -779,6 +896,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
     }
 
     fn generate(&mut self, module: &Module) -> Result<String> {
+        let need_concat = module_uses_concat(module);
         let mut main_func: Option<&aether_frontend::ast::Function> = None;
         let mut exit_code: i64 = 0;
         let mut f64_ret: Option<f64> = None;
@@ -890,7 +1008,22 @@ impl CodeGenerator for X86_64LinuxCodegen {
                             }
                         }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
-                            if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
+                            if name == "concat" && args.len() == 2 {
+                                match (&args[0], &args[1]) {
+                                    (Expr::Lit(Value::String(a)), Expr::Lit(Value::String(b))) => {
+                                        let mut s = a.clone();
+                                        s.push_str(b.as_str());
+                                        let mut bytes = s.clone().into_bytes();
+                                        bytes.push(b'\n');
+                                        prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                    }
+                                    _ => {
+                                        if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
+                                    }
+                                }
+                            } else {
+                                if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
+                            }
                         }
                         Stmt::PrintExpr(Expr::MethodCall(recv, meth, args)) => {
                             if let Expr::Var(rn) = &**recv {
@@ -5775,5 +5908,20 @@ r#"        pop r12
             }
             _ => Ok(String::from("; unsupported OS placeholder")),
         }
+        if need_concat {
+            match self.target.os {
+                aether_codegen::TargetOs::Windows => {
+                    if !out.contains("\nconcat:\n") {
+                        win_emit_concat_function(&mut out);
+                    }
+                }
+                _ => {
+                    if !out.contains("\nconcat:\n") && !out.contains("\n        .globl concat\nconcat:\n") {
+                        linux_emit_concat_function(&mut out);
+                    }
+                }
+            }
+        }
+
     }
 }

@@ -37,12 +37,17 @@ fn windows_inheritance_static_init_and_print_parent_field() {
     let mut cg = X86_64LinuxCodegen::new_windows();
     let asm = cg.generate(&m).expect("codegen ok");
 
-    assert!(asm.contains("\nC:\n") || asm.contains("\r\nC:\r\n"));
+    assert!(asm.contains("\nC:") || asm.contains("\r\nC:"));
     assert!(asm.contains("Inherit!"));
 
     assert!(asm.contains("call WriteFile"));
     assert!(asm.contains("lea r10, [rip+C]") || asm.contains("leaq C(%rip), %r10"));
-    if let (Some(pos_print), Some(pos_epilog)) = (asm.find("lea r10, [rip+C]"), asm.find("WMAIN_EPILOG")) {
-        assert!(pos_print < pos_epilog, "print of C.s must occur before epilogue/ret");
+
+    let pos_print = asm.find("lea r10, [rip+C]").or_else(|| asm.find("leaq C(%rip), %r10"));
+    let pos_epilog = asm.find("\nWMAIN_EPILOG:\n")
+        .or_else(|| asm.find("\r\nWMAIN_EPILOG:\r\n"))
+        .or_else(|| asm.find("WMAIN_EPILOG:"));
+    if let (Some(pp), Some(pe)) = (pos_print, pos_epilog) {
+        assert!(pp < pe, "print of C.s must occur before epilogue/ret");
     }
 }

@@ -4566,6 +4566,27 @@ r#"        add rsp, 40
                             _ => {}
                         }
                     }
+                if !main_field_prints.is_empty() {
+                    for (bn, off) in &main_field_prints {
+                        out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+"#);
+                        out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
+                        out.push_str(&format!("        mov rdx, qword ptr [r10+{}]\n", off));
+                        out.push_str(&format!("        mov r8d, dword ptr [r10+{}]\n", off + 8));
+                        out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+                        win_emit_print_newline(&mut out);
+                    }
+                }
+
 
                     if win_need_lsnl || !win_order_ls.is_empty() {
                         out.push_str("\n        .data\n");
@@ -4865,9 +4886,23 @@ r#"        lea rax, [rip+LC0]
                 if !win_emitted_main_in_order {
                     for (name, args) in &main_print_calls {
                         if args.is_empty() {
-                            out.push_str(
-r#"        sub rsp, 40
-"#);
+                            out.push_str("        sub rsp, 40\n");
+                            if !main_field_prints.is_empty() {
+                                for (bn, off) in &main_field_prints {
+                                    out.push_str("        mov r11, rcx\n");
+                                    out.push_str("        sub rsp, 40\n");
+                                    out.push_str("        mov rcx, r12\n");
+                                    out.push_str(&format!("        lea r10, [rip+{}]\n", bn));
+                                    out.push_str(&format!("        mov rdx, qword ptr [r10+{}]\n", off));
+                                    out.push_str(&format!("        mov r8d, dword ptr [r10+{}]\n", off + 8));
+                                    out.push_str("        xor r9d, r9d\n");
+                                    out.push_str("        mov qword ptr [rsp+32], 0\n");
+                                    out.push_str("        call WriteFile\n");
+                                    out.push_str("        add rsp, 40\n");
+                                    out.push_str("        mov rcx, r11\n");
+                                    win_emit_print_newline(&mut out);
+                                }
+                            }
                             out.push_str(&format!("        call {}\n", name));
                             out.push_str(
 r#"        add rsp, 40

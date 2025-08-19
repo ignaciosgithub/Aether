@@ -36,6 +36,10 @@ fn windows_inheritance_static_init_and_print_parent_field() {
     let m = Module { items: vec![parent, child, cstatic, mainf] };
     let mut cg = X86_64LinuxCodegen::new_windows();
     let asm = cg.generate(&m).expect("codegen ok");
+
     assert!(asm.contains("\nC:\n") || asm.contains("\r\nC:\r\n"));
     assert!(asm.contains("Inherit!"));
+
+    assert!(asm.contains("call WriteFile"));
+    assert!(asm.contains("lea r10, [rip+C]") || asm.contains("leaq C(%rip), %r10"));
 }

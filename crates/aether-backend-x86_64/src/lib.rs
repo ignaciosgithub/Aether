@@ -4073,6 +4073,11 @@ main:
         add rsp, 40
         mov r12, rax
 
+        .data
+LSNL:
+        .byte 10
+
+        .text
 "#);
                 let mut win_order_ls: Vec<(String, String)> = Vec::new();
                 let mut win_order_ls_idx: usize = 0;

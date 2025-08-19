@@ -249,6 +249,20 @@ fn module_uses_concat(m: &aether_frontend::ast::Module) -> bool {
     }
     false
 }
+fn eval_concat_string(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Lit(Value::String(s)) => Some(s.clone()),
+        Expr::Call(name, args) if name == "concat" && args.len() == 2 => {
+            let a = eval_concat_string(&args[0])?;
+            let b = eval_concat_string(&args[1])?;
+            let mut s = a;
+            s.push_str(&b);
+            Some(s)
+        }
+        _ => None,
+    }
+}
+
 
 fn win_emit_print_newline(out: &mut String) {
     out.push_str(
@@ -1015,17 +1029,12 @@ impl CodeGenerator for X86_64LinuxCodegen {
                         }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
                             if name == "concat" && args.len() == 2 {
-                                match (&args[0], &args[1]) {
-                                    (Expr::Lit(Value::String(a)), Expr::Lit(Value::String(b))) => {
-                                        let mut s = a.clone();
-                                        s.push_str(b.as_str());
-                                        let mut bytes = s.clone().into_bytes();
-                                        bytes.push(b'\n');
-                                        prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
-                                    }
-                                    _ => {
-                                        if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
-                                    }
+                                if let Some(s) = eval_concat_string(&Expr::Call(name.clone(), args.clone())) {
+                                    let mut bytes = s.clone().into_bytes();
+                                    bytes.push(b'\n');
+                                    prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                } else {
+                                    if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
                                 }
                             } else {
                                 if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }

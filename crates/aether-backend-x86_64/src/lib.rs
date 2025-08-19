@@ -34,6 +34,7 @@ fn size_of_type(ty: &Type, struct_sizes: &HashMap<String, usize>, structs: &Hash
         Type::I32 => 4,
         Type::I64 | Type::F64 => 8,
         Type::String => 16,
+        Type::List(_) => 16,
         Type::Ptr(_) => 8,
         Type::Array(elem, n) => {
             let mut sz = size_of_type(elem, struct_sizes, structs) * *n;
@@ -1483,6 +1484,64 @@ _start:
                                         }
                                     }
                                 }
+                                if let (Type::List(inner), Expr::ArrayLit(elems)) = (ty, init) {
+                                    if let Some(off) = main_local_offsets.get(name) {
+                                        match &**inner {
+                                            Type::I32 => {
+                                                let lbl = format!(".LLI32_{}_{}", f.name, fi);
+                                                out.push_str("\n        .section .rodata\n");
+                                                out.push_str(&format!("{}:\n", lbl));
+                                                for e in elems {
+                                                    let mut val: Option<i64> = None;
+                                                    if let Expr::Lit(Value::Int(v)) = e { val = Some(*v); }
+                                                    else if let Some(v) = eval_int_expr(e) { val = Some(v); }
+                                                    if let Some(v) = val {
+                                                        out.push_str(&format!("        .long {}\n", v as i32));
+                                                    }
+                                                }
+                                                out.push_str("        .text\n");
+                                                out.push_str(&format!("        leaq {}(%rip), %rax\n", lbl));
+                                                out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq ${}, -{}(%rbp)\n", elems.len() as i64, off - 8));
+                                                fi += 1;
+                                            }
+                                            Type::String => {
+                                                let base_lbl = format!(".LLSTRPAIRS_{}_{}", f.name, fi);
+                                                out.push_str("\n        .section .rodata\n");
+                                                out.push_str(&format!("{}:\n", base_lbl));
+                                                for (idx, e) in elems.iter().enumerate() {
+                                                    if let Expr::Lit(Value::String(s)) = e {
+                                                        let sl = format!(".LLS_{}_{}_{}", f.name, fi, idx);
+                                                        out.push_str(&format!("        .quad {}\n", sl));
+                                                        out.push_str(&format!("        .quad {}\n", s.len()));
+                                                    } else {
+                                                        out.push_str("        .quad 0\n        .quad 0\n");
+                                                    }
+                                                }
+                                                for (idx, e) in elems.iter().enumerate() {
+                                                    if let Expr::Lit(Value::String(s)) = e {
+                                                        let sl = format!(".LLS_{}_{}_{}", f.name, fi, idx);
+                                                        out.push_str(&format!("{}:\n        .ascii \"", sl));
+                                                        for b in s.as_bytes() {
+                                                            let ch = *b as char;
+                                                            if ch == '\\' || ch == '\"' {
+                                                                out.push('\\');
+                                                            }
+                                                            out.push(ch);
+                                                        }
+                                                        out.push_str("\"\n");
+                                                    }
+                                                }
+                                                out.push_str("        .text\n");
+                                                out.push_str(&format!("        leaq {}(%rip), %rax\n", base_lbl));
+                                                out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq ${}, -{}(%rbp)\n", elems.len() as i64, off - 8));
+                                                fi += 1;
+                                            }
+                                            _ => { }
+                                        }
+                                    }
+                                }
                             }
                             Stmt::Expr(Expr::Call(cname, args)) => {
                                 if cname == "vec_push" && args.len() == 2 {
@@ -1674,12 +1733,67 @@ _start:
                                     continue;
                                 }
                             },
+                            Stmt::PrintExpr(Expr::Index(base, idx)) => {
+                                if let Expr::Var(vn) = &**base {
+                                    if let Some(off) = main_local_offsets.get(vn) {
+                                        if let Some(Type::List(inner_ty)) = main_local_types.get(vn) {
+                                            let mut idx_val: Option<i64> = None;
+                                            match &**idx {
+                                                Expr::Lit(Value::Int(v)) => { idx_val = Some(*v); }
+                                                _ => { if let Some(v) = eval_int_expr(idx) { idx_val = Some(v); } }
+                                            }
+                                            if let Some(iv) = idx_val {
+                                                out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                out.push_str(&format!("        mov ${}, %rcx\n", iv));
+                                                out.push_str("        cmp %rcx, %r10\n");
+                                                out.push_str("        jae 60f\n");
+                                                out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                                                match &**inner_ty {
+                                                    Type::I32 => {
+                                                        out.push_str("        leaq (%rbx,%rcx,4), %rax\n");
+                                                        out.push_str("        mov (%rax), %eax\n");
+                                                        linux_emit_print_i64(&mut out);
+                                                    }
+                                                    Type::String => {
+                                                        out.push_str("        leaq (%rbx,%rcx,16), %rax\n");
+                                                        out.push_str("        mov (%rax), %rsi\n");
+                                                        out.push_str("        mov 8(%rax), %rdx\n");
+                                                        out.push_str("        mov $1, %rax\n");
+                                                        out.push_str("        mov $1, %rdi\n");
+                                                        out.push_str("        syscall\n");
+                                                        out.push_str("        mov $1, %rax\n");
+                                                        out.push_str("        mov $1, %rdi\n");
+                                                        out.push_str("        leaq .LSNL(%rip), %rsi\n");
+                                                        out.push_str("        mov $1, %rdx\n");
+                                                        out.push_str("        syscall\n");
+                                                    }
+                                                    _ => { }
+                                                }
+                                                out.push_str("        jmp 61f\n");
+                                                linux_emit_oob_error(&mut out);
+                                                out.push_str("60:\n");
+                                                out.push_str("61:\n");
+                                            }
+                                        }
+                                    }
+                                }
+                            },
                             Stmt::PrintExpr(Expr::Call(cname, args)) => {
                                 if cname == "vec_len" && args.len() == 1 {
                                     if let Expr::Var(vn) = &args[0] {
                                         if let Some(off) = main_local_offsets.get(vn) {
                                             out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
                                             linux_emit_print_i64(&mut out);
+                                        }
+                                    }
+                                }
+                                if cname == "len" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::List(_)) = main_local_types.get(vn) {
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
+                                                linux_emit_print_i64(&mut out);
+                                            }
                                         }
                                     }
                                 }

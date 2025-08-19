@@ -55,6 +55,7 @@ Assemble and link
   ./scripts/assemble_link.sh x86_64-linux out/linux/hello.s out/linux/hello
 - Windows x86_64 (cross, produces PE):
   ./scripts/assemble_link.sh x86_64-windows out/windows/hello.s out/windows/hello.exe
+- If you see “x86_64-w64-mingw32-clang: command not found”, the script will try: clang --target=x86_64-w64-mingw32 -fuse-ld=lld. If that also fails or you get unresolved Windows symbols, install mingw-w64 to provide the import libraries.
 - AArch64 Linux (cross):
   ./scripts/assemble_link.sh aarch64-linux out/aarch64/hello.s out/aarch64/hello
 

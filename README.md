@@ -50,6 +50,7 @@ Choose your OS and follow the steps to be ready to write and run Aether code in 
   - sudo apt-get install -y build-essential clang lld nasm
 - Note: NASM is optional; only needed if you plan to assemble hand‑written .asm files.
 - Optional cross toolchains:
+- Note: If x86_64-w64-mingw32-clang is not on PATH, scripts/assemble_link.sh will fall back to clang --target=x86_64-w64-mingw32 -fuse-ld=lld. You may still need mingw import libraries (install mingw-w64) for Windows linking to succeed.
   - Windows: sudo apt-get install -y mingw-w64
   - AArch64: sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 

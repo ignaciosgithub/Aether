@@ -16,7 +16,11 @@ case "$TARGET" in
     clang -no-integrated-as -nostartfiles -o "$OUT" "$ASM" -fuse-ld=lld
     ;;
   x86_64-windows)
-    x86_64-w64-mingw32-clang -no-integrated-as -nostartfiles -o "$OUT".exe "$ASM" -lkernel32
+    if command -v x86_64-w64-mingw32-clang >/dev/null 2>&1; then
+      x86_64-w64-mingw32-clang -no-integrated-as -nostartfiles -o "$OUT".exe "$ASM" -lkernel32
+    else
+      clang --target=x86_64-w64-mingw32 -fuse-ld=lld -no-integrated-as -nostartfiles -o "$OUT".exe "$ASM" -lkernel32
+    fi
     ;;
   aarch64-linux)
     aarch64-linux-gnu-gcc -nostartfiles -static -o "$OUT" "$ASM"

@@ -510,13 +510,15 @@ fn linux_emit_concat_function(out: &mut String) {
 r#"        push %rbp
         mov %rsp, %rbp
         sub $32, %rsp
-        mov %rdi, -8(%rbp)
-        mov %rsi, -16(%rbp)
-        mov %rdx, -24(%rbp)
-        mov %rcx, -32(%rbp)
-        mov %rax, %rsi
-        add %rax, -32(%rbp)
-        mov %rdx, %rax
+        mov -8(%rbp), %rdi
+        mov -16(%rbp), %rsi
+        mov -24(%rbp), %rdx
+        mov -32(%rbp), %rcx
+"#);
+    out.push_str(
+r#"        mov -16(%rbp), %rax
+        add -32(%rbp), %rax
+        mov %rax, %rdx
         mov $9, %rax
         xor %rdi, %rdi
         mov %rdx, %rsi
@@ -525,19 +527,21 @@ r#"        push %rbp
         mov $-1, %r8
         xor %r9, %r9
         syscall
-        mov %rdi, %rax
-        mov %rsi, -8(%rbp)
-        mov %rcx, -16(%rbp)
+"#);
+    out.push_str(
+r#"        mov %rax, %rdi
+        mov -8(%rbp), %rsi
+        mov -16(%rbp), %rcx
         cld
         rep movsb
-        mov %rdi, %rax
-        mov %rdx, -16(%rbp)
-        lea (%rdi,%rdx), %rdi
-        mov %rsi, -24(%rbp)
-        mov %rcx, -32(%rbp)
+        mov %rax, %rdi
+        add -16(%rbp), %rdi
+        mov -24(%rbp), %rsi
+        mov -32(%rbp), %rcx
         rep movsb
-        mov %rdx, -16(%rbp)
-        add -32(%rbp), %rdx
+        mov -16(%rbp), %rax
+        add -32(%rbp), %rax
+        mov %rax, %rdx
         leave
         ret
 "#);
@@ -859,14 +863,14 @@ fn win_emit_concat_function(out: &mut String) {
     out.push_str(
 r#"        push rbp
         mov rbp, rsp
-        sub rsp, 32
+        sub rsp, 40
         mov [rbp-8], rcx
         mov [rbp-16], rdx
         mov [rbp-24], r8
         mov dword ptr [rbp-32], r9d
         mov eax, edx
         add eax, r9d
-        mov edx, eax
+        mov dword ptr [rbp-36], eax
         sub rsp, 40
         xor ecx, ecx
         mov r8d, 0x3000
@@ -883,6 +887,7 @@ r#"        push rbp
         mov rsi, qword ptr [rbp-24]
         mov ecx, dword ptr [rbp-32]
         rep movsb
+        mov edx, dword ptr [rbp-36]
         leave
         ret
 "#);
@@ -3964,6 +3969,11 @@ r#"        leaq .LC0(%rip), %rax
                     }
                     out.push_str("\n        .text\n");
                 }
+                if need_concat {
+                    if !out.contains("\nconcat:\n") && !out.contains("\n        .globl concat\nconcat:\n") {
+                        linux_emit_concat_function(&mut out);
+                    }
+                }
                 Ok(out.trim_start().to_string())
             }
             TargetOs::Windows => {
@@ -3980,6 +3990,7 @@ r#"
         .extern GetStdHandle
         .extern WriteFile
         .extern ReadFile
+        .extern VirtualAlloc
         .global main
         .text
 main:
@@ -5904,23 +5915,15 @@ r#"        pop r12
                     out.push_str("\n        .data\nLSNL:\n        .byte 10\n        .text\n");
                 }
 
-                Ok(out.trim_start().to_string())
-            }
-            _ => Ok(String::from("; unsupported OS placeholder")),
-        }
-        if need_concat {
-            match self.target.os {
-                aether_codegen::TargetOs::Windows => {
+                if need_concat {
                     if !out.contains("\nconcat:\n") {
                         win_emit_concat_function(&mut out);
                     }
                 }
-                _ => {
-                    if !out.contains("\nconcat:\n") && !out.contains("\n        .globl concat\nconcat:\n") {
-                        linux_emit_concat_function(&mut out);
-                    }
-                }
+
+                Ok(out.trim_start().to_string())
             }
+            _ => Ok(String::from("; unsupported OS placeholder")),
         }
 
     }

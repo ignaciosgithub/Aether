@@ -932,7 +932,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         use std::collections::{HashMap, HashSet};
         let mut static_types: HashMap<String, String> = HashMap::new();
-        let (struct_sizes, field_offsets, _flattened_fields) = compute_struct_layouts(module);
+        let (struct_sizes, field_offsets, flattened_fields) = compute_struct_layouts(module);
         for item in &module.items {
             if let Item::Static(st) = item {
                 if let Type::User(ref n) = st.ty {
@@ -2372,11 +2372,11 @@ r#"        leaq .LC0(%rip), %rax
                                     for (fname, fexpr) in fields {
                                         field_map.insert(fname.clone(), fexpr);
                                     }
-                                    if let Some(Item::Struct(sd)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *ty)) {
-                                        out.push_str(&format!("{}:\n", sname));
-                                        for f in &sd.fields {
-                                            if let Some(expr) = field_map.get(&f.name) {
-                                                match (f.ty.clone(), (*expr).clone()) {
+                                    out.push_str(&format!("{}:\n", sname));
+                                    if let Some(ff_list) = flattened_fields.get(ty) {
+                                        for (fname, fty, _foff) in ff_list {
+                                            if let Some(expr) = field_map.get(fname) {
+                                                match (fty.clone(), (*expr).clone()) {
                                                     (Type::I32, Expr::Lit(Value::Int(v))) => {
                                                         out.push_str(&format!("        .long {}\n", v as i32));
                                                     }
@@ -2390,7 +2390,7 @@ r#"        leaq .LC0(%rip), %rax
                                                         out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                                                     }
                                                     (Type::String, Expr::Lit(Value::String(sv))) => {
-                                                        let lbl = format!(".LSS_{}_{}", sname, f.name);
+                                                        let lbl = format!(".LSS_{}_{}", sname, fname);
                                                         static_rodata.push((lbl.clone(), sv.clone()));
                                                         out.push_str(&format!("        .quad {}\n", lbl));
                                                         out.push_str(&format!("        .quad {}\n", sv.as_bytes().len()));
@@ -2417,7 +2417,7 @@ r#"        leaq .LC0(%rip), %rax
                                                                             out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                                                                         }
                                                                         (Type::String, Expr::Lit(Value::String(sv))) => {
-                                                                            let lbl = format!(".LSS_{}_{}_{}", sname, f.name, ff.name);
+                                                                            let lbl = format!(".LSS_{}_{}_{}", sname, fname, ff.name);
                                                                             static_rodata.push((lbl.clone(), sv.clone()));
                                                                             out.push_str(&format!("        .quad {}\n", lbl));
                                                                             out.push_str(&format!("        .quad {}\n", sv.as_bytes().len()));
@@ -2460,7 +2460,7 @@ r#"        leaq .LC0(%rip), %rax
                                                         }
                                                     }
                                                     _ => {
-                                                        let bytes = match f.ty {
+                                                        let bytes = match fty {
                                                             Type::I32 => 4,
                                                             Type::I64 | Type::F64 => 8,
                                                             Type::String => 16,
@@ -2485,7 +2485,7 @@ r#"        leaq .LC0(%rip), %rax
                                                     }
                                                 }
                                             } else {
-                                                let bytes = match f.ty {
+                                                let bytes = match fty {
                                                     Type::I32 => 4,
                                                     Type::I64 | Type::F64 => 8,
                                                     Type::String => 16,
@@ -2510,8 +2510,8 @@ r#"        leaq .LC0(%rip), %rax
                                             }
                                         }
                                         let mut total = 0usize;
-                                        for f in &sd.fields {
-                                            total += match f.ty {
+                                        for (_n2, fty2, _o2) in ff_list {
+                                            total += match fty2 {
                                                 Type::I32 => 4,
                                                 Type::I64 | Type::F64 => 8,
                                                 Type::String => 16,
@@ -4588,6 +4588,216 @@ r#"        add rsp, 40
                         }
                         out.push_str("\n        .text\n");
                     }
+                if !static_types.is_empty() {
+                    out.push_str("\n        .data\n");
+                    for (sname, ty) in &static_types {
+                        let sz = struct_sizes.get(ty).cloned().unwrap_or(8);
+                        let mut emitted = false;
+                        if let Some(Item::Static(st)) = module.items.iter().find(|it| matches!(it, Item::Static(s) if s.name == *sname)) {
+                            if let Expr::StructLit(ref lit_ty, ref fields) = st.init {
+                                if lit_ty == ty {
+                                    let mut field_map: std::collections::HashMap<String, &Expr> = std::collections::HashMap::new();
+                                    for (fname, fexpr) in fields {
+                                        field_map.insert(fname.clone(), fexpr);
+                                    }
+                                    out.push_str(&format!("{}:\n", sname));
+                                    if let Some(ff_list) = flattened_fields.get(ty) {
+                                        for (fname, fty, _foff) in ff_list {
+                                            if let Some(expr) = field_map.get(fname) {
+                                                match (fty.clone(), (*expr).clone()) {
+                                                    (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                                        out.push_str(&format!("        .long {}\n", v as i32));
+                                                    }
+                                                    (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                                        out.push_str(&format!("        .quad {}\n", v as i64));
+                                                    }
+                                                    (Type::F64, Expr::Lit(Value::Float64(fv))) => {
+                                                        let bits = fv.to_bits();
+                                                        let lo = bits as u32;
+                                                        let hi = (bits >> 32) as u32;
+                                                        out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                                                    }
+                                                    (Type::String, Expr::Lit(Value::String(sv))) => {
+                                                        let lbl = format!("LSS_{}_{}", sname, fname);
+                                                        out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                                                        for b in sv.as_bytes() {
+                                                            let ch = *b as char;
+                                                            match ch {
+                                                                '\n' => out.push_str("\\n"),
+                                                                '\t' => out.push_str("\\t"),
+                                                                '\"' => out.push_str("\\\""),
+                                                                '\\' => out.push_str("\\\\"),
+                                                                _ => out.push(ch),
+                                                            }
+                                                        }
+                                                        out.push_str("\"\n");
+                                                        out.push_str(&format!("        .quad {}\n", lbl));
+                                                        out.push_str(&format!("        .quad {}\n", sv.as_bytes().len()));
+                                                    }
+                                                    (Type::User(un), Expr::StructLit(ref lty, ref lfields)) if *lty == un => {
+                                                        let mut inner_map: std::collections::HashMap<String, &Expr> = std::collections::HashMap::new();
+                                                        for (fname2, fexpr2) in lfields {
+                                                            inner_map.insert(fname2.clone(), fexpr2);
+                                                        }
+                                                        if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == un)) {
+                                                            for ff in &sd2.fields {
+                                                                if let Some(expr2) = inner_map.get(&ff.name) {
+                                                                    match (ff.ty.clone(), (*expr2).clone()) {
+                                                                        (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                                                            out.push_str(&format!("        .long {}\n", v as i32));
+                                                                        }
+                                                                        (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                                                            out.push_str(&format!("        .quad {}\n", v as i64));
+                                                                        }
+                                                                        (Type::F64, Expr::Lit(Value::Float64(fv))) => {
+                                                                            let bits = fv.to_bits();
+                                                                            let lo = bits as u32;
+                                                                            let hi = (bits >> 32) as u32;
+                                                                            out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                                                                        }
+                                                                        (Type::String, Expr::Lit(Value::String(sv))) => {
+                                                                            let lbl = format!("LSS_{}_{}_{}", sname, fname, ff.name);
+                                                                            out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                                                                            for b in sv.as_bytes() {
+                                                                                let ch = *b as char;
+                                                                                match ch {
+                                                                                    '\n' => out.push_str("\\n"),
+                                                                                    '\t' => out.push_str("\\t"),
+                                                                                    '\"' => out.push_str("\\\""),
+                                                                                    '\\' => out.push_str("\\\\"),
+                                                                                    _ => out.push(ch),
+                                                                                }
+                                                                            }
+                                                                            out.push_str("\"\n");
+                                                                            out.push_str(&format!("        .quad {}\n", lbl));
+                                                                            out.push_str(&format!("        .quad {}\n", sv.as_bytes().len()));
+                                                                        }
+                                                                        _ => {
+                                                                            let bytes = match ff.ty {
+                                                                                Type::I32 => 4,
+                                                                                Type::I64 | Type::F64 => 8,
+                                                                                Type::String => 16,
+                                                                                _ => 8,
+                                                                            };
+                                                                            out.push_str(&format!("        .zero {}\n", bytes));
+                                                                        }
+                                                                    }
+                                                                } else {
+                                                                    let bytes = match ff.ty {
+                                                                        Type::I32 => 4,
+                                                                        Type::I64 | Type::F64 => 8,
+                                                                        Type::String => 16,
+                                                                        _ => 8,
+                                                                    };
+                                                                    out.push_str(&format!("        .zero {}\n", bytes));
+                                                                }
+                                                            }
+                                                            let mut inner_total = 0usize;
+                                                            for ff in &sd2.fields {
+                                                                inner_total += match ff.ty {
+                                                                    Type::I32 => 4,
+                                                                    Type::I64 | Type::F64 => 8,
+                                                                    Type::String => 16,
+                                                                    _ => 8,
+                                                                };
+                                                            }
+                                                            if inner_total % 8 != 0 {
+                                                                out.push_str(&format!("        .zero {}\n", 8 - (inner_total % 8)));
+                                                            }
+                                                        } else {
+                                                            let bytes = 8;
+                                                            out.push_str(&format!("        .zero {}\n", bytes));
+                                                        }
+                                                    }
+                                                    _ => {
+                                                        let bytes = match fty {
+                                                            Type::I32 => 4,
+                                                            Type::I64 | Type::F64 => 8,
+                                                            Type::String => 16,
+                                                            Type::User(ref un) => {
+                                                                if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                                    let mut sz2 = 0usize;
+                                                                    for ff in &sd2.fields {
+                                                                        sz2 += match ff.ty {
+                                                                            Type::I32 => 4,
+                                                                            Type::I64 | Type::F64 => 8,
+                                                                            Type::String => 16,
+                                                                            _ => 8,
+                                                                        };
+                                                                    }
+                                                                    if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                                    sz2
+                                                                } else { 8 }
+                                                            }
+                                                            _ => 8,
+                                                        };
+                                                        out.push_str(&format!("        .zero {}\n", bytes));
+                                                    }
+                                                }
+                                            } else {
+                                                let bytes = match fty {
+                                                    Type::I32 => 4,
+                                                    Type::I64 | Type::F64 => 8,
+                                                    Type::String => 16,
+                                                    Type::User(ref un) => {
+                                                        if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                            let mut sz2 = 0usize;
+                                                            for ff in &sd2.fields {
+                                                                sz2 += match ff.ty {
+                                                                    Type::I32 => 4,
+                                                                    Type::I64 | Type::F64 => 8,
+                                                                    Type::String => 16,
+                                                                    _ => 8,
+                                                                };
+                                                            }
+                                                            if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                            sz2
+                                                        } else { 8 }
+                                                    }
+                                                    _ => 8,
+                                                };
+                                                out.push_str(&format!("        .zero {}\n", bytes));
+                                            }
+                                        }
+                                        let mut total = 0usize;
+                                        for (_n2, fty2, _o2) in ff_list {
+                                            total += match fty2 {
+                                                Type::I32 => 4,
+                                                Type::I64 | Type::F64 => 8,
+                                                Type::String => 16,
+                                                Type::User(ref un) => {
+                                                    if let Some(Item::Struct(sd2)) = module.items.iter().find(|it| matches!(it, Item::Struct(s) if s.name == *un)) {
+                                                        let mut sz2 = 0usize;
+                                                        for ff in &sd2.fields {
+                                                            sz2 += match ff.ty {
+                                                                Type::I32 => 4,
+                                                                Type::I64 | Type::F64 => 8,
+                                                                Type::String => 16,
+                                                                _ => 8,
+                                                            };
+                                                        }
+                                                        if sz2 % 8 != 0 { sz2 += 8 - (sz2 % 8); }
+                                                        sz2
+                                                    } else { 8 }
+                                                }
+                                                _ => 8,
+                                            };
+                                        }
+                                        if total % 8 != 0 {
+                                            out.push_str(&format!("        .zero {}\n", 8 - (total % 8)));
+                                        }
+                                        emitted = true;
+                                    }
+                                }
+                            }
+                        }
+                        if !emitted {
+                            out.push_str(&format!("{}:\n        .zero {}\n", sname, sz));
+                        }
+                    }
+                    out.push_str("\n        .text\n");
+                }
+
                 }
                 let mut call_arg_data: Vec<(String, String)> = Vec::new();
                 if !prints.is_empty() {

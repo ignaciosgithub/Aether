@@ -4164,7 +4164,18 @@ r#"        sub rsp, 40
 "#);
                                                     win_stdin_inited = true;
                                                 }
-                                if name == "concat" && args.len() == 2 {
+                                                win_emit_readln_to_rbx_rcx(&mut out, "LWININBUF_main", "LWININLEN_main");
+                                            }
+                                            _ => {}
+                                        }
+                                        win_emit_to_int_from_rbx_rcx(&mut out);
+                                        if !out.contains("LTOIERRWIN:\n") {
+                                            out.push_str("\n        .data\nLTOIERRWIN:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                        }
+                                        win_need_lsnl = true;
+                                        continue;
+                                    }
+                                } else if name == "concat" && args.len() == 2 {
                                     let mut lbls: Vec<(String, usize)> = Vec::new();
                                     for a in args {
                                         if let Expr::Lit(Value::String(sv)) = a {
@@ -4202,17 +4213,6 @@ r#"        mov r11, rcx
 "#);
                                         win_emit_print_newline(&mut out);
                                         win_need_lsnl = false;
-                                    }
-                                                win_emit_readln_to_rbx_rcx(&mut out, "LWININBUF_main", "LWININLEN_main");
-                                            }
-                                            _ => {}
-                                        }
-                                        win_emit_to_int_from_rbx_rcx(&mut out);
-                                        if !out.contains("LTOIERRWIN:\n") {
-                                            out.push_str("\n        .data\nLTOIERRWIN:\n        .ascii \"to_int error\\n\"\n        .text\n");
-                                        }
-                                        win_need_lsnl = true;
-                                        continue;
                                     }
                                 } else {
                                     if !args.is_empty() {

@@ -96,6 +96,8 @@ pub enum BinOpKind {
     Eq,
     Lt,
     Le,
+    Gt,
+    Ge,
 }
 
 #[derive(Debug, Clone)]

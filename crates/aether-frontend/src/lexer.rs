@@ -49,6 +49,8 @@ pub enum TokenKind {
     Le,   // <=
     Lt,   // <
     Eq,   // ==
+    Ge,   // >=
+    Gt,   // >
     StringType, // type keyword: String
     Ampersand,
     Eof,
@@ -207,6 +209,11 @@ impl Lexer {
                     TokenKind::Le
                 }
                 '<' => { i += 1; TokenKind::Lt }
+                '>' if i + 1 < bytes.len() && bytes[i + 1] as char == '=' => {
+                    i += 2;
+                    TokenKind::Ge
+                }
+                '>' => { i += 1; TokenKind::Gt }
                 '=' if i + 1 < bytes.len() && bytes[i + 1] as char == '=' => {
                     i += 2;
                     TokenKind::Eq

@@ -134,6 +134,8 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
                 BinOpKind::Eq => Some(if lv == rv { 1 } else { 0 }),
                 BinOpKind::Lt => Some(if lv < rv { 1 } else { 0 }),
                 BinOpKind::Le => Some(if lv <= rv { 1 } else { 0 }),
+                BinOpKind::Gt => Some(if lv > rv { 1 } else { 0 }),
+                BinOpKind::Ge => Some(if lv >= rv { 1 } else { 0 }),
             }
         }
         _ => None,
@@ -155,7 +157,7 @@ fn eval_f64_expr(expr: &Expr) -> Option<f64> {
                 BinOpKind::Div => {
                     if rv == 0.0 { None } else { Some(lv / rv) }
                 }
-                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge => None,
             }
         }
         _ => None,
@@ -195,6 +197,8 @@ fn emit_win_eval_cond_to_rax(
                 BinOpKind::Eq => out.push_str("        sete al\n"),
                 BinOpKind::Lt => out.push_str("        setl al\n"),
                 BinOpKind::Le => out.push_str("        setle al\n"),
+                BinOpKind::Gt => out.push_str("        setg al\n"),
+                BinOpKind::Ge => out.push_str("        setge al\n"),
                 _ => {
                     out.push_str("        xor eax, eax\n");
                 }
@@ -1745,6 +1749,8 @@ _start:
                                     BinOpKind::Lt => out.push_str(&format!("        jge .LWH_END_main_{}\n", widx)),
                                     BinOpKind::Le => out.push_str(&format!("        jg .LWH_END_main_{}\n", widx)),
                                     BinOpKind::Eq => out.push_str(&format!("        jne .LWH_END_main_{}\n", widx)),
+                                    BinOpKind::Gt => out.push_str(&format!("        jle .LWH_END_main_{}\n", widx)),
+                                    BinOpKind::Ge => out.push_str(&format!("        jl .LWH_END_main_{}\n", widx)),
                                     _ => out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx)),
                                 }
                             } else {
@@ -2634,8 +2640,46 @@ r#"        push %rbx
                                                             _ => slot += 1,
                                                         }
                                                     }
+                                            }
+                                        },
+
+                                            (Expr::Var(vn), aether_frontend::ast::BinOpKind::Gt, Expr::Lit(Value::Int(k))) => {
+                                                let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                let mut slot = 0usize;
+                                                for p in &func.params {
+                                                    if p.name == *vn {
+                                                        let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                        out.push_str(&format!("        cmp {}, {}\n", r, *k as i64));
+                                                        out.push_str(&format!("        jle {}\n", end));
+                                                        handled_cond = true;
+                                                        break;
+                                                    } else {
+                                                        match p.ty {
+                                                            Type::String => slot += 2,
+                                                            _ => slot += 1,
+                                                        }
+                                                    }
                                                 }
                                             }
+                                            (Expr::Var(vn), aether_frontend::ast::BinOpKind::Ge, Expr::Lit(Value::Int(k))) => {
+                                                let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                let mut slot = 0usize;
+                                                for p in &func.params {
+                                                    if p.name == *vn {
+                                                        let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                        out.push_str(&format!("        cmp {}, {}\n", r, *k as i64));
+                                                        out.push_str(&format!("        jl {}\n", end));
+                                                        handled_cond = true;
+                                                        break;
+                                                    } else {
+                                                        match p.ty {
+                                                            Type::String => slot += 2,
+                                                            _ => slot += 1,
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            (Expr::Lit(Value::Int(_k)), aether_frontend::ast::BinOpKind::Lt, Expr::Var(_vn)) => { },
                                             (Expr::Var(vn), aether_frontend::ast::BinOpKind::Le, Expr::Lit(Value::Int(k))) => {
                                                 let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
                                                 let mut slot = 0usize;

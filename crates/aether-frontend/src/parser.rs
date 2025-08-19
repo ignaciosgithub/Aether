@@ -291,6 +291,12 @@ impl<'a> Parser<'a> {
             } else if self.eat_kind(&TokenKind::Lt) {
                 let rhs = self.parse_add_sub()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Lt, Box::new(rhs));
+            } else if self.eat_kind(&TokenKind::Ge) {
+                let rhs = self.parse_add_sub()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Ge, Box::new(rhs));
+            } else if self.eat_kind(&TokenKind::Gt) {
+                let rhs = self.parse_add_sub()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Gt, Box::new(rhs));
             } else if self.eat_kind(&TokenKind::Eq) {
                 let rhs = self.parse_add_sub()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Eq, Box::new(rhs));

@@ -134,6 +134,8 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
                 BinOpKind::Eq => Some(if lv == rv { 1 } else { 0 }),
                 BinOpKind::Lt => Some(if lv < rv { 1 } else { 0 }),
                 BinOpKind::Le => Some(if lv <= rv { 1 } else { 0 }),
+                BinOpKind::Gt => Some(if lv > rv { 1 } else { 0 }),
+                BinOpKind::Ge => Some(if lv >= rv { 1 } else { 0 }),
             }
         }
         _ => None,
@@ -155,7 +157,7 @@ fn eval_f64_expr(expr: &Expr) -> Option<f64> {
                 BinOpKind::Div => {
                     if rv == 0.0 { None } else { Some(lv / rv) }
                 }
-                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge => None,
             }
         }
         _ => None,
@@ -195,6 +197,8 @@ fn emit_win_eval_cond_to_rax(
                 BinOpKind::Eq => out.push_str("        sete al\n"),
                 BinOpKind::Lt => out.push_str("        setl al\n"),
                 BinOpKind::Le => out.push_str("        setle al\n"),
+                BinOpKind::Gt => out.push_str("        setg al\n"),
+                BinOpKind::Ge => out.push_str("        setge al\n"),
                 _ => {
                     out.push_str("        xor eax, eax\n");
                 }
@@ -518,6 +522,116 @@ fn linux_emit_to_int_from_rsi_rdx(out: &mut String) {
 .TOI_OK_%=:
 ");
 }
+fn linux_eval_addr_of_expr_to_rax(
+    expr: &aether_frontend::ast::Expr,
+    out: &mut String,
+    local_offsets: &std::collections::HashMap<String, usize>,
+    local_types: &std::collections::HashMap<String, aether_frontend::ast::Type>,
+    field_offsets: &std::collections::HashMap<(String, String), (usize, aether_frontend::ast::Type)>,
+) -> Option<aether_frontend::ast::Type> {
+    use aether_frontend::ast::{Expr, Type, Value};
+    match expr {
+        Expr::Var(name) => {
+            if let Some(off) = local_offsets.get(name.as_str()) {
+                out.push_str(&format!("        leaq -{}(%rbp), %rax\n", off));
+                return local_types.get(name.as_str()).cloned();
+            }
+            None
+        }
+        Expr::Index(base, idx) => {
+            if let Expr::Var(arr_name) = base.as_ref() {
+                if let (Some(base_off), Some(Type::Array(elem_ty, _n))) =
+                    (local_offsets.get(arr_name.as_str()), local_types.get(arr_name.as_str()).cloned())
+                {
+                    out.push_str(&format!("        leaq -{}(%rbp), %rax\n", base_off));
+                    match idx.as_ref() {
+                        Expr::Lit(Value::Int(k)) => {
+                            let scale = match elem_ty.as_ref() {
+                                Type::I32 => 4,
+                                Type::I64 | Type::F64 | Type::String => 8,
+                                _ => 8,
+                            };
+                            let disp = (*k as isize) * (scale as isize);
+                            if disp != 0 {
+                                if disp > 0 {
+                                    out.push_str(&format!("        leaq {}(%rax), %rax\n", disp));
+                                } else {
+                                    out.push_str(&format!("        leaq -{}(%rax), %rax\n", -disp));
+                                }
+                            }
+                            return (*elem_ty).clone().into();
+                        }
+                        Expr::Var(ixn) => {
+                            if let Some(ix_off) = local_offsets.get(ixn.as_str()) {
+                                out.push_str(&format!("        mov -{}(%rbp), %ecx\n", ix_off));
+                                let scale = match elem_ty.as_ref() {
+                                    Type::I32 => 4,
+                                    Type::I64 | Type::F64 | Type::String => 8,
+                                    _ => 8,
+                                };
+                                match scale {
+                                    1 => out.push_str("        leaq (%rax,%rcx), %rax\n"),
+                                    2 => out.push_str("        leaq (%rax,%rcx,2), %rax\n"),
+                                    4 => out.push_str("        leaq (%rax,%rcx,4), %rax\n"),
+                                    8 => out.push_str("        leaq (%rax,%rcx,8), %rax\n"),
+                                    _ => out.push_str("        leaq (%rax,%rcx,8), %rax\n"),
+                                }
+                                return (*elem_ty).clone().into();
+                            }
+                            None
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+        Expr::Field(_, _) => {
+            fn collect<'a>(e: &'a Expr, names: &mut Vec<&'a str>) -> Option<&'a str> {
+                match e {
+                    Expr::Var(v) => Some(v.as_str()),
+                    Expr::Field(b, f) => {
+                        let base = collect(b, names)?;
+                        names.push(f.as_str());
+                        Some(base)
+                    }
+                    _ => None,
+                }
+            }
+            let mut names: Vec<&str> = Vec::new();
+            if let Some(base_name) = collect(expr, &mut names) {
+                if let (Some(base_off), Some(mut cur_ty)) =
+                    (local_offsets.get(base_name), local_types.get(base_name).cloned())
+                {
+                    let mut tot_off: usize = 0;
+                    for fname in &names {
+                        if let aether_frontend::ast::Type::User(ref sname) = cur_ty {
+                            if let Some((foff, fty)) =
+                                field_offsets.get(&(sname.clone(), (*fname).to_string()))
+                            {
+                                tot_off += *foff;
+                                cur_ty = fty.clone();
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    let addr_off = base_off + tot_off;
+                    out.push_str(&format!("        leaq -{}(%rbp), %rax\n", addr_off));
+                    return Some(cur_ty);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn linux_emit_concat_function(out: &mut String) {
     out.push_str("\n        .text\n        .globl concat\nconcat:\n");
     out.push_str(
@@ -1745,6 +1859,8 @@ _start:
                                     BinOpKind::Lt => out.push_str(&format!("        jge .LWH_END_main_{}\n", widx)),
                                     BinOpKind::Le => out.push_str(&format!("        jg .LWH_END_main_{}\n", widx)),
                                     BinOpKind::Eq => out.push_str(&format!("        jne .LWH_END_main_{}\n", widx)),
+                                    BinOpKind::Gt => out.push_str(&format!("        jle .LWH_END_main_{}\n", widx)),
+                                    BinOpKind::Ge => out.push_str(&format!("        jl .LWH_END_main_{}\n", widx)),
                                     _ => out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx)),
                                 }
                             } else {
@@ -2601,6 +2717,27 @@ r#"        push %rbx
                         continue;
                     }
 
+                    let mut local_types: std::collections::HashMap<String, aether_frontend::ast::Type> = std::collections::HashMap::new();
+                    let mut local_offsets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                    let mut cur_off: usize = 0;
+                    for stmt in &func.body {
+                        if let aether_frontend::ast::Stmt::Let { name, ty, .. } = stmt {
+                            let mut sz = size_of_type(ty, &struct_sizes, &collect_structs(module));
+                            local_types.insert(name.clone(), ty.clone());
+                            if sz % 8 != 0 { sz += 8 - (sz % 8); }
+                            cur_off += sz;
+                            local_offsets.insert(name.clone(), cur_off);
+                        }
+                    }
+                    let locals_size = local_offsets.values().copied().max().unwrap_or(0);
+                    if locals_size > 0 {
+                        out.push_str(&format!(
+"        push %rbp
+        mov %rsp, %rbp
+        sub ${}, %rsp
+", locals_size));
+                    }
+
                     out.push_str(&format!("{}:\n", func.name));
                     let mut ret_i: i64 = 0;
                     let mut linux_inbuf_emitted: bool = false;
@@ -2634,8 +2771,46 @@ r#"        push %rbx
                                                             _ => slot += 1,
                                                         }
                                                     }
+                                            }
+                                        },
+
+                                            (Expr::Var(vn), aether_frontend::ast::BinOpKind::Gt, Expr::Lit(Value::Int(k))) => {
+                                                let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                let mut slot = 0usize;
+                                                for p in &func.params {
+                                                    if p.name == *vn {
+                                                        let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                        out.push_str(&format!("        cmp {}, {}\n", r, *k as i64));
+                                                        out.push_str(&format!("        jle {}\n", end));
+                                                        handled_cond = true;
+                                                        break;
+                                                    } else {
+                                                        match p.ty {
+                                                            Type::String => slot += 2,
+                                                            _ => slot += 1,
+                                                        }
+                                                    }
                                                 }
                                             }
+                                            (Expr::Var(vn), aether_frontend::ast::BinOpKind::Ge, Expr::Lit(Value::Int(k))) => {
+                                                let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                                let mut slot = 0usize;
+                                                for p in &func.params {
+                                                    if p.name == *vn {
+                                                        let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
+                                                        out.push_str(&format!("        cmp {}, {}\n", r, *k as i64));
+                                                        out.push_str(&format!("        jl {}\n", end));
+                                                        handled_cond = true;
+                                                        break;
+                                                    } else {
+                                                        match p.ty {
+                                                            Type::String => slot += 2,
+                                                            _ => slot += 1,
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            (Expr::Lit(Value::Int(_k)), aether_frontend::ast::BinOpKind::Lt, Expr::Var(_vn)) => { },
                                             (Expr::Var(vn), aether_frontend::ast::BinOpKind::Le, Expr::Lit(Value::Int(k))) => {
                                                 let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
                                                 let mut slot = 0usize;
@@ -2841,6 +3016,7 @@ r#"        push %rbx
                                 bytes.push(b'\n');
                                 let len = s.as_bytes().len() + 1;
                                 let lbl = format!(".LSP_{}_{}", func.name, fi);
+
                                 out.push_str(&format!(
 "        mov $1, %rax
         mov $1, %rdi
@@ -2872,6 +3048,33 @@ r#"        push %rbx
                                         out.push_str(&format!("        mov ${}, %rax\n", v));
                                         linux_emit_print_i64(&mut out);
                                         fi += 1;
+                                    }
+                                    Expr::Deref(inner) => {
+                                        if let aether_frontend::ast::Expr::AddrOf(target) = inner.as_ref() {
+                                            if let Some(pointee_ty) = linux_eval_addr_of_expr_to_rax(target, &mut out, &local_offsets, &local_types, &field_offsets) {
+                                                match pointee_ty {
+                                                    aether_frontend::ast::Type::I32 => {
+                                                        out.push_str("        mov (%rax), %eax\n");
+                                                        linux_emit_print_i64(&mut out);
+                                                        fi += 1;
+                                                    }
+                                                    aether_frontend::ast::Type::I64 => {
+                                                        out.push_str("        mov (%rax), %rax\n");
+                                                        linux_emit_print_i64(&mut out);
+                                                        fi += 1;
+                                                    }
+                                                    aether_frontend::ast::Type::String => {
+                                                        out.push_str("        mov (%rax), %rsi\n");
+                                                        out.push_str("        mov 8(%rax), %rdx\n");
+                                                        out.push_str("        mov $1, %rax\n");
+                                                        out.push_str("        mov $1, %rdi\n");
+                                                        out.push_str("        syscall\n");
+                                                        fi += 1;
+                                                    }
+                                                    _ => {}
+                                                }
+                                            }
+                                        }
                                     }
 
                                     Expr::Call(name, args) => {

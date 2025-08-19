@@ -30,6 +30,8 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
                 BinOpKind::Eq => Some(if lv == rv { 1 } else { 0 }),
                 BinOpKind::Lt => Some(if lv < rv { 1 } else { 0 }),
                 BinOpKind::Le => Some(if lv <= rv { 1 } else { 0 }),
+                BinOpKind::Gt => Some(if lv > rv { 1 } else { 0 }),
+                BinOpKind::Ge => Some(if lv >= rv { 1 } else { 0 }),
             }
         }
         _ => None,
@@ -51,7 +53,7 @@ fn eval_f64_expr(expr: &Expr) -> Option<f64> {
                 BinOpKind::Div => {
                     if rv == 0.0 { None } else { Some(lv / rv) }
                 }
-                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le => None,
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge => None,
             }
         }
         _ => None,

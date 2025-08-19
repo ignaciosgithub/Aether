@@ -206,6 +206,64 @@ fn emit_win_eval_cond_to_rax(
         }
     }
 }
+fn expr_uses_concat(e: &aether_frontend::ast::Expr) -> bool {
+    use aether_frontend::ast::Expr::*;
+    match e {
+        Call(name, args) => {
+            if name == "concat" { return true; }
+            args.iter().any(expr_uses_concat)
+        }
+        MethodCall(recv, _m, args) => expr_uses_concat(recv) || args.iter().any(expr_uses_concat),
+        Field(recv, _f) => expr_uses_concat(recv),
+        Cast(inner, _) => expr_uses_concat(inner),
+        AddrOf(inner) => expr_uses_concat(inner),
+        Deref(inner) => expr_uses_concat(inner),
+        Index(b, i) => expr_uses_concat(b) || expr_uses_concat(i),
+        IfElse { cond, then_expr, else_expr } => expr_uses_concat(cond) || expr_uses_concat(then_expr) || expr_uses_concat(else_expr),
+        BinOp(l, _op, r) => expr_uses_concat(l) || expr_uses_concat(r),
+        ArrayLit(items) => items.iter().any(expr_uses_concat),
+        _ => false,
+    }
+}
+fn stmt_uses_concat(s: &aether_frontend::ast::Stmt) -> bool {
+    use aether_frontend::ast::Stmt::*;
+    match s {
+        Let { init, .. } => expr_uses_concat(init),
+        Assign { target, value } => expr_uses_concat(target) || expr_uses_concat(value),
+        Expr(e) => expr_uses_concat(e),
+        PrintExpr(e) => expr_uses_concat(e),
+        While { cond, body } => expr_uses_concat(cond) || body.iter().any(stmt_uses_concat),
+        Return(e) => expr_uses_concat(e),
+        _ => false,
+    }
+}
+fn module_uses_concat(m: &aether_frontend::ast::Module) -> bool {
+    use aether_frontend::ast::Item::*;
+    for it in &m.items {
+        match it {
+            Function(f) => {
+                if f.body.iter().any(stmt_uses_concat) { return true; }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+fn eval_concat_string(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Lit(Value::String(s)) => Some(s.clone()),
+        Expr::Call(name, args) if name == "concat" && args.len() == 2 => {
+            let a = eval_concat_string(&args[0])?;
+            let b = eval_concat_string(&args[1])?;
+            let mut s = a;
+            s.push_str(&b);
+            Some(s)
+        }
+        _ => None,
+    }
+}
+
+
 fn win_emit_print_newline(out: &mut String) {
     out.push_str(
 r#"        mov r11, rcx
@@ -460,6 +518,84 @@ fn linux_emit_to_int_from_rsi_rdx(out: &mut String) {
 .TOI_OK_%=:
 ");
 }
+fn linux_emit_concat_function(out: &mut String) {
+    out.push_str("\n        .text\n        .globl concat\nconcat:\n");
+    out.push_str(
+r#"        push %rbp
+        mov %rsp, %rbp
+        sub $32, %rsp
+        mov -8(%rbp), %rdi
+        mov -16(%rbp), %rsi
+        mov -24(%rbp), %rdx
+        mov -32(%rbp), %rcx
+"#);
+    out.push_str(
+r#"        mov -16(%rbp), %rax
+        add -32(%rbp), %rax
+        mov %rax, %rdx
+        mov $9, %rax
+        xor %rdi, %rdi
+        mov %rdx, %rsi
+        mov $3, %rdx
+        mov $34, %r10
+        mov $-1, %r8
+        xor %r9, %r9
+        syscall
+"#);
+    out.push_str(
+r#"        mov %rax, %rdi
+        mov -8(%rbp), %rsi
+        mov -16(%rbp), %rcx
+        cld
+        rep movsb
+        mov %rax, %rdi
+        add -16(%rbp), %rdi
+        mov -24(%rbp), %rsi
+        mov -32(%rbp), %rcx
+        rep movsb
+        mov -16(%rbp), %rax
+        add -32(%rbp), %rax
+        mov %rax, %rdx
+        leave
+        ret
+"#);
+}
+fn win_emit_concat_function(out: &mut String) {
+    out.push_str("\nconcat:\n");
+    out.push_str(
+r#"        push rbp
+        mov rbp, rsp
+        sub rsp, 40
+        mov [rbp-8], rcx
+        mov [rbp-16], rdx
+        mov [rbp-24], r8
+        mov dword ptr [rbp-32], r9d
+        mov eax, edx
+        add eax, r9d
+        mov dword ptr [rbp-36], eax
+        sub rsp, 40
+        xor ecx, ecx
+        mov r8d, 0x3000
+        mov r9d, 0x4
+        call VirtualAlloc
+        add rsp, 40
+        mov rdi, rax
+        mov rsi, qword ptr [rbp-8]
+        mov rcx, qword ptr [rbp-16]
+        cld
+        rep movsb
+        mov rdi, rax
+        add rdi, qword ptr [rbp-16]
+        mov rsi, qword ptr [rbp-24]
+        mov ecx, dword ptr [rbp-32]
+        rep movsb
+        mov edx, dword ptr [rbp-36]
+        leave
+        ret
+"#);
+}
+
+
 
 fn win_emit_readln_to_rsi_rdx(out: &mut String, buf_label: &str, len_label: &str) {
     out.push_str(
@@ -771,6 +907,7 @@ r#"        mov r11, rcx
         add rsp, 40
         mov rcx, r11
 "#);
+
 }
 
 impl CodeGenerator for X86_64LinuxCodegen {
@@ -779,6 +916,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
     }
 
     fn generate(&mut self, module: &Module) -> Result<String> {
+        let need_concat = module_uses_concat(module);
         let mut main_func: Option<&aether_frontend::ast::Function> = None;
         let mut exit_code: i64 = 0;
         let mut f64_ret: Option<f64> = None;
@@ -890,7 +1028,17 @@ impl CodeGenerator for X86_64LinuxCodegen {
                             }
                         }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
-                            if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
+                            if name == "concat" && args.len() == 2 {
+                                if let Some(s) = eval_concat_string(&Expr::Call(name.clone(), args.clone())) {
+                                    let mut bytes = s.clone().into_bytes();
+                                    bytes.push(b'\n');
+                                    prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                                } else {
+                                    if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
+                                }
+                            } else {
+                                if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
+                            }
                         }
                         Stmt::PrintExpr(Expr::MethodCall(recv, meth, args)) => {
                             if let Expr::Var(rn) = &**recv {
@@ -3685,6 +3833,65 @@ r#"        syscall
                                                     out.push_str(&format!("        jmp {}\n", join_lbl));
                                                     out.push_str(&format!("{}:\n", else_lbl));
                                                     match &**else_expr {
+                                                        Expr::Call(name,args) => {
+                                                            if name == "concat" && args.len() == 2 {
+                                                                let mut s_labels = Vec::new();
+                                                                for a in args {
+                                                                    if let Expr::Lit(Value::String(sv)) = a {
+                                                                        let lbl = format!(".LCC_{}_{}", func.name, fi);
+                                                                        func_rodata.push((lbl.clone(), sv.clone()));
+                                                                        s_labels.push((lbl, sv.as_bytes().len()));
+                                                                        fi += 1;
+                                                                    }
+                                                                }
+                                                                if s_labels.len() == 2 {
+                                                                    out.push_str(&format!(
+"        leaq {}(%rip), %rdi
+        mov ${}, %rsi
+        leaq {}(%rip), %rdx
+        mov ${}, %rcx
+        sub $8, %rsp
+        call concat
+        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+", s_labels[0].0, s_labels[0].1, s_labels[1].0, s_labels[1].1));
+                                                                    need_nl = true;
+                                                                    out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                                }
+                                                            } else if args.is_empty() {
+                                                                out.push_str(
+"        sub $8, %rsp
+");
+                                                                out.push_str(&format!("        call {}\n", name));
+                                                                out.push_str(
+"        add $8, %rsp
+        mov %rdx, %rdx
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+");
+                                                                need_nl = true;
+                                                                out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                                            }
+                                                        }
+
                                                         Expr::Lit(Value::String(s)) => {
                                                             let mut bytes = s.clone().into_bytes();
                                                             bytes.push(b'\n');
@@ -3831,6 +4038,11 @@ r#"        leaq .LC0(%rip), %rax
                     }
                     out.push_str("\n        .text\n");
                 }
+                if need_concat {
+                    if !out.contains("\nconcat:\n") && !out.contains("\n        .globl concat\nconcat:\n") {
+                        linux_emit_concat_function(&mut out);
+                    }
+                }
                 Ok(out.trim_start().to_string())
             }
             TargetOs::Windows => {
@@ -3847,6 +4059,7 @@ r#"
         .extern GetStdHandle
         .extern WriteFile
         .extern ReadFile
+        .extern VirtualAlloc
         .global main
         .text
 main:
@@ -3950,6 +4163,8 @@ LWININLEN_main:
                                                     win_inbuf_emitted = true;
                                                 }
                                                 if !win_stdin_inited {
+
+
                                                     out.push_str(
 r#"        sub rsp, 40
         mov ecx, -10
@@ -3969,6 +4184,45 @@ r#"        sub rsp, 40
                                         }
                                         win_need_lsnl = true;
                                         continue;
+                                    }
+                                } else if name == "concat" && args.len() == 2 {
+                                    let mut lbls: Vec<(String, usize)> = Vec::new();
+                                    for a in args {
+                                        if let Expr::Lit(Value::String(sv)) = a {
+                                            let lbl = format!("LCC_{}_{}", f.name, win_order_ls_idx);
+                                            win_order_ls.push((lbl.clone(), sv.clone()));
+                                            win_order_ls_idx += 1;
+                                            lbls.push((lbl, sv.as_bytes().len()));
+                                        }
+                                    }
+                                    if lbls.len() == 2 {
+                                        out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+"#);
+                                        out.push_str(&format!("        lea rcx, [rip+{}]\n", lbls[0].0));
+                                        out.push_str(&format!("        mov edx, {}\n", lbls[0].1 as i32));
+                                        out.push_str(&format!("        lea r8, [rip+{}]\n", lbls[1].0));
+                                        out.push_str(&format!("        mov r9d, {}\n", lbls[1].1 as i32));
+                                        out.push_str(
+r#"        call concat
+        add rsp, 40
+        mov rcx, r11
+"#);
+                                        out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+        mov r8d, edx
+        mov rdx, rax
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+                                        win_emit_print_newline(&mut out);
+                                        win_need_lsnl = false;
                                     }
                                 } else {
                                     if !args.is_empty() {
@@ -5771,9 +6025,16 @@ r#"        pop r12
                     out.push_str("\n        .data\nLSNL:\n        .byte 10\n        .text\n");
                 }
 
+                if need_concat {
+                    if !out.contains("\nconcat:\n") {
+                        win_emit_concat_function(&mut out);
+                    }
+                }
+
                 Ok(out.trim_start().to_string())
             }
             _ => Ok(String::from("; unsupported OS placeholder")),
         }
+
     }
 }

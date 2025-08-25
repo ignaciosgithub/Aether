@@ -19,7 +19,7 @@ fn windows_supports_recursive_call_codegen() {
                 Expr::Mul(
                     Box::new(Expr::Var("n".into())),
                     Box::new(Expr::Call("fact".into(), vec![
-                        Expr::Sub(Box::new(Expr::Var("n".into())), Box::new(Expr::Lit(Value::Int(1))))
+                        Expr::BinOp(Box::new(Expr::Var("n".into())), BinOpKind::Sub, Box::new(Expr::Lit(Value::Int(1))))
                     ]))
                 )
             ),

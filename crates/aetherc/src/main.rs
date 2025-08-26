@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, ValueEnum};
-use std::{fs, path::PathBuf};
-use aether_frontend::parse_source;
+use std::path::PathBuf;
+use std::fs;
+use aether_frontend::parse_file_with_imports;
 use aether_codegen::{CodeGenerator, Target, TargetArch, TargetOs};
 use aether_backend_x86_64::X86_64LinuxCodegen;
 use aether_backend_aarch64::AArch64Codegen;
@@ -55,8 +56,7 @@ fn main() -> Result<()> {
     env_logger::init();
     let cli = Cli::parse();
 
-    let src = fs::read_to_string(&cli.input)?;
-    let module = parse_source(&src)?;
+    let module = parse_file_with_imports(&cli.input)?;
 
     let target = detect_target(&cli.arch, &cli.os);
 

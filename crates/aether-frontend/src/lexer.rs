@@ -46,12 +46,13 @@ pub enum TokenKind {
     Struct,
     Static,
     Let,
-    Le,   // <=
-    Lt,   // <
-    Eq,   // ==
-    Ge,   // >=
-    Gt,   // >
-    StringType, // type keyword: String
+    Import,
+    Le,
+    Lt,
+    Eq,
+    Ge,
+    Gt,
+    StringType,
     Ampersand,
     Eof,
 }
@@ -139,6 +140,7 @@ impl Lexer {
                     "struct" => TokenKind::Struct,
                     "static" => TokenKind::Static,
                     "let" => TokenKind::Let,
+                    "import" => TokenKind::Import,
                     "string" | "String" => TokenKind::StringType,
                     _ => TokenKind::Ident(s.to_string()),
                 };

@@ -38,6 +38,16 @@ impl<'a> Parser<'a> {
         if self.eat_kind(&TokenKind::Pub) {
             is_pub = true;
         }
+        if self.eat_kind(&TokenKind::Import) {
+            let path = if let Some(TokenKind::String(s)) = self.peek().map(|t| t.kind.clone()) {
+                self.pos += 1;
+                s
+            } else {
+                return Err(anyhow!("expected string path after 'import'"));
+            };
+            self.expect(&TokenKind::Semicolon)?;
+            return Ok(Some(Item::Import(path)));
+        }
         if self.eat_kind(&TokenKind::Func) {
             let f = self.parse_function(is_pub)?;
             return Ok(Some(Item::Function(f)));

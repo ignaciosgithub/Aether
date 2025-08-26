@@ -146,6 +146,15 @@ Examples in examples/*.ae:
 
 See docs/language.md for syntax, types, println, and OO layout details.
 
+### Imports (MVP)
+
+- Syntax: import "relative/or/absolute/path.ae";
+- Behavior: merges public symbols (pub) from the imported file into the current module (no namespacing yet).
+- Path resolution: relative paths are resolved against the importing file’s directory; absolute paths are used as-is.
+- Cycles: circular imports produce an error.
+- Example:
+  - See examples/import_basic/main.ae and examples/import_basic/lib.ae
+
 ## Printing
 
 - println(String) works across Linux x86_64, Windows x86_64, and AArch64 Linux.

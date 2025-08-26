@@ -1,0 +1,2 @@
+import "lib.ae";
+pub func main() -> i32 { return inc(41); }

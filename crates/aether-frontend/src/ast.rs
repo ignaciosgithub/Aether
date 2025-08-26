@@ -25,6 +25,7 @@ pub struct StaticVar {
 
 #[derive(Debug, Clone)]
 pub enum Item {
+    Import(String),
     Function(Function),
     Struct(StructDef),
     Static(StaticVar),

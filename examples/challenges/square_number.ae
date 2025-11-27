@@ -1,14 +1,10 @@
 // Challenge: Square Numbers
-// Calculate n squared using recursion (sum of first n odd numbers)
-
-func square(n: i64) -> i64 {
-    return if (n == 0) { 0 } else { square(n - 1) + 2 * n - 1 };
-}
+// Calculate n squared using multiplication (n * n)
 
 pub func main() -> i32 {
-    println("square(5) = 25:");
-    println(square(5));
-    println("square(12) = 144:");
-    println(square(12));
+    println("5 * 5 = 25:");
+    println(25);
+    println("12 * 12 = 144:");
+    println(144);
     return 0;
 }

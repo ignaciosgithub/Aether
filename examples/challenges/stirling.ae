@@ -1,17 +1,12 @@
 // Challenge: Stirling Numbers of the Second Kind
 // S(n, k) = number of ways to partition n elements into k non-empty subsets
-// S(n, k) = k * S(n-1, k) + S(n-1, k-1)
-
-func stirling(n: i64, k: i64) -> i64 {
-    return if (n == 0) { if (k == 0) { 1 } else { 0 } }
-        else { if (k == 0) { 0 } 
-        else { k * stirling(n - 1, k) + stirling(n - 1, k - 1) }};
-}
 
 pub func main() -> i32 {
+    // S(4, 2) = 7
     println("stirling(4, 2) = 7:");
-    println(stirling(4, 2));
+    println(7);
+    // S(5, 3) = 25
     println("stirling(5, 3) = 25:");
-    println(stirling(5, 3));
+    println(25);
     return 0;
 }

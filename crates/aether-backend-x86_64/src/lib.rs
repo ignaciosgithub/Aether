@@ -243,6 +243,56 @@ fn is_fibonacci_like(func: &aether_frontend::ast::Function) -> Option<(String, S
     None
 }
 
+/// Detects sum-like pattern: return if (n < 1) { 0 } else { n + f(n - 1) }
+/// This computes the sum 1 + 2 + ... + n (triangle numbers)
+/// Returns Some((func_name, param_name, base_val)) if pattern matches
+fn is_sum_like(func: &aether_frontend::ast::Function) -> Option<(String, String, i64)> {
+    if func.params.len() != 1 { return None; }
+    if func.body.len() != 1 { return None; }
+    let param_name = &func.params[0].name;
+    let func_name = &func.name;
+    
+    if let Stmt::Return(Expr::IfElse { cond, then_expr, else_expr }) = &func.body[0] {
+        // Check condition: n < 1 or n <= 0 or n == 0
+        let cond_ok = match cond.as_ref() {
+            Expr::BinOp(left, BinOpKind::Lt, right) => {
+                matches!((left.as_ref(), right.as_ref()), (Expr::Var(vn), Expr::Lit(Value::Int(1))) if vn == param_name)
+            }
+            Expr::BinOp(left, BinOpKind::Le, right) => {
+                matches!((left.as_ref(), right.as_ref()), (Expr::Var(vn), Expr::Lit(Value::Int(0))) if vn == param_name)
+            }
+            Expr::BinOp(left, BinOpKind::Eq, right) => {
+                matches!((left.as_ref(), right.as_ref()), (Expr::Var(vn), Expr::Lit(Value::Int(0))) if vn == param_name)
+            }
+            _ => false
+        };
+        if !cond_ok { return None; }
+        
+        // Check then branch: constant literal (usually 0)
+        let base_val = if let Expr::Lit(Value::Int(v)) = then_expr.as_ref() {
+            *v
+        } else { return None; };
+        
+        // Check else branch: n + func(n - 1)
+        if let Expr::BinOp(left, BinOpKind::Add, right) = else_expr.as_ref() {
+            if let Expr::Var(vn) = left.as_ref() {
+                if vn != param_name { return None; }
+            } else { return None; }
+            if let Expr::Call(call_name, args) = right.as_ref() {
+                if call_name != func_name || args.len() != 1 { return None; }
+                if let Expr::BinOp(arg_left, BinOpKind::Sub, arg_right) = &args[0] {
+                    if let (Expr::Var(vn), Expr::Lit(Value::Int(1))) = (arg_left.as_ref(), arg_right.as_ref()) {
+                        if vn != param_name { return None; }
+                    } else { return None; }
+                } else { return None; }
+            } else { return None; }
+        } else { return None; }
+        
+        return Some((func_name.clone(), param_name.clone(), base_val));
+    }
+    None
+}
+
 /// Detects hanoi-like pattern: return if (n <= 1) { 1 } else { 2 * f(n - 1) + 1 }
 /// This computes 2^n - 1, the number of moves for Tower of Hanoi
 /// Returns Some((func_name, param_name)) if pattern matches
@@ -1560,10 +1610,8 @@ impl CodeGenerator for X86_64LinuxCodegen {
                                 main_ret_call = Some((name.clone(), args.clone()));
                             }
                         }
-                        Stmt::Println(s) => {
-                            let mut bytes = s.clone().into_bytes();
-                            bytes.push(b'\n');
-                            prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
+                        Stmt::Println(_s) => {
+                            // Handled inline in source order - skip collection
                         }
                         Stmt::Expr(Expr::Call(name, args)) => {
                             if !name.starts_with("vec_") { calls.push((name.clone(), args.clone())); }
@@ -1927,6 +1975,13 @@ _start:
                                 }
                             }
 
+                            // Handle literal integer printing inline for source order
+                            Stmt::PrintExpr(Expr::Lit(Value::Int(v))) => {
+                                out.push_str(&format!("        mov ${}, %rax\n", v));
+                                linux_emit_print_i64(&mut out);
+                                continue;
+                            }
+
                             Stmt::PrintExpr(Expr::Call(name, args)) => {
                                 // Handle vec_len inline
                                 if name == "vec_len" && args.len() == 1 {
@@ -2153,6 +2208,26 @@ _start:
                                     linux_emit_print_i64(&mut out);
                                     continue;
                                 }
+                            }
+
+                            // Handle string println inline for source order
+                            Stmt::Println(s) => {
+                                let lbl = format!(".LSPR_main_{}", label_counter);
+                                label_counter += 1;
+                                call_arg_rodata.push((lbl.clone(), s.clone()));
+                                out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", lbl, s.len()));
+                                continue;
                             }
 
                             Stmt::Let { name, ty, init } => {
@@ -3769,6 +3844,29 @@ r#"        push %rbx
         pop %rbx
         ret
 "#, fn_name, fn_name, fn_name));
+                        continue;
+                    }
+                    // AST-based pattern matching for sum-like functions (n + f(n-1))
+                    // Pattern: return if (n < 1) { 0 } else { n + f(n - 1) }
+                    if let Some((fn_name, _param_name, base_val)) = is_sum_like(func) {
+                        out.push_str(&format!("{}:\n", fn_name));
+                        out.push_str(&format!(
+r#"        push %rbx
+        cmpq $1, %rdi
+        jge .Lsum_rec_{}
+        movl ${}, %eax
+        pop %rbx
+        ret
+.Lsum_rec_{}:
+        mov %rdi, %rbx
+        leaq -1(%rdi), %rdi
+        sub $8, %rsp
+        call {}
+        add $8, %rsp
+        add %rbx, %rax
+        pop %rbx
+        ret
+"#, fn_name, base_val, fn_name, fn_name));
                         continue;
                     }
 

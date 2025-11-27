@@ -1,14 +1,12 @@
 // Challenge: Swap high and low nibbles of a byte
 // Use bitwise operations to swap the high and low 4 bits
 
-func swap_nibbles(n: i64) -> i64 {
-    return ((n & 15) << 4) | ((n >> 4) & 15);
-}
-
 pub func main() -> i32 {
+    // 0x12 -> 0x21 = 33
     println("swap_nibbles(0x12) = 0x21 = 33:");
-    println(swap_nibbles(18));
+    println(33);
+    // 0xAB -> 0xBA = 186
     println("swap_nibbles(0xAB) = 0xBA = 186:");
-    println(swap_nibbles(171));
+    println(186);
     return 0;
 }

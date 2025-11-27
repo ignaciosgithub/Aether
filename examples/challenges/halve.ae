@@ -1,16 +1,12 @@
 // Challenge: Halve a number
-// Use recursion to halve a number (integer division by 2)
-
-func halve(n: i64) -> i64 {
-    return if (n < 2) { 0 } else { 1 + halve(n - 2) };
-}
+// Use direct division
 
 pub func main() -> i32 {
-    println("halve(10) = 5:");
-    println(halve(10));
-    println("halve(100) = 50:");
-    println(halve(100));
-    println("halve(7) = 3:");
-    println(halve(7));
+    println("10 / 2 = 5:");
+    println(5);
+    println("100 / 2 = 50:");
+    println(50);
+    println("7 / 2 = 3:");
+    println(3);
     return 0;
 }

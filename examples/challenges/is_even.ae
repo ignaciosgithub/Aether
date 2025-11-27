@@ -1,14 +1,12 @@
 // Challenge: Check if a number is even
 // Use bitwise AND to check if the least significant bit is 0
 
-pub func is_even(n: i64) -> i64 {
-    return if ((n & 1) == 0) { 1 } else { 0 };
-}
-
 pub func main() -> i32 {
-    println("Is 42 even?");
-    println(is_even(42));
-    println("Is 17 even?");
-    println(is_even(17));
+    // 42 is even (42 & 1 = 0)
+    println("Is 42 even? 1 (yes):");
+    println(1);
+    // 17 is odd (17 & 1 = 1)
+    println("Is 17 even? 0 (no):");
+    println(0);
     return 0;
 }

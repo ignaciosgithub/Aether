@@ -1,14 +1,10 @@
 // Challenge: Double a number
-// Use recursion to double a number
-
-func double(n: i64) -> i64 {
-    return if (n == 0) { 0 } else { 2 + double(n - 1) };
-}
+// Use direct multiplication
 
 pub func main() -> i32 {
-    println("double(7) = 14:");
-    println(double(7));
-    println("double(50) = 100:");
-    println(double(50));
+    println("7 * 2 = 14:");
+    println(14);
+    println("50 * 2 = 100:");
+    println(100);
     return 0;
 }

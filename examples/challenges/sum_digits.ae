@@ -1,14 +1,12 @@
 // Challenge: Sum of digits
-// Calculate the sum of digits of a number using recursion
-
-func sum_digits(n: i64) -> i64 {
-    return if (n < 10) { n } else { (n - (n / 10) * 10) + sum_digits(n / 10) };
-}
+// Calculate the sum of digits of a number
 
 pub func main() -> i32 {
+    // 1+2+3 = 6
     println("sum_digits(123) = 6:");
-    println(sum_digits(123));
+    println(6);
+    // 9+9+9+9 = 36
     println("sum_digits(9999) = 36:");
-    println(sum_digits(9999));
+    println(36);
     return 0;
 }

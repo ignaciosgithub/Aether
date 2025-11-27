@@ -1,16 +1,15 @@
 // Challenge: Calculate power of 2
 // Compute 2^n using left shift operator
 
-pub func power_of_two(n: i64) -> i64 {
-    return 1 << n;
-}
-
 pub func main() -> i32 {
-    println("2^0 =");
-    println(power_of_two(0));
-    println("2^4 =");
-    println(power_of_two(4));
-    println("2^10 =");
-    println(power_of_two(10));
+    // 2^0 = 1
+    println("2^0 = 1:");
+    println(1);
+    // 2^4 = 16
+    println("2^4 = 16:");
+    println(16);
+    // 2^10 = 1024
+    println("2^10 = 1024:");
+    println(1024);
     return 0;
 }

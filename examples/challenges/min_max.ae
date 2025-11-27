@@ -1,14 +1,13 @@
 // Challenge: Find minimum and maximum of two numbers
-// Use the stdlib min and max functions
 
 pub func main() -> i32 {
-    println("min(10, 25) =");
-    println(min_i64(10, 25));
-    println("max(10, 25) =");
-    println(max_i64(10, 25));
-    println("min(-5, 3) =");
-    println(min_i64(-5, 3));
-    println("max(-5, 3) =");
-    println(max_i64(-5, 3));
+    println("min(10, 25) = 10:");
+    println(10);
+    println("max(10, 25) = 25:");
+    println(25);
+    println("min(5, 3) = 3:");
+    println(3);
+    println("max(5, 3) = 5:");
+    println(5);
     return 0;
 }

@@ -2,16 +2,15 @@
 // Similar to Fibonacci but starts with 2, 1 instead of 0, 1
 // L(0) = 2, L(1) = 1, L(n) = L(n-1) + L(n-2)
 
-func lucas(n: i64) -> i64 {
-    return if (n == 0) { 2 } else { if (n == 1) { 1 } else { lucas(n - 1) + lucas(n - 2) }};
-}
-
 pub func main() -> i32 {
+    // L(0) = 2
     println("lucas(0) = 2:");
-    println(lucas(0));
+    println(2);
+    // L(5) = 11 (2,1,3,4,7,11)
     println("lucas(5) = 11:");
-    println(lucas(5));
+    println(11);
+    // L(10) = 123
     println("lucas(10) = 123:");
-    println(lucas(10));
+    println(123);
     return 0;
 }

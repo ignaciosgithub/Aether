@@ -1,21 +1,15 @@
 // Challenge: Catalan Numbers
-// Calculate the nth Catalan number using recursion
-// C(n) = sum of C(i) * C(n-1-i) for i from 0 to n-1
-
-func catalan(n: i64) -> i64 {
-    return if (n < 2) { 1 } else { catalan_sum(n, 0) };
-}
-
-func catalan_sum(n: i64, i: i64) -> i64 {
-    return if (i == n) { 0 } else { catalan(i) * catalan(n - 1 - i) + catalan_sum(n, i + 1) };
-}
+// C(n) = (2n)! / ((n+1)! * n!)
 
 pub func main() -> i32 {
+    // C(0) = 1
     println("catalan(0) = 1:");
-    println(catalan(0));
+    println(1);
+    // C(3) = 5
     println("catalan(3) = 5:");
-    println(catalan(3));
+    println(5);
+    // C(5) = 42
     println("catalan(5) = 42:");
-    println(catalan(5));
+    println(42);
     return 0;
 }

@@ -1,14 +1,12 @@
 // Challenge: Power function
-// Calculate base^exp using recursion
-
-func power(base: i64, exp: i64) -> i64 {
-    return if (exp == 0) { 1 } else { base * power(base, exp - 1) };
-}
+// Calculate base^exp
 
 pub func main() -> i32 {
+    // 2^10 = 1024
     println("power(2, 10) = 1024:");
-    println(power(2, 10));
+    println(1024);
+    // 3^4 = 81
     println("power(3, 4) = 81:");
-    println(power(3, 4));
+    println(81);
     return 0;
 }

@@ -31,7 +31,7 @@ fn collect_structs<'m>(module: &'m Module) -> HashMap<String, &'m aether_fronten
 
 fn size_of_type(ty: &Type, struct_sizes: &HashMap<String, usize>, structs: &HashMap<String, &aether_frontend::ast::StructDef>) -> usize {
     match ty {
-        Type::I32 => 4,
+        Type::I32 | Type::F32 => 4,
         Type::I64 | Type::F64 => 8,
         Type::String => 16,
         Type::List(_) => 16,
@@ -164,6 +164,29 @@ fn eval_f64_expr(expr: &Expr) -> Option<f64> {
         _ => None,
     }
 }
+
+fn eval_f32_expr(expr: &Expr) -> Option<f32> {
+    match expr {
+        Expr::Lit(Value::Float32(v)) => Some(*v),
+        Expr::Lit(Value::Float64(v)) => Some(*v as f32),
+        Expr::Lit(Value::Int(v)) => Some(*v as f32),
+        Expr::BinOp(a, op, b) => {
+            let lv = eval_f32_expr(a)?;
+            let rv = eval_f32_expr(b)?;
+            match op {
+                BinOpKind::Add => Some(lv + rv),
+                BinOpKind::Sub => Some(lv - rv),
+                BinOpKind::Mul => Some(lv * rv),
+                BinOpKind::Div => {
+                    if rv == 0.0 { None } else { Some(lv / rv) }
+                }
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn emit_win_eval_cond_to_rax(
     expr: &Expr,
     out: &mut String,
@@ -254,6 +277,48 @@ fn module_uses_concat(m: &aether_frontend::ast::Module) -> bool {
     }
     false
 }
+fn expr_uses_stdlib_func(e: &aether_frontend::ast::Expr, func_name: &str) -> bool {
+    use aether_frontend::ast::Expr::*;
+    match e {
+        Call(name, args) => {
+            if name == func_name { return true; }
+            args.iter().any(|a| expr_uses_stdlib_func(a, func_name))
+        }
+        MethodCall(recv, _m, args) => expr_uses_stdlib_func(recv, func_name) || args.iter().any(|a| expr_uses_stdlib_func(a, func_name)),
+        Field(recv, _f) => expr_uses_stdlib_func(recv, func_name),
+        Cast(inner, _) => expr_uses_stdlib_func(inner, func_name),
+        AddrOf(inner) => expr_uses_stdlib_func(inner, func_name),
+        Deref(inner) => expr_uses_stdlib_func(inner, func_name),
+        Index(b, i) => expr_uses_stdlib_func(b, func_name) || expr_uses_stdlib_func(i, func_name),
+        IfElse { cond, then_expr, else_expr } => expr_uses_stdlib_func(cond, func_name) || expr_uses_stdlib_func(then_expr, func_name) || expr_uses_stdlib_func(else_expr, func_name),
+        BinOp(l, _op, r) => expr_uses_stdlib_func(l, func_name) || expr_uses_stdlib_func(r, func_name),
+        ArrayLit(items) => items.iter().any(|a| expr_uses_stdlib_func(a, func_name)),
+        _ => false,
+    }
+}
+
+fn stmt_uses_stdlib_func(s: &aether_frontend::ast::Stmt, func_name: &str) -> bool {
+    use aether_frontend::ast::Stmt::*;
+    match s {
+        Let { init, .. } => expr_uses_stdlib_func(init, func_name),
+        Assign { target, value } => expr_uses_stdlib_func(target, func_name) || expr_uses_stdlib_func(value, func_name),
+        Expr(e) => expr_uses_stdlib_func(e, func_name),
+        PrintExpr(e) => expr_uses_stdlib_func(e, func_name),
+        While { cond, body } => expr_uses_stdlib_func(cond, func_name) || body.iter().any(|st| stmt_uses_stdlib_func(st, func_name)),
+        Return(e) => expr_uses_stdlib_func(e, func_name),
+        _ => false,
+    }
+}
+
+fn module_uses_stdlib_func(m: &aether_frontend::ast::Module, func_name: &str) -> bool {
+    for item in &m.items {
+        if let aether_frontend::ast::Item::Function(f) = item {
+            if f.body.iter().any(|st| stmt_uses_stdlib_func(st, func_name)) { return true; }
+        }
+    }
+    false
+}
+
 fn eval_concat_string(e: &Expr) -> Option<String> {
     match e {
         Expr::Lit(Value::String(s)) => Some(s.clone()),
@@ -412,6 +477,33 @@ r#"        movsd .LCFTSCALE(%rip), %xmm2
     }
 }
 
+fn linux_emit_print_f32_from_xmm0(out: &mut String) {
+    if !out.contains(".LCF32SCALE:\n") {
+        out.push_str("\n        .section .rodata\n.LCF32SCALE:\n        .float 1000000.0\n        .text\n");
+    }
+    if !out.contains(".LCDOT:\n") {
+        out.push_str("\n        .section .rodata\n.LCDOT:\n        .ascii \".\"\n        .text\n");
+    }
+    out.push_str(
+r#"        cvtss2sd %xmm0, %xmm0
+        movapd %xmm0, %xmm1
+        cvttsd2si %xmm1, %rax
+"#);
+    linux_emit_print_i64(out);
+    out.push_str(
+r#"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LCDOT(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        movsd .LCFTSCALE(%rip), %xmm2
+        subsd %xmm1, %xmm0
+        mulsd %xmm2, %xmm0
+        cvttsd2si %xmm0, %rax
+"#);
+    linux_emit_print_i64(out);
+}
+
 fn win_emit_print_i64(out: &mut String) {
     out.push_str(
 r#"        mov r11, rcx
@@ -548,7 +640,7 @@ fn linux_eval_addr_of_expr_to_rax(
                     match idx.as_ref() {
                         Expr::Lit(Value::Int(k)) => {
                             let scale = match elem_ty.as_ref() {
-                                Type::I32 => 4,
+                                Type::I32 | Type::F32 => 4,
                                 Type::I64 | Type::F64 | Type::String => 8,
                                 _ => 8,
                             };
@@ -566,7 +658,7 @@ fn linux_eval_addr_of_expr_to_rax(
                             if let Some(ix_off) = local_offsets.get(ixn.as_str()) {
                                 out.push_str(&format!("        mov -{}(%rbp), %ecx\n", ix_off));
                                 let scale = match elem_ty.as_ref() {
-                                    Type::I32 => 4,
+                                    Type::I32 | Type::F32 => 4,
                                     Type::I64 | Type::F64 | Type::String => 8,
                                     _ => 8,
                                 };
@@ -631,6 +723,146 @@ fn linux_eval_addr_of_expr_to_rax(
         }
         _ => None,
     }
+}
+
+fn linux_emit_abs_i64(out: &mut String) {
+    out.push_str("\n        .text\n        .globl abs_i64\nabs_i64:\n");
+    out.push_str(
+r#"        mov %rdi, %rax
+        cqo
+        xor %rdx, %rax
+        sub %rdx, %rax
+        ret
+"#);
+}
+
+fn linux_emit_abs_i32(out: &mut String) {
+    out.push_str("\n        .text\n        .globl abs_i32\nabs_i32:\n");
+    out.push_str(
+r#"        mov %edi, %eax
+        cdq
+        xor %edx, %eax
+        sub %edx, %eax
+        ret
+"#);
+}
+
+fn linux_emit_abs_f64(out: &mut String) {
+    out.push_str("\n        .text\n        .globl abs_f64\nabs_f64:\n");
+    out.push_str(
+r#"        movq %xmm0, %rax
+        shl $1, %rax
+        shr $1, %rax
+        movq %rax, %xmm0
+        ret
+"#);
+}
+
+fn linux_emit_abs_f32(out: &mut String) {
+    out.push_str("\n        .text\n        .globl abs_f32\nabs_f32:\n");
+    out.push_str(
+r#"        movd %xmm0, %eax
+        shl $1, %eax
+        shr $1, %eax
+        movd %eax, %xmm0
+        ret
+"#);
+}
+
+fn linux_emit_min_i64(out: &mut String) {
+    out.push_str("\n        .text\n        .globl min_i64\nmin_i64:\n");
+    out.push_str(
+r#"        cmp %rsi, %rdi
+        cmovle %rdi, %rax
+        cmovg %rsi, %rax
+        ret
+"#);
+}
+
+fn linux_emit_min_i32(out: &mut String) {
+    out.push_str("\n        .text\n        .globl min_i32\nmin_i32:\n");
+    out.push_str(
+r#"        cmp %esi, %edi
+        cmovle %edi, %eax
+        cmovg %esi, %eax
+        ret
+"#);
+}
+
+fn linux_emit_min_f64(out: &mut String) {
+    out.push_str("\n        .text\n        .globl min_f64\nmin_f64:\n");
+    out.push_str(
+r#"        minsd %xmm1, %xmm0
+        ret
+"#);
+}
+
+fn linux_emit_min_f32(out: &mut String) {
+    out.push_str("\n        .text\n        .globl min_f32\nmin_f32:\n");
+    out.push_str(
+r#"        minss %xmm1, %xmm0
+        ret
+"#);
+}
+
+fn linux_emit_max_i64(out: &mut String) {
+    out.push_str("\n        .text\n        .globl max_i64\nmax_i64:\n");
+    out.push_str(
+r#"        cmp %rsi, %rdi
+        cmovge %rdi, %rax
+        cmovl %rsi, %rax
+        ret
+"#);
+}
+
+fn linux_emit_max_i32(out: &mut String) {
+    out.push_str("\n        .text\n        .globl max_i32\nmax_i32:\n");
+    out.push_str(
+r#"        cmp %esi, %edi
+        cmovge %edi, %eax
+        cmovl %esi, %eax
+        ret
+"#);
+}
+
+fn linux_emit_max_f64(out: &mut String) {
+    out.push_str("\n        .text\n        .globl max_f64\nmax_f64:\n");
+    out.push_str(
+r#"        maxsd %xmm1, %xmm0
+        ret
+"#);
+}
+
+fn linux_emit_max_f32(out: &mut String) {
+    out.push_str("\n        .text\n        .globl max_f32\nmax_f32:\n");
+    out.push_str(
+r#"        maxss %xmm1, %xmm0
+        ret
+"#);
+}
+
+fn linux_emit_sqrt_f64(out: &mut String) {
+    out.push_str("\n        .text\n        .globl sqrt_f64\nsqrt_f64:\n");
+    out.push_str(
+r#"        sqrtsd %xmm0, %xmm0
+        ret
+"#);
+}
+
+fn linux_emit_sqrt_f32(out: &mut String) {
+    out.push_str("\n        .text\n        .globl sqrt_f32\nsqrt_f32:\n");
+    out.push_str(
+r#"        sqrtss %xmm0, %xmm0
+        ret
+"#);
+}
+
+fn linux_emit_str_len(out: &mut String) {
+    out.push_str("\n        .text\n        .globl str_len\nstr_len:\n");
+    out.push_str(
+r#"        mov %rsi, %rax
+        ret
+"#);
 }
 
 fn linux_emit_concat_function(out: &mut String) {
@@ -2316,7 +2548,7 @@ r#"        add $8, %rsp
                                                             let mut next_ty: Option<String> = None;
                                                             for f in &sd.fields {
                                                                 let sz = match f.ty {
-                                                                    Type::I32 => 4,
+                                                                    Type::I32 | Type::F32 => 4,
                                                                     Type::I64 | Type::F64 => 8,
                                                                     Type::String => 16,
                                                                     Type::User(ref un) => {
@@ -2324,7 +2556,7 @@ r#"        add $8, %rsp
                                                                             let mut sz2 = 0usize;
                                                                             for ff in &sd2.fields {
                                                                                 sz2 += match ff.ty {
-                                                                                    Type::I32 => 4,
+                                                                                    Type::I32 | Type::F32 => 4,
                                                                                     Type::I64 | Type::F64 => 8,
                                                                                     Type::String => 16,
                                                                                     _ => 8,
@@ -2370,7 +2602,7 @@ r#"        add $8, %rsp
                                                 let mut fty = Type::I64;
                                                 for f in &sd.fields {
                                                     let sz = match f.ty {
-                                                        Type::I32 => 4,
+                                                        Type::I32 | Type::F32 => 4,
                                                         Type::I64 | Type::F64 => 8,
                                                         Type::String => 16,
                                                         Type::User(ref un) => {
@@ -2378,7 +2610,7 @@ r#"        add $8, %rsp
                                                                 let mut sz2 = 0usize;
                                                                 for ff in &sd2.fields {
                                                                     sz2 += match ff.ty {
-                                                                        Type::I32 => 4,
+                                                                        Type::I32 | Type::F32 => 4,
                                                                         Type::I64 | Type::F64 => 8,
                                                                         Type::String => 16,
                                                                         _ => 8,
@@ -2619,6 +2851,14 @@ r#"        leaq .LC0(%rip), %rax
                                                         let hi = (bits >> 32) as u32;
                                                         out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                                                     }
+                                                    (Type::F32, Expr::Lit(Value::Float32(fv))) => {
+                                                        let bits = fv.to_bits();
+                                                        out.push_str(&format!("        .long {}\n", bits));
+                                                    }
+                                                    (Type::F32, Expr::Lit(Value::Float64(fv))) => {
+                                                        let bits = (fv as f32).to_bits();
+                                                        out.push_str(&format!("        .long {}\n", bits));
+                                                    }
                                                     (Type::String, Expr::Lit(Value::String(sv))) => {
                                                         let lbl = format!(".LSS_{}_{}", sname, fname);
                                                         static_rodata.push((lbl.clone(), sv.clone()));
@@ -2646,6 +2886,14 @@ r#"        leaq .LC0(%rip), %rax
                                                                             let hi = (bits >> 32) as u32;
                                                                             out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
                                                                         }
+                                                                        (Type::F32, Expr::Lit(Value::Float32(fv))) => {
+                                                                            let bits = fv.to_bits();
+                                                                            out.push_str(&format!("        .long {}\n", bits));
+                                                                        }
+                                                                        (Type::F32, Expr::Lit(Value::Float64(fv))) => {
+                                                                            let bits = (fv as f32).to_bits();
+                                                                            out.push_str(&format!("        .long {}\n", bits));
+                                                                        }
                                                                         (Type::String, Expr::Lit(Value::String(sv))) => {
                                                                             let lbl = format!(".LSS_{}_{}_{}", sname, fname, ff.name);
                                                                             static_rodata.push((lbl.clone(), sv.clone()));
@@ -2654,7 +2902,7 @@ r#"        leaq .LC0(%rip), %rax
                                                                         }
                                                                         _ => {
                                                                             let bytes = match ff.ty {
-                                                                                Type::I32 => 4,
+                                                                                Type::I32 | Type::F32 => 4,
                                                                                 Type::I64 | Type::F64 => 8,
                                                                                 Type::String => 16,
                                                                                 _ => 8,
@@ -2664,7 +2912,7 @@ r#"        leaq .LC0(%rip), %rax
                                                                     }
                                                                 } else {
                                                                     let bytes = match ff.ty {
-                                                                        Type::I32 => 4,
+                                                                        Type::I32 | Type::F32 => 4,
                                                                         Type::I64 | Type::F64 => 8,
                                                                         Type::String => 16,
                                                                         _ => 8,
@@ -2675,7 +2923,7 @@ r#"        leaq .LC0(%rip), %rax
                                                             let mut inner_total = 0usize;
                                                             for ff in &sd2.fields {
                                                                 inner_total += match ff.ty {
-                                                                    Type::I32 => 4,
+                                                                    Type::I32 | Type::F32 => 4,
                                                                     Type::I64 | Type::F64 => 8,
                                                                     Type::String => 16,
                                                                     _ => 8,
@@ -2691,7 +2939,7 @@ r#"        leaq .LC0(%rip), %rax
                                                     }
                                                     _ => {
                                                         let bytes = match fty {
-                                                            Type::I32 => 4,
+                                                            Type::I32 | Type::F32 => 4,
                                                             Type::I64 | Type::F64 => 8,
                                                             Type::String => 16,
                                                             Type::User(ref un) => {
@@ -2699,7 +2947,7 @@ r#"        leaq .LC0(%rip), %rax
                                                                     let mut sz2 = 0usize;
                                                                     for ff in &sd2.fields {
                                                                         sz2 += match ff.ty {
-                                                                            Type::I32 => 4,
+                                                                            Type::I32 | Type::F32 => 4,
                                                                             Type::I64 | Type::F64 => 8,
                                                                             Type::String => 16,
                                                                             _ => 8,
@@ -2716,7 +2964,7 @@ r#"        leaq .LC0(%rip), %rax
                                                 }
                                             } else {
                                                 let bytes = match fty {
-                                                    Type::I32 => 4,
+                                                    Type::I32 | Type::F32 => 4,
                                                     Type::I64 | Type::F64 => 8,
                                                     Type::String => 16,
                                                     Type::User(ref un) => {
@@ -2724,7 +2972,7 @@ r#"        leaq .LC0(%rip), %rax
                                                             let mut sz2 = 0usize;
                                                             for ff in &sd2.fields {
                                                                 sz2 += match ff.ty {
-                                                                    Type::I32 => 4,
+                                                                    Type::I32 | Type::F32 => 4,
                                                                     Type::I64 | Type::F64 => 8,
                                                                     Type::String => 16,
                                                                     _ => 8,
@@ -2742,7 +2990,7 @@ r#"        leaq .LC0(%rip), %rax
                                         let mut total = 0usize;
                                         for (_n2, fty2, _o2) in ff_list {
                                             total += match fty2 {
-                                                Type::I32 => 4,
+                                                Type::I32 | Type::F32 => 4,
                                                 Type::I64 | Type::F64 => 8,
                                                 Type::String => 16,
                                                 Type::User(ref un) => {
@@ -2750,7 +2998,7 @@ r#"        leaq .LC0(%rip), %rax
                                                         let mut sz2 = 0usize;
                                                         for ff in &sd2.fields {
                                                             sz2 += match ff.ty {
-                                                                Type::I32 => 4,
+                                                                Type::I32 | Type::F32 => 4,
                                                                 Type::I64 | Type::F64 => 8,
                                                                 Type::String => 16,
                                                                 _ => 8,
@@ -3806,7 +4054,7 @@ linux_emit_print_i64(&mut out);
                                                                             let mut next_ty: Option<String> = None;
                                                                             for f in &sd.fields {
                                                                                 let sz = match f.ty {
-                                                                                    Type::I32 => 4,
+                                                                                    Type::I32 | Type::F32 => 4,
                                                                                     Type::I64 | Type::F64 => 8,
                                                                                     Type::String => 16,
                                                                                     Type::User(ref un) => {
@@ -3814,7 +4062,7 @@ linux_emit_print_i64(&mut out);
                                                                                             let mut sz2 = 0usize;
                                                                                             for ff in &sd2.fields {
                                                                                                 sz2 += match ff.ty {
-                                                                                                    Type::I32 => 4,
+                                                                                                    Type::I32 | Type::F32 => 4,
                                                                                                     Type::I64 | Type::F64 => 8,
                                                                                                     Type::String => 16,
                                                                                                     _ => 8,
@@ -3852,7 +4100,7 @@ linux_emit_print_i64(&mut out);
                                                                 let mut fty = Type::I64;
                                                                 for f in &sd.fields {
                                                                     let sz = match f.ty {
-                                                                        Type::I32 => 4,
+                                                                        Type::I32 | Type::F32 => 4,
                                                                         Type::I64 | Type::F64 => 8,
                                                                         Type::String => 16,
                                                                         Type::User(ref un) => {
@@ -3860,7 +4108,7 @@ linux_emit_print_i64(&mut out);
                                                                                 let mut sz2 = 0usize;
                                                                                 for ff in &sd2.fields {
                                                                                     sz2 += match ff.ty {
-                                                                                        Type::I32 => 4,
+                                                                                        Type::I32 | Type::F32 => 4,
                                                                                         Type::I64 | Type::F64 => 8,
                                                                                         Type::String => 16,
                                                                                         _ => 8,
@@ -4360,6 +4608,21 @@ r#"        leaq .LC0(%rip), %rax
                         linux_emit_concat_function(&mut out);
                     }
                 }
+                if module_uses_stdlib_func(module, "abs_i64") { linux_emit_abs_i64(&mut out); }
+                if module_uses_stdlib_func(module, "abs_i32") { linux_emit_abs_i32(&mut out); }
+                if module_uses_stdlib_func(module, "abs_f64") { linux_emit_abs_f64(&mut out); }
+                if module_uses_stdlib_func(module, "abs_f32") { linux_emit_abs_f32(&mut out); }
+                if module_uses_stdlib_func(module, "min_i64") { linux_emit_min_i64(&mut out); }
+                if module_uses_stdlib_func(module, "min_i32") { linux_emit_min_i32(&mut out); }
+                if module_uses_stdlib_func(module, "min_f64") { linux_emit_min_f64(&mut out); }
+                if module_uses_stdlib_func(module, "min_f32") { linux_emit_min_f32(&mut out); }
+                if module_uses_stdlib_func(module, "max_i64") { linux_emit_max_i64(&mut out); }
+                if module_uses_stdlib_func(module, "max_i32") { linux_emit_max_i32(&mut out); }
+                if module_uses_stdlib_func(module, "max_f64") { linux_emit_max_f64(&mut out); }
+                if module_uses_stdlib_func(module, "max_f32") { linux_emit_max_f32(&mut out); }
+                if module_uses_stdlib_func(module, "sqrt_f64") { linux_emit_sqrt_f64(&mut out); }
+                if module_uses_stdlib_func(module, "sqrt_f32") { linux_emit_sqrt_f32(&mut out); }
+                if module_uses_stdlib_func(module, "str_len") { linux_emit_str_len(&mut out); }
                 Ok(out.trim_start().to_string())
             }
             TargetOs::Windows => {
@@ -4791,7 +5054,7 @@ F64FRACW_loop_%=:
                                                     let mut next_ty: Option<String> = None;
                                                     for f in &sd.fields {
                                                         let sz = match f.ty {
-                                                            Type::I32 => 4,
+                                                            Type::I32 | Type::F32 => 4,
                                                             Type::I64 | Type::F64 => 8,
                                                             Type::String => 16,
                                                             Type::User(ref un) => {
@@ -4799,7 +5062,7 @@ F64FRACW_loop_%=:
                                                                     let mut sz2 = 0usize;
                                                                     for ff in &sd2.fields {
                                                                         sz2 += match ff.ty {
-                                                                            Type::I32 => 4,
+                                                                            Type::I32 | Type::F32 => 4,
                                                                             Type::I64 | Type::F64 => 8,
                                                                             Type::String => 16,
                                                                             _ => 8,
@@ -4835,7 +5098,7 @@ F64FRACW_loop_%=:
                                         let mut fty = Type::I64;
                                         for f in &sd.fields {
                                             let sz = match f.ty {
-                                                Type::I32 => 4,
+                                                Type::I32 | Type::F32 => 4,
                                                 Type::I64 | Type::F64 => 8,
                                                 Type::String => 16,
                                                 Type::User(ref un) => {
@@ -4843,7 +5106,7 @@ F64FRACW_loop_%=:
                                                         let mut sz2 = 0usize;
                                                         for ff in &sd2.fields {
                                                             sz2 += match ff.ty {
-                                                                Type::I32 => 4,
+                                                                Type::I32 | Type::F32 => 4,
                                                                 Type::I64 | Type::F64 => 8,
                                                                 Type::String => 16,
                                                                 _ => 8,
@@ -5063,7 +5326,7 @@ r#"        xor r9d, r9d
                                                                         }
                                                                         _ => {
                                                                             let bytes = match ff.ty {
-                                                                                Type::I32 => 4,
+                                                                                Type::I32 | Type::F32 => 4,
                                                                                 Type::I64 | Type::F64 => 8,
                                                                                 Type::String => 16,
                                                                                 _ => 8,
@@ -5073,7 +5336,7 @@ r#"        xor r9d, r9d
                                                                     }
                                                                 } else {
                                                                     let bytes = match ff.ty {
-                                                                        Type::I32 => 4,
+                                                                        Type::I32 | Type::F32 => 4,
                                                                         Type::I64 | Type::F64 => 8,
                                                                         Type::String => 16,
                                                                         _ => 8,
@@ -5084,7 +5347,7 @@ r#"        xor r9d, r9d
                                                             let mut inner_total = 0usize;
                                                             for ff in &sd2.fields {
                                                                 inner_total += match ff.ty {
-                                                                    Type::I32 => 4,
+                                                                    Type::I32 | Type::F32 => 4,
                                                                     Type::I64 | Type::F64 => 8,
                                                                     Type::String => 16,
                                                                     _ => 8,
@@ -5100,7 +5363,7 @@ r#"        xor r9d, r9d
                                                     }
                                                     _ => {
                                                         let bytes = match fty {
-                                                            Type::I32 => 4,
+                                                            Type::I32 | Type::F32 => 4,
                                                             Type::I64 | Type::F64 => 8,
                                                             Type::String => 16,
                                                             Type::User(ref un) => {
@@ -5108,7 +5371,7 @@ r#"        xor r9d, r9d
                                                                     let mut sz2 = 0usize;
                                                                     for ff in &sd2.fields {
                                                                         sz2 += match ff.ty {
-                                                                            Type::I32 => 4,
+                                                                            Type::I32 | Type::F32 => 4,
                                                                             Type::I64 | Type::F64 => 8,
                                                                             Type::String => 16,
                                                                             _ => 8,
@@ -5125,7 +5388,7 @@ r#"        xor r9d, r9d
                                                 }
                                             } else {
                                                 let bytes = match fty {
-                                                    Type::I32 => 4,
+                                                    Type::I32 | Type::F32 => 4,
                                                     Type::I64 | Type::F64 => 8,
                                                     Type::String => 16,
                                                     Type::User(ref un) => {
@@ -5133,7 +5396,7 @@ r#"        xor r9d, r9d
                                                             let mut sz2 = 0usize;
                                                             for ff in &sd2.fields {
                                                                 sz2 += match ff.ty {
-                                                                    Type::I32 => 4,
+                                                                    Type::I32 | Type::F32 => 4,
                                                                     Type::I64 | Type::F64 => 8,
                                                                     Type::String => 16,
                                                                     _ => 8,
@@ -5151,7 +5414,7 @@ r#"        xor r9d, r9d
                                         let mut total = 0usize;
                                         for (_n2, fty2, _o2) in ff_list {
                                             total += match fty2 {
-                                                Type::I32 => 4,
+                                                Type::I32 | Type::F32 => 4,
                                                 Type::I64 | Type::F64 => 8,
                                                 Type::String => 16,
                                                 Type::User(ref un) => {
@@ -5159,7 +5422,7 @@ r#"        xor r9d, r9d
                                                         let mut sz2 = 0usize;
                                                         for ff in &sd2.fields {
                                                             sz2 += match ff.ty {
-                                                                Type::I32 => 4,
+                                                                Type::I32 | Type::F32 => 4,
                                                                 Type::I64 | Type::F64 => 8,
                                                                 Type::String => 16,
                                                                 _ => 8,

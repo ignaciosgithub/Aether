@@ -51,7 +51,7 @@ This document describes the features currently supported by the compiler. The la
 ## Types
 
 - Integers: i32, i64
-- Floats: f64
+- Floats: f32, f64
 - String: UTF‑8 string literal type (lowered as (ptr,len) in backends)
 - Structs: user‑defined types with named fields; single inheritance
 
@@ -118,9 +118,32 @@ See examples/*.ae:
 - Floats: f64 return in xmm0 (x86_64) / v0 (AArch64)
 - Strings: passed/returned as (ptr,len) pairs
 
+## Standard Library Functions
+
+The following built-in functions are available on x86_64 Linux:
+
+Math functions:
+- abs_i64(x: i64) -> i64: absolute value of 64-bit integer
+- abs_i32(x: i32) -> i32: absolute value of 32-bit integer
+- abs_f64(x: f64) -> f64: absolute value of 64-bit float
+- abs_f32(x: f32) -> f32: absolute value of 32-bit float
+- min_i64(a: i64, b: i64) -> i64: minimum of two 64-bit integers
+- min_i32(a: i32, b: i32) -> i32: minimum of two 32-bit integers
+- min_f64(a: f64, b: f64) -> f64: minimum of two 64-bit floats
+- min_f32(a: f32, b: f32) -> f32: minimum of two 32-bit floats
+- max_i64(a: i64, b: i64) -> i64: maximum of two 64-bit integers
+- max_i32(a: i32, b: i32) -> i32: maximum of two 32-bit integers
+- max_f64(a: f64, b: f64) -> f64: maximum of two 64-bit floats
+- max_f32(a: f32, b: f32) -> f32: maximum of two 32-bit floats
+- sqrt_f64(x: f64) -> f64: square root of 64-bit float
+- sqrt_f32(x: f32) -> f32: square root of 32-bit float
+
+String functions:
+- str_len(s: String) -> i64: length of string in bytes
+
 ## Notes
 
 - No GC; heap APIs not yet exposed
-- No modules/imports yet
+- Imports supported via import "path/to/file.ae";
 - Error handling not yet implemented
 - Subject to change pre‑1.0

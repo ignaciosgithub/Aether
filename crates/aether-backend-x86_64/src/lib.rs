@@ -143,6 +143,185 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
     }
 }
 
+/// Detects factorial-like pattern: return if (n <= 1) { const } else { n * f(n - 1) }
+/// Returns Some((func_name, param_name, base_value)) if pattern matches
+fn is_factorial_like(func: &aether_frontend::ast::Function) -> Option<(String, String, i64)> {
+    if func.params.len() != 1 { return None; }
+    if func.body.len() != 1 { return None; }
+    let param_name = &func.params[0].name;
+    let func_name = &func.name;
+    
+    if let Stmt::Return(Expr::IfElse { cond, then_expr, else_expr }) = &func.body[0] {
+        // Check condition: n <= 1
+        if let Expr::BinOp(left, BinOpKind::Le, right) = cond.as_ref() {
+            if let (Expr::Var(vn), Expr::Lit(Value::Int(1))) = (left.as_ref(), right.as_ref()) {
+                if vn != param_name { return None; }
+            } else { return None; }
+        } else { return None; }
+        
+        // Check then branch: constant literal
+        let base_val = if let Expr::Lit(Value::Int(v)) = then_expr.as_ref() {
+            *v
+        } else { return None; };
+        
+        // Check else branch: n * func(n - 1)
+        if let Expr::BinOp(left, BinOpKind::Mul, right) = else_expr.as_ref() {
+            if let Expr::Var(vn) = left.as_ref() {
+                if vn != param_name { return None; }
+            } else { return None; }
+            if let Expr::Call(call_name, args) = right.as_ref() {
+                if call_name != func_name || args.len() != 1 { return None; }
+                if let Expr::BinOp(arg_left, BinOpKind::Sub, arg_right) = &args[0] {
+                    if let (Expr::Var(vn), Expr::Lit(Value::Int(1))) = (arg_left.as_ref(), arg_right.as_ref()) {
+                        if vn != param_name { return None; }
+                    } else { return None; }
+                } else { return None; }
+            } else { return None; }
+        } else { return None; }
+        
+        return Some((func_name.clone(), param_name.clone(), base_val));
+    }
+    None
+}
+
+/// Detects fibonacci-like pattern: return if (n <= 1) { n } else { f(n - 1) + f(n - 2) }
+/// Returns Some((func_name, param_name)) if pattern matches
+fn is_fibonacci_like(func: &aether_frontend::ast::Function) -> Option<(String, String)> {
+    if func.params.len() != 1 { return None; }
+    if func.body.len() != 1 { return None; }
+    let param_name = &func.params[0].name;
+    let func_name = &func.name;
+    
+    if let Stmt::Return(Expr::IfElse { cond, then_expr, else_expr }) = &func.body[0] {
+        // Check condition: n <= 1
+        if let Expr::BinOp(left, BinOpKind::Le, right) = cond.as_ref() {
+            if let (Expr::Var(vn), Expr::Lit(Value::Int(1))) = (left.as_ref(), right.as_ref()) {
+                if vn != param_name { return None; }
+            } else { return None; }
+        } else { return None; }
+        
+        // Check then branch: return n (the parameter)
+        if let Expr::Var(vn) = then_expr.as_ref() {
+            if vn != param_name { return None; }
+        } else { return None; }
+        
+        // Check else branch: f(n - 1) + f(n - 2)
+        if let Expr::BinOp(left, BinOpKind::Add, right) = else_expr.as_ref() {
+            // Check first call: f(n - 1)
+            if let Expr::Call(call_name, args) = left.as_ref() {
+                if call_name != func_name || args.len() != 1 { return None; }
+                if let Expr::BinOp(arg_left, BinOpKind::Sub, arg_right) = &args[0] {
+                    if let (Expr::Var(vn), Expr::Lit(Value::Int(1))) = (arg_left.as_ref(), arg_right.as_ref()) {
+                        if vn != param_name { return None; }
+                    } else { return None; }
+                } else { return None; }
+            } else { return None; }
+            // Check second call: f(n - 2)
+            if let Expr::Call(call_name, args) = right.as_ref() {
+                if call_name != func_name || args.len() != 1 { return None; }
+                if let Expr::BinOp(arg_left, BinOpKind::Sub, arg_right) = &args[0] {
+                    if let (Expr::Var(vn), Expr::Lit(Value::Int(2))) = (arg_left.as_ref(), arg_right.as_ref()) {
+                        if vn != param_name { return None; }
+                    } else { return None; }
+                } else { return None; }
+            } else { return None; }
+        } else { return None; }
+        
+        return Some((func_name.clone(), param_name.clone()));
+    }
+    None
+}
+
+/// Detects hanoi-like pattern: return if (n <= 1) { 1 } else { 2 * f(n - 1) + 1 }
+/// This computes 2^n - 1, the number of moves for Tower of Hanoi
+/// Returns Some((func_name, param_name)) if pattern matches
+fn is_hanoi_like(func: &aether_frontend::ast::Function) -> Option<(String, String)> {
+    if func.params.len() != 1 { return None; }
+    if func.body.len() != 1 { return None; }
+    let param_name = &func.params[0].name;
+    let func_name = &func.name;
+    
+    if let Stmt::Return(Expr::IfElse { cond, then_expr, else_expr }) = &func.body[0] {
+        // Check condition: n <= 1
+        if let Expr::BinOp(left, BinOpKind::Le, right) = cond.as_ref() {
+            if let (Expr::Var(vn), Expr::Lit(Value::Int(1))) = (left.as_ref(), right.as_ref()) {
+                if vn != param_name { return None; }
+            } else { return None; }
+        } else { return None; }
+        
+        // Check then branch: literal 1
+        if let Expr::Lit(Value::Int(1)) = then_expr.as_ref() {
+            // OK
+        } else { return None; }
+        
+        // Check else branch: 2 * f(n - 1) + 1
+        if let Expr::BinOp(left, BinOpKind::Add, right) = else_expr.as_ref() {
+            // Check right side is literal 1
+            if let Expr::Lit(Value::Int(1)) = right.as_ref() {
+                // OK
+            } else { return None; }
+            // Check left side is 2 * f(n - 1)
+            if let Expr::BinOp(mul_left, BinOpKind::Mul, mul_right) = left.as_ref() {
+                // Check 2 *
+                if let Expr::Lit(Value::Int(2)) = mul_left.as_ref() {
+                    // OK
+                } else { return None; }
+                // Check f(n - 1)
+                if let Expr::Call(call_name, args) = mul_right.as_ref() {
+                    if call_name != func_name || args.len() != 1 { return None; }
+                    if let Expr::BinOp(arg_left, BinOpKind::Sub, arg_right) = &args[0] {
+                        if let (Expr::Var(vn), Expr::Lit(Value::Int(1))) = (arg_left.as_ref(), arg_right.as_ref()) {
+                            if vn != param_name { return None; }
+                        } else { return None; }
+                    } else { return None; }
+                } else { return None; }
+            } else { return None; }
+        } else { return None; }
+        
+        return Some((func_name.clone(), param_name.clone()));
+    }
+    None
+}
+
+/// Detects guard+delegate pattern: return if (param <= 0) { 0 } else { other_func(params...) }
+/// Returns Some((func_name, delegate_name, param_names)) if pattern matches
+#[allow(dead_code)]
+fn is_guard_delegate_like(func: &aether_frontend::ast::Function) -> Option<(String, String, Vec<String>)> {
+    if func.params.is_empty() { return None; }
+    if func.body.len() != 1 { return None; }
+    let first_param = &func.params[0].name;
+    let func_name = &func.name;
+    let param_names: Vec<String> = func.params.iter().map(|p| p.name.clone()).collect();
+    
+    if let Stmt::Return(Expr::IfElse { cond, then_expr, else_expr }) = &func.body[0] {
+        // Check condition: first_param <= 0
+        if let Expr::BinOp(left, BinOpKind::Le, right) = cond.as_ref() {
+            if let (Expr::Var(vn), Expr::Lit(Value::Int(0))) = (left.as_ref(), right.as_ref()) {
+                if vn != first_param { return None; }
+            } else { return None; }
+        } else { return None; }
+        
+        // Check then branch: literal 0
+        if let Expr::Lit(Value::Int(0)) = then_expr.as_ref() {
+            // OK
+        } else { return None; }
+        
+        // Check else branch: call to a different function with same params
+        if let Expr::Call(delegate_name, args) = else_expr.as_ref() {
+            if delegate_name == func_name { return None; } // Must be different function
+            if args.len() != param_names.len() { return None; }
+            // Check that args are the same params in order
+            for (i, arg) in args.iter().enumerate() {
+                if let Expr::Var(vn) = arg {
+                    if vn != &param_names[i] { return None; }
+                } else { return None; }
+            }
+            return Some((func_name.clone(), delegate_name.clone(), param_names));
+        }
+    }
+    None
+}
+
 fn eval_f64_expr(expr: &Expr) -> Option<f64> {
     match expr {
         Expr::Lit(Value::Float64(v)) => Some(*v),
@@ -3229,25 +3408,80 @@ r#"        leaq .LC0(%rip), %rax
                 for func in funcs_to_emit {
                     if func.name == "main" { continue; }
                     out.push_str("\n");
-                    if func.name == "fact" {
-                        out.push_str(&format!("{}:\n", func.name));
-                        out.push_str(
+                    // AST-based pattern matching for factorial-like functions
+                    if let Some((fn_name, _param_name, base_val)) = is_factorial_like(func) {
+                        out.push_str(&format!("{}:\n", fn_name));
+                        out.push_str(&format!(
 r#"        push %rbx
         cmpq $1, %rdi
-        jg .Lrec
-        movl $1, %eax
+        jg .Lrec_{}
+        movl ${}, %eax
         pop %rbx
         ret
-.Lrec:
+.Lrec_{}:
         mov %rdi, %rbx
         leaq -1(%rdi), %rdi
         sub $8, %rsp
-        call fact
+        call {}
         add $8, %rsp
         imul %rbx, %rax
         pop %rbx
         ret
-"#);
+"#, fn_name, base_val, fn_name, fn_name));
+                        continue;
+                    }
+                    // AST-based pattern matching for fibonacci-like functions
+                    if let Some((fn_name, _param_name)) = is_fibonacci_like(func) {
+                        out.push_str(&format!("{}:\n", fn_name));
+                        out.push_str(&format!(
+r#"        push %rbx
+        push %r12
+        cmpq $1, %rdi
+        jg .Lfib_rec_{}
+        mov %rdi, %rax
+        pop %r12
+        pop %rbx
+        ret
+.Lfib_rec_{}:
+        mov %rdi, %rbx
+        leaq -1(%rdi), %rdi
+        sub $8, %rsp
+        call {}
+        add $8, %rsp
+        mov %rax, %r12
+        leaq -2(%rbx), %rdi
+        sub $8, %rsp
+        call {}
+        add $8, %rsp
+        add %r12, %rax
+        pop %r12
+        pop %rbx
+        ret
+"#, fn_name, fn_name, fn_name, fn_name));
+                        continue;
+                    }
+                    // AST-based pattern matching for hanoi-like functions (2^n - 1 formula)
+                    // Pattern: return if (n <= 1) { 1 } else { 2 * f(n - 1) + 1 }
+                    if let Some((fn_name, _param_name)) = is_hanoi_like(func) {
+                        out.push_str(&format!("{}:\n", fn_name));
+                        out.push_str(&format!(
+r#"        push %rbx
+        cmpq $1, %rdi
+        jg .Lhanoi_rec_{}
+        mov $1, %rax
+        pop %rbx
+        ret
+.Lhanoi_rec_{}:
+        mov %rdi, %rbx
+        leaq -1(%rdi), %rdi
+        sub $8, %rsp
+        call {}
+        add $8, %rsp
+        shl $1, %rax
+        add $1, %rax
+        pop %rbx
+        ret
+"#, fn_name, fn_name, fn_name));
                         continue;
                     }
 
@@ -4795,6 +5029,10 @@ r#"        leaq .LC0(%rip), %rax
                 if module_uses_stdlib_func(module, "sqrt_f64") { linux_emit_sqrt_f64(&mut out); }
                 if module_uses_stdlib_func(module, "sqrt_f32") { linux_emit_sqrt_f32(&mut out); }
                 if module_uses_stdlib_func(module, "str_len") { linux_emit_str_len(&mut out); }
+                // Ensure .LSNL is defined if referenced anywhere in the output
+                if out.contains(".LSNL") && !out.contains(".LSNL:\n") {
+                    out.push_str("\n        .section .rodata\n.LSNL:\n        .ascii \"\\n\"\n        .text\n");
+                }
                 Ok(out.trim_start().to_string())
             }
             TargetOs::Windows => {

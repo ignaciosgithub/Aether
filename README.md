@@ -134,17 +134,127 @@ To produce Linux/AArch64 artifacts from Windows, use WSL (below) or a Linux VM.
 - “unknown target in assemble_link.sh”
   - The first arg must be one of: x86_64-linux, x86_64-windows, aarch64-linux.
 
-## Language overview
+## Language Overview
+
+Aether provides a clean, C-like syntax with modern features. Here's a quick tour of the language capabilities.
+
+### Basic Syntax
+
+Functions are declared with `func` (or `pub func` for public visibility):
+
+```
+pub func main() -> i32 {
+    println("Hello, Aether!");
+    return 0;
+}
+```
+
+### Types
+
+Aether supports the following types:
+- Integers: `i32`, `i64`
+- Floats: `f32`, `f64`
+- Strings: `String` (UTF-8, stored as ptr+len pairs)
+- Arrays: `[T; N]` (fixed-size, e.g., `[i32; 4]`)
+- Vectors: `vec[T]` (dynamic, heap-allocated)
+- HList: heterogeneous lists with tagged values
+- Structs: user-defined types with single inheritance
+
+### Control Flow
+
+If-else expressions return values:
+```
+let result: i32 = if (x > 0) { 1 } else { -1 };
+```
+
+While loops with break/continue:
+```
+while (i < 10) {
+    if (i == 5) { break; }
+    i = i + 1;
+}
+```
+
+### Recursion Example (Factorial)
+
+```
+func fact(n: i32) -> i32 {
+    return if (n <= 1) { 1 } else { n * fact(n - 1) };
+}
+```
+
+### Algorithm Examples
+
+The examples directory includes classic algorithms:
+
+**Fibonacci Sequence** (examples/fibonacci.ae):
+```
+func fib(n: i32) -> i32 {
+    return if (n <= 1) { n } else { fib(n - 1) + fib(n - 2) };
+}
+```
+
+**Tower of Hanoi** (examples/hanoi.ae):
+```
+func hanoi(n: i32, from: i32, to: i32, aux: i32) -> i32 {
+    return if (n <= 0) { 0 } else { move_disks(n, from, to, aux) };
+}
+```
+
+### Vectors (Dynamic Arrays)
+
+```
+let v: vec[i64] = vec_new(2);
+vec_push(v, 10);
+vec_push(v, 20);
+println(vec_len(v));    // prints 2
+println(vec_pop(v));    // prints 20
+vec_free(v);
+```
+
+### HList (Heterogeneous Lists)
+
+HList stores tagged values of different types:
+```
+let h: HList = hlist_new(4);
+hlist_push(h, 0, 42);      // tag 0 = i64
+hlist_push(h, 3, 100);     // tag 3 = i32
+println(hlist_len(h));     // prints 2
+println(h[0]);             // prints 42
+hlist_free(h);
+```
+
+Tag values: 0=i64, 1=f64, 2=string(ptr), 3=i32, 4=f32
+
+### Standard Library Functions
+
+Math functions (x86_64 Linux):
+- `abs_i64`, `abs_i32`, `abs_f64`, `abs_f32`
+- `min_i64`, `min_i32`, `min_f64`, `min_f32`
+- `max_i64`, `max_i32`, `max_f64`, `max_f32`
+- `sqrt_f64`, `sqrt_f32`
+
+String functions:
+- `str_len(s: String) -> i64`
+
+### Complete Examples List
 
 Examples in examples/*.ae:
-- println.ae — println String
+- println.ae — basic string printing
 - calls.ae — multiple functions and calls
 - factorial.ae — recursion returning integer
+- fibonacci.ae — Fibonacci sequence with recursion
+- hanoi.ae — Tower of Hanoi algorithm
 - runtime_ifelse.ae — runtime branching on conditions
-- inheritance.ae — single inheritance printing a parent field from a Child
-- locals_mutation.ae, nested_structs.ae — struct fields and mutation
+- inheritance.ae — single inheritance with parent field access
+- locals_mutation.ae — local variable mutation
+- nested_structs.ae — nested struct fields
+- vec_demo.ae — vector operations (new, push, pop, len, free)
+- arrays.ae — fixed-size arrays with indexing
+- threads_simple.ae — basic threading
+- threads_map_reduce.ae — parallel computation pattern
 
-See docs/language.md for syntax, types, println, and OO layout details.
+See docs/language.md for complete syntax reference and OO layout details.
 
 ### Imports (MVP)
 

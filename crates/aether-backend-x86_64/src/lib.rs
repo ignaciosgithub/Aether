@@ -967,6 +967,196 @@ fn linux_eval_addr_of_expr_to_rax(
     }
 }
 
+/// Emit code to evaluate an expression and leave the result in %rax (for integers)
+/// This is the core expression emitter for the generic non-main function path.
+/// Contract: Result is in %rax, may clobber caller-saved registers, preserves callee-saved.
+fn linux_emit_expr_to_rax(
+    expr: &aether_frontend::ast::Expr,
+    out: &mut String,
+    func: &aether_frontend::ast::Function,
+    local_offsets: &std::collections::HashMap<String, usize>,
+    _local_types: &std::collections::HashMap<String, aether_frontend::ast::Type>,
+    label_counter: &mut usize,
+) {
+    use aether_frontend::ast::{Expr, Value, BinOpKind};
+    
+    match expr {
+        // Literal integer -> mov $val, %rax
+        Expr::Lit(Value::Int(v)) => {
+            out.push_str(&format!("        mov ${}, %rax\n", v));
+        }
+        
+        // Variable -> load from stack (parameters are spilled to stack in prolog)
+        Expr::Var(name) => {
+            if let Some(off) = local_offsets.get(name.as_str()) {
+                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+            } else {
+                // Fallback: check if it's a parameter in registers (shouldn't happen if we spill properly)
+                let regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+                let mut slot = 0usize;
+                for p in &func.params {
+                    if p.name == *name {
+                        if slot < regs.len() {
+                            out.push_str(&format!("        mov {}, %rax\n", regs[slot]));
+                        }
+                        return;
+                    }
+                    slot += 1;
+                }
+                // Unknown variable - emit 0 as fallback
+                out.push_str("        xor %rax, %rax\n");
+            }
+        }
+        
+        // Binary operation -> emit left, push, emit right, pop, do op
+        Expr::BinOp(lhs, op, rhs) => {
+            // Emit left operand into %rax
+            linux_emit_expr_to_rax(lhs, out, func, local_offsets, _local_types, label_counter);
+            // Save left operand on stack
+            out.push_str("        push %rax\n");
+            // Emit right operand into %rax
+            linux_emit_expr_to_rax(rhs, out, func, local_offsets, _local_types, label_counter);
+            // Pop left operand into %rbx
+            out.push_str("        pop %rbx\n");
+            // Now: %rbx = left, %rax = right
+            // Perform the operation, result in %rax
+            match op {
+                BinOpKind::Add => {
+                    out.push_str("        add %rbx, %rax\n");
+                }
+                BinOpKind::Sub => {
+                    // left - right = %rbx - %rax, but we want result in %rax
+                    out.push_str("        sub %rax, %rbx\n");
+                    out.push_str("        mov %rbx, %rax\n");
+                }
+                BinOpKind::Mul => {
+                    out.push_str("        imul %rbx, %rax\n");
+                }
+                BinOpKind::Div => {
+                    // left / right: dividend in %rax, divisor in register
+                    out.push_str("        mov %rbx, %rcx\n"); // save left
+                    out.push_str("        mov %rax, %rbx\n"); // right to %rbx
+                    out.push_str("        mov %rcx, %rax\n"); // left to %rax
+                    out.push_str("        cqo\n");
+                    out.push_str("        idiv %rbx\n");
+                }
+                BinOpKind::Eq => {
+                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        sete %al\n");
+                    out.push_str("        movzbl %al, %eax\n");
+                }
+                BinOpKind::Lt => {
+                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        setl %al\n");
+                    out.push_str("        movzbl %al, %eax\n");
+                }
+                BinOpKind::Le => {
+                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        setle %al\n");
+                    out.push_str("        movzbl %al, %eax\n");
+                }
+                BinOpKind::Gt => {
+                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        setg %al\n");
+                    out.push_str("        movzbl %al, %eax\n");
+                }
+                BinOpKind::Ge => {
+                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        setge %al\n");
+                    out.push_str("        movzbl %al, %eax\n");
+                }
+                BinOpKind::BitAnd => {
+                    out.push_str("        and %rbx, %rax\n");
+                }
+                BinOpKind::BitOr => {
+                    out.push_str("        or %rbx, %rax\n");
+                }
+                BinOpKind::BitXor => {
+                    out.push_str("        xor %rbx, %rax\n");
+                }
+                BinOpKind::Shl => {
+                    // left << right: %rbx << %rax
+                    out.push_str("        mov %rax, %rcx\n");
+                    out.push_str("        mov %rbx, %rax\n");
+                    out.push_str("        shl %cl, %rax\n");
+                }
+                BinOpKind::Shr => {
+                    // left >> right: %rbx >> %rax
+                    out.push_str("        mov %rax, %rcx\n");
+                    out.push_str("        mov %rbx, %rax\n");
+                    out.push_str("        sar %cl, %rax\n");
+                }
+            }
+        }
+        
+        // Function call -> emit args to registers, call, result in %rax
+        Expr::Call(name, args) => {
+            let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+            
+            // For simplicity, evaluate each arg and push to stack first
+            // Then pop into the correct registers in reverse order
+            for arg in args.iter() {
+                linux_emit_expr_to_rax(arg, out, func, local_offsets, _local_types, label_counter);
+                out.push_str("        push %rax\n");
+            }
+            
+            // Pop args into registers in reverse order
+            for (i, _) in args.iter().enumerate().rev() {
+                if i < arg_regs.len() {
+                    out.push_str(&format!("        pop {}\n", arg_regs[i]));
+                } else {
+                    out.push_str("        add $8, %rsp\n"); // discard extra args
+                }
+            }
+            
+            // Align stack to 16 bytes before call
+            out.push_str("        sub $8, %rsp\n");
+            out.push_str(&format!("        call {}\n", name));
+            out.push_str("        add $8, %rsp\n");
+            // Result is in %rax
+        }
+        
+        // If-else expression -> emit condition, branch, emit then/else
+        Expr::IfElse { cond, then_expr, else_expr } => {
+            let else_lbl = format!(".LIF_ELSE_{}", *label_counter);
+            let end_lbl = format!(".LIF_END_{}", *label_counter);
+            *label_counter += 1;
+            
+            // Emit condition
+            linux_emit_expr_to_rax(cond, out, func, local_offsets, _local_types, label_counter);
+            out.push_str("        cmp $0, %rax\n");
+            out.push_str(&format!("        je {}\n", else_lbl));
+            
+            // Then branch
+            linux_emit_expr_to_rax(then_expr, out, func, local_offsets, _local_types, label_counter);
+            out.push_str(&format!("        jmp {}\n", end_lbl));
+            
+            // Else branch
+            out.push_str(&format!("{}:\n", else_lbl));
+            linux_emit_expr_to_rax(else_expr, out, func, local_offsets, _local_types, label_counter);
+            
+            // End
+            out.push_str(&format!("{}:\n", end_lbl));
+            // Result is in %rax
+        }
+        
+        // Unary operations
+        Expr::UnaryOp(op, inner) => {
+            linux_emit_expr_to_rax(inner, out, func, local_offsets, _local_types, label_counter);
+            match op {
+                aether_frontend::ast::UnaryOpKind::BitNot => {
+                    out.push_str("        not %rax\n");
+                }
+            }
+        }
+        
+        // Default: emit 0
+        _ => {
+            out.push_str("        xor %rax, %rax\n");
+        }
+    }
+}
+
 fn linux_emit_abs_i64(out: &mut String) {
     out.push_str("\n        .text\n        .globl abs_i64\nabs_i64:\n");
     out.push_str(
@@ -3873,6 +4063,23 @@ r#"        push %rbx
                     let mut local_types: std::collections::HashMap<String, aether_frontend::ast::Type> = std::collections::HashMap::new();
                     let mut local_offsets: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
                     let mut cur_off: usize = 0;
+                    
+                    // First, add parameters to local_offsets so they get spilled to stack
+                    // This is essential for recursive functions where parameters are used
+                    // after function calls (which clobber the argument registers)
+                    let arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+                    let mut param_spill_info: Vec<(String, usize, &str)> = Vec::new();
+                    for (i, p) in func.params.iter().enumerate() {
+                        let sz = 8usize; // All params are 8 bytes for now (i64)
+                        cur_off += sz;
+                        local_offsets.insert(p.name.clone(), cur_off);
+                        local_types.insert(p.name.clone(), p.ty.clone());
+                        if i < arg_regs.len() {
+                            param_spill_info.push((p.name.clone(), cur_off, arg_regs[i]));
+                        }
+                    }
+                    
+                    // Then add local variables from Let statements
                     for stmt in &func.body {
                         if let aether_frontend::ast::Stmt::Let { name, ty, .. } = stmt {
                             let mut sz = size_of_type(ty, &struct_sizes, &collect_structs(module));
@@ -3882,16 +4089,27 @@ r#"        push %rbx
                             local_offsets.insert(name.clone(), cur_off);
                         }
                     }
-                    let locals_size = local_offsets.values().copied().max().unwrap_or(0);
-                    if locals_size > 0 {
-                        out.push_str(&format!(
-"        push %rbp
-        mov %rsp, %rbp
-        sub ${}, %rsp
-", locals_size));
+                    
+                    // Align stack size to 16 bytes
+                    let mut locals_size = cur_off;
+                    if locals_size % 16 != 0 {
+                        locals_size += 16 - (locals_size % 16);
                     }
-
+                    
+                    // Emit function label first
                     out.push_str(&format!("{}:\n", func.name));
+                    
+                    // Emit prolog: set up stack frame and spill parameters
+                    out.push_str("        push %rbp\n");
+                    out.push_str("        mov %rsp, %rbp\n");
+                    if locals_size > 0 {
+                        out.push_str(&format!("        sub ${}, %rsp\n", locals_size));
+                    }
+                    
+                    // Spill parameters from registers to stack
+                    for (_name, off, reg) in &param_spill_info {
+                        out.push_str(&format!("        mov {}, -{}(%rbp)\n", reg, off));
+                    }
                     let mut ret_i: i64 = 0;
                     let mut linux_inbuf_emitted: bool = false;
 
@@ -5351,47 +5569,30 @@ r#"        syscall
                                 }
                             },
                             Stmt::Return(expr) => {
-                                if let Some(v) = eval_int_expr(expr) {
-                                    ret_i = v;
+                                // Use the general expression emitter for all return expressions
+                                // This handles literals, variables, binops, calls, if-else, etc.
+                                linux_emit_expr_to_rax(
+                                    expr,
+                                    &mut out,
+                                    func,
+                                    &local_offsets,
+                                    &local_types,
+                                    &mut label_counter,
+                                );
+                                // Emit epilog and return
+                                if locals_size > 0 {
+                                    out.push_str("        mov %rbp, %rsp\n");
                                 }
-                                if let Some(fv) = eval_f64_expr(expr) {
-                                    ret_f = Some(fv);
-                                }
-                                if let Expr::Lit(Value::String(s)) = expr {
-                                    let bytes = s.clone().into_bytes();
-                                    let len = bytes.len();
-                                    let lbl = format!(".LSRET_{}_{}", func.name, fi);
-                                    out.push_str(&format!(
-"        leaq {0}(%rip), %rax
-        mov ${1}, %rdx
-        ret
-", lbl, len));
-                                    func_rodata.push((lbl, String::from_utf8(bytes).unwrap()));
-                                    fi += 1;
-                                }
-
+                                out.push_str("        pop %rbp\n");
+                                out.push_str("        ret\n");
                             }
                             Stmt::Assign { .. } => {
                             },
                             _ => {}
                         }
                     }
-                    if let Some(fv) = ret_f {
-                        let bits = fv.to_bits();
-                        out.push_str(
-r#"        leaq .LC0(%rip), %rax
-        movsd (%rax), %xmm0
-        ret
-"#);
-                        let lo = bits as u32;
-                        let hi = (bits >> 32) as u32;
-                        if !out.contains(".LC0:\n") {
-                            out.push_str("\n        .section .rodata\n.LC0:\n");
-                            out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
-                        }
-                    } else {
-                        out.push_str(&format!("        mov ${}, %rax\n        ret\n", ret_i));
-                    }
+                    // Note: We no longer emit a default return here since all Return statements
+                    // now emit their own epilog and ret instruction via linux_emit_expr_to_rax
                 }
                 if !func_rodata.is_empty() || need_nl {
                     out.push_str("\n        .section .rodata\n");

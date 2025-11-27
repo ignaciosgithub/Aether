@@ -141,6 +141,37 @@ Math functions:
 String functions:
 - str_len(s: String) -> i64: length of string in bytes
 
+## HList (Heterogeneous List)
+
+HList is a dynamic collection that can store values of different types. Each element is tagged with its type.
+
+Tag values:
+- 0: i64
+- 1: f64
+- 2: String (pointer)
+- 3: i32
+- 4: f32
+
+Operations:
+- hlist_new(cap: i64) -> HList: allocate a new HList with initial capacity
+- hlist_push(h: HList, tag: i64, value: i64): push a tagged value onto the list
+- hlist_len(h: HList) -> i64: get the number of elements in the list
+- hlist_free(h: HList) -> i64: free the list memory (returns 1 if freed, 0 if already null)
+
+Example:
+```
+let h: HList = hlist_new(4);
+hlist_push(h, 0, 42);      // push i64 value 42
+hlist_push(h, 3, 100);     // push i32 value 100
+println(hlist_len(h));     // prints 2
+hlist_free(h);
+```
+
+Memory layout:
+- Header: 24 bytes (ptr at offset 0, len at offset -8, cap at offset -16)
+- Each element: 16 bytes (8 byte tag + 8 byte value)
+- Memory is allocated via mmap and freed via munmap
+
 ## Notes
 
 - No GC; heap APIs not yet exposed

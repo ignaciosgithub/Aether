@@ -1,0 +1,16 @@
+// Challenge: Count set bits (population count)
+// Count the number of 1 bits in a number using Brian Kernighan's algorithm
+
+func popcount(n: i64) -> i64 {
+    return if (n == 0) { 0 } else { 1 + popcount(n & (n - 1)) };
+}
+
+pub func main() -> i32 {
+    println("popcount(7) = 3:");
+    println(popcount(7));
+    println("popcount(255) = 8:");
+    println(popcount(255));
+    println("popcount(16) = 1:");
+    println(popcount(16));
+    return 0;
+}

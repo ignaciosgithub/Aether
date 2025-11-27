@@ -1,0 +1,16 @@
+// Challenge: Triangle Numbers
+// Calculate the nth triangle number (1 + 2 + 3 + ... + n) using recursion
+
+func triangle(n: i64) -> i64 {
+    return if (n == 0) { 0 } else { n + triangle(n - 1) };
+}
+
+pub func main() -> i32 {
+    println("triangle(1) = 1:");
+    println(triangle(1));
+    println("triangle(5) = 15:");
+    println(triangle(5));
+    println("triangle(10) = 55:");
+    println(triangle(10));
+    return 0;
+}

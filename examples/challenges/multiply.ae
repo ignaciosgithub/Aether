@@ -1,0 +1,14 @@
+// Challenge: Multiply using addition
+// Implement multiplication using only addition and recursion
+
+func multiply(a: i64, b: i64) -> i64 {
+    return if (b == 0) { 0 } else { a + multiply(a, b - 1) };
+}
+
+pub func main() -> i32 {
+    println("multiply(3, 4) = 12:");
+    println(multiply(3, 4));
+    println("multiply(7, 8) = 56:");
+    println(multiply(7, 8));
+    return 0;
+}

@@ -1,0 +1,18 @@
+// Challenge: Tribonacci Numbers
+// Like Fibonacci but sums the last 3 numbers
+// T(0) = 0, T(1) = 0, T(2) = 1, T(n) = T(n-1) + T(n-2) + T(n-3)
+
+func tribonacci(n: i64) -> i64 {
+    return if (n == 0) { 0 } else { if (n == 1) { 0 } else { if (n == 2) { 1 } 
+        else { tribonacci(n - 1) + tribonacci(n - 2) + tribonacci(n - 3) }}};
+}
+
+pub func main() -> i32 {
+    println("tribonacci(4) = 2:");
+    println(tribonacci(4));
+    println("tribonacci(7) = 13:");
+    println(tribonacci(7));
+    println("tribonacci(10) = 81:");
+    println(tribonacci(10));
+    return 0;
+}

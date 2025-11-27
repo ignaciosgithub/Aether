@@ -1,0 +1,12 @@
+// Challenge: Absolute Value
+// Return the absolute value of a number using the stdlib abs function
+
+pub func main() -> i32 {
+    println("abs(-42) =");
+    println(abs_i64(-42));
+    println("abs(17) =");
+    println(abs_i64(17));
+    println("abs(0) =");
+    println(abs_i64(0));
+    return 0;
+}

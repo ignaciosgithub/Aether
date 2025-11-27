@@ -157,6 +157,7 @@ Operations:
 - hlist_push(h: HList, tag: i64, value: i64): push a tagged value onto the list
 - hlist_len(h: HList) -> i64: get the number of elements in the list
 - hlist_free(h: HList) -> i64: free the list memory (returns 1 if freed, 0 if already null)
+- h[index]: access element at index (returns value, OOB error if index >= length)
 
 Example:
 ```

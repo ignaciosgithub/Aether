@@ -2141,6 +2141,35 @@ _start:
                                         }
                                     }
                                 }
+                                // HList indexing with OOB error handling
+                                if let Expr::Var(vn) = &**base {
+                                    if let Some(off) = main_local_offsets.get(vn) {
+                                        if let Some(Type::HList) = main_local_types.get(vn) {
+                                            let mut idx_val: Option<i64> = None;
+                                            match &**idx {
+                                                Expr::Lit(Value::Int(v)) => { idx_val = Some(*v); }
+                                                _ => { if let Some(v) = eval_int_expr(idx) { idx_val = Some(v); } }
+                                            }
+                                            if let Some(iv) = idx_val {
+                                                // Check bounds: index < len
+                                                out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8)); // len
+                                                out.push_str(&format!("        mov ${}, %rcx\n", iv));
+                                                out.push_str("        cmp %rcx, %r10\n");
+                                                out.push_str("        jbe 70f\n"); // if len <= index, OOB
+                                                // Access element: base + index * 16, value is at offset 8
+                                                out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                                                out.push_str(&format!("        imul ${}, %rcx\n", HLIST_ELEM_SIZE));
+                                                out.push_str("        add %rcx, %rbx\n");
+                                                out.push_str("        mov 8(%rbx), %rax\n"); // get value (skip tag)
+                                                linux_emit_print_i64(&mut out);
+                                                out.push_str("        jmp 71f\n");
+                                                linux_emit_oob_error(&mut out);
+                                                out.push_str("70:\n");
+                                                out.push_str("71:\n");
+                                            }
+                                        }
+                                    }
+                                }
                             },
                             Stmt::PrintExpr(Expr::Call(cname, args)) => {
                                 if cname == "vec_len" && args.len() == 1 {

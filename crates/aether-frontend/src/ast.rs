@@ -99,12 +99,24 @@ pub enum BinOpKind {
     Le,
     Gt,
     Ge,
+    // Bitwise operations
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+}
+
+#[derive(Debug, Clone)]
+pub enum UnaryOpKind {
+    BitNot,
 }
 
 #[derive(Debug, Clone)]
 pub enum Expr {
     Lit(Value),
     BinOp(Box<Expr>, BinOpKind, Box<Expr>),
+    UnaryOp(UnaryOpKind, Box<Expr>),
     Call(String, Vec<Expr>),
     Var(String),
     Cast(Box<Expr>, Type),

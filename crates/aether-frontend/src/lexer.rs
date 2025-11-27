@@ -54,6 +54,11 @@ pub enum TokenKind {
     Gt,
     StringType,
     Ampersand,
+    Pipe,
+    Caret,
+    Tilde,
+    Shl,
+    Shr,
     Eof,
 }
 
@@ -210,10 +215,18 @@ impl Lexer {
                     i += 2;
                     TokenKind::Le
                 }
+                '<' if i + 1 < bytes.len() && bytes[i + 1] as char == '<' => {
+                    i += 2;
+                    TokenKind::Shl
+                }
                 '<' => { i += 1; TokenKind::Lt }
                 '>' if i + 1 < bytes.len() && bytes[i + 1] as char == '=' => {
                     i += 2;
                     TokenKind::Ge
+                }
+                '>' if i + 1 < bytes.len() && bytes[i + 1] as char == '>' => {
+                    i += 2;
+                    TokenKind::Shr
                 }
                 '>' => { i += 1; TokenKind::Gt }
                 '=' if i + 1 < bytes.len() && bytes[i + 1] as char == '=' => {
@@ -265,6 +278,18 @@ impl Lexer {
                 '&' => {
                     i += 1;
                     TokenKind::Ampersand
+                }
+                '|' => {
+                    i += 1;
+                    TokenKind::Pipe
+                }
+                '^' => {
+                    i += 1;
+                    TokenKind::Caret
+                }
+                '~' => {
+                    i += 1;
+                    TokenKind::Tilde
                 }
                 _ => return Err(anyhow!("unexpected character: {}", c)),
             };

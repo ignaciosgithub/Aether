@@ -293,23 +293,78 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_cmp(&mut self) -> Result<Expr> {
-        let mut node = self.parse_add_sub()?;
+        let mut node = self.parse_bitor()?;
         loop {
             if self.eat_kind(&TokenKind::Le) {
-                let rhs = self.parse_add_sub()?;
+                let rhs = self.parse_bitor()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Le, Box::new(rhs));
             } else if self.eat_kind(&TokenKind::Lt) {
-                let rhs = self.parse_add_sub()?;
+                let rhs = self.parse_bitor()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Lt, Box::new(rhs));
             } else if self.eat_kind(&TokenKind::Ge) {
-                let rhs = self.parse_add_sub()?;
+                let rhs = self.parse_bitor()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Ge, Box::new(rhs));
             } else if self.eat_kind(&TokenKind::Gt) {
-                let rhs = self.parse_add_sub()?;
+                let rhs = self.parse_bitor()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Gt, Box::new(rhs));
             } else if self.eat_kind(&TokenKind::Eq) {
-                let rhs = self.parse_add_sub()?;
+                let rhs = self.parse_bitor()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Eq, Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_bitor(&mut self) -> Result<Expr> {
+        let mut node = self.parse_bitxor()?;
+        loop {
+            if self.eat_kind(&TokenKind::Pipe) {
+                let rhs = self.parse_bitxor()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::BitOr, Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_bitxor(&mut self) -> Result<Expr> {
+        let mut node = self.parse_bitand()?;
+        loop {
+            if self.eat_kind(&TokenKind::Caret) {
+                let rhs = self.parse_bitand()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::BitXor, Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_bitand(&mut self) -> Result<Expr> {
+        let mut node = self.parse_shift()?;
+        loop {
+            if self.eat_kind(&TokenKind::Ampersand) {
+                let rhs = self.parse_shift()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::BitAnd, Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(node)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr> {
+        let mut node = self.parse_add_sub()?;
+        loop {
+            if self.eat_kind(&TokenKind::Shl) {
+                let rhs = self.parse_add_sub()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Shl, Box::new(rhs));
+            } else if self.eat_kind(&TokenKind::Shr) {
+                let rhs = self.parse_add_sub()?;
+                node = Expr::BinOp(Box::new(node), BinOpKind::Shr, Box::new(rhs));
             } else {
                 break;
             }
@@ -346,6 +401,10 @@ impl<'a> Parser<'a> {
         if self.eat_kind(&TokenKind::Plus) {
             let rhs = self.parse_unary()?;
             return Ok(rhs);
+        }
+        if self.eat_kind(&TokenKind::Tilde) {
+            let rhs = self.parse_unary()?;
+            return Ok(Expr::UnaryOp(UnaryOpKind::BitNot, Box::new(rhs)));
         }
         self.parse_postfix()
     }

@@ -2504,6 +2504,32 @@ _start:
                                         }
                                     }
                                 }
+                                // Handle simple integer Let statements (i64, i32)
+                                if let Some(off) = main_local_offsets.get(name) {
+                                    match (ty, init) {
+                                        (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                            out.push_str(&format!("        movq ${}, -{}(%rbp)\n", v, off));
+                                        }
+                                        (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                            out.push_str(&format!("        movl ${}, -{}(%rbp)\n", *v as i32, off));
+                                        }
+                                        (Type::I64, _) => {
+                                            // Use generic expression emitter for non-literal init
+                                            if let Some(mf) = main_func {
+                                                linux_emit_expr_to_rax(init, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
+                                                out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                            }
+                                        }
+                                        (Type::I32, _) => {
+                                            // Use generic expression emitter for non-literal init
+                                            if let Some(mf) = main_func {
+                                                linux_emit_expr_to_rax(init, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
+                                                out.push_str(&format!("        mov %eax, -{}(%rbp)\n", off));
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
                                 if let (Type::List(inner), Expr::ArrayLit(elems)) = (ty, init) {
                                     if let Some(off) = main_local_offsets.get(name) {
                                         match &**inner {
@@ -3001,6 +3027,24 @@ _start:
                                 }
                             },
                             Stmt::PrintExpr(Expr::Var(name)) => {
+                                // First check if this is a local variable (not a parameter)
+                                // Skip if there are while loops - will be handled after while loop code
+                                if main_while_blocks.is_empty() {
+                                    if let Some(off) = main_local_offsets.get(name) {
+                                        // Check if this is an integer type
+                                        if let Some(ty) = main_local_types.get(name) {
+                                            match ty {
+                                                Type::I64 | Type::I32 => {
+                                                    out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                                    linux_emit_print_i64(&mut out);
+                                                    continue;
+                                                }
+                                                _ => {} // Let other types fall through to parameter handling
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle parameters
                                 let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
                                 let xmm_regs = ["%xmm0","%xmm1","%xmm2","%xmm3","%xmm4","%xmm5","%xmm6","%xmm7"];
                                 let mut slot = 0usize;
@@ -3133,6 +3177,11 @@ _start:
                                     BinOpKind::Ge => out.push_str(&format!("        jl .LWH_END_main_{}\n", widx)),
                                     _ => out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx)),
                                 }
+                            } else if let Some(mf) = main_func {
+                                // Use generic expression emitter for non-literal BinOp conditions
+                                linux_emit_expr_to_rax(cond, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
+                                out.push_str("        cmp $0, %rax\n");
+                                out.push_str(&format!("        je .LWH_END_main_{}\n", widx));
                             } else {
                                 out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx));
                             }
@@ -3151,6 +3200,11 @@ _start:
                             if let Some(cv) = eval_int_expr(cond) {
                                 out.push_str(&format!("        mov ${}, %r10\n", cv));
                                 out.push_str("        cmp $0, %r10\n");
+                                out.push_str(&format!("        je .LWH_END_main_{}\n", widx));
+                            } else if let Some(mf) = main_func {
+                                // Use generic expression emitter for unhandled conditions
+                                linux_emit_expr_to_rax(cond, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
+                                out.push_str("        cmp $0, %rax\n");
                                 out.push_str(&format!("        je .LWH_END_main_{}\n", widx));
                             } else {
                                 out.push_str(&format!("        jmp .LWH_END_main_{}\n", widx));
@@ -3173,6 +3227,7 @@ _start:
                             Stmt::Assign { target, value } => {
                                 if let Expr::Var(tn) = target {
                                     if let Some(off) = main_local_offsets.get(tn) {
+                                        let mut handled = false;
                                         if let Expr::BinOp(a, op, b) = value {
                                             if let (Expr::Var(vn), Expr::Lit(Value::Int(k))) = (&**a, &**b) {
                                                 match op {
@@ -3201,10 +3256,18 @@ _start:
                                                                     out.push_str(&format!("        mov %rax, {}(%rbp)\n", disp));
                                                                 }
                                                             }
+                                                            handled = true;
                                                         }
                                                     }
                                                     _ => {}
                                                 }
+                                            }
+                                        }
+                                        // Fallback: use generic expression emitter for unhandled cases
+                                        if !handled {
+                                            if let Some(mf) = main_func {
+                                                linux_emit_expr_to_rax(value, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
+                                                out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
                                             }
                                         }
                                     }
@@ -3225,6 +3288,20 @@ _start:
                         out.push_str(&format!("        .ascii \"{}\"\n", s.replace("\\\\", "\\\\\\\\").replace("\"", "\\\\\"")));
                     }
                     out.push_str("\n        .text\n");
+                }
+
+                // Handle PrintExpr(Var) statements that come after while loops
+                if !main_while_blocks.is_empty() {
+                    if let Some(f) = main_func {
+                        for stmt in &f.body {
+                            if let Stmt::PrintExpr(Expr::Var(name)) = stmt {
+                                if let Some(off) = main_local_offsets.get(name) {
+                                    out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                    linux_emit_print_i64(&mut out);
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if !main_print_calls.is_empty() || !main_field_prints.is_empty() {
@@ -4111,7 +4188,36 @@ r#"        push %rbx
                     for (_name, off, reg) in &param_spill_info {
                         out.push_str(&format!("        mov {}, -{}(%rbp)\n", reg, off));
                     }
+                    
                     let mut ret_i: i64 = 0;
+                    let mut let_init_counter: usize = 0;
+                    
+                    // Initialize local variables from Let statements
+                    for stmt in &func.body {
+                        if let Stmt::Let { name, ty, init } = stmt {
+                            if let Some(off) = local_offsets.get(name) {
+                                match (ty, init) {
+                                    (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                        out.push_str(&format!("        movq ${}, -{}(%rbp)\n", v, off));
+                                    }
+                                    (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                        out.push_str(&format!("        movl ${}, -{}(%rbp)\n", *v as i32, off));
+                                    }
+                                    (Type::I64, _) => {
+                                        // Use generic expression emitter for non-literal init
+                                        linux_emit_expr_to_rax(init, &mut out, func, &local_offsets, &local_types, &mut let_init_counter);
+                                        out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                    }
+                                    (Type::I32, _) => {
+                                        // Use generic expression emitter for non-literal init
+                                        linux_emit_expr_to_rax(init, &mut out, func, &local_offsets, &local_types, &mut let_init_counter);
+                                        out.push_str(&format!("        mov %eax, -{}(%rbp)\n", off));
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
                     let mut linux_inbuf_emitted: bool = false;
 
                     let mut ret_f: Option<f64> = None;
@@ -4213,7 +4319,10 @@ r#"        push %rbx
                                     _ => {}
                                 }
                                 if !handled_cond {
-                                    out.push_str(&format!("        jmp {}\n", end));
+                                    // Use generic expression emitter for unhandled conditions
+                                    linux_emit_expr_to_rax(cond, &mut out, func, &local_offsets, &local_types, &mut fi);
+                                    out.push_str("        cmp $0, %rax\n");
+                                    out.push_str(&format!("        je {}\n", end));
                                 }
                                 for bstmt in body {
                                     match bstmt {
@@ -4234,33 +4343,11 @@ r#"        push %rbx
                                         }
                                         Stmt::Assign { target, value } => {
                                             if let Expr::Var(vn) = target {
-                                                if let Expr::BinOp(a, op, b) = value {
-                                                    if let (Expr::Var(rv), Expr::Lit(Value::Int(k))) = (a.as_ref(), b.as_ref()) {
-                                                        if rv == vn {
-                                                            let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
-                                                            let mut slot = 0usize;
-                                                            for p in &func.params {
-                                                                if p.name == *vn {
-                                                                    let r = if slot < regs.len() { regs[slot] } else { "%rdi" };
-                                                                    match op {
-                                                                        aether_frontend::ast::BinOpKind::Add => {
-                                                                            out.push_str(&format!("        add ${}, {}\n", *k as i64, r));
-                                                                        }
-                                                                        aether_frontend::ast::BinOpKind::Sub => {
-                                                                            out.push_str(&format!("        sub ${}, {}\n", *k as i64, r));
-                                                                        }
-                                                                        _ => {}
-                                                                    }
-                                                                    break;
-                                                                } else {
-                                                                    match p.ty {
-                                                                        Type::String => slot += 2,
-                                                                        _ => slot += 1,
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
+                                                // Use generic expression emitter for the value
+                                                linux_emit_expr_to_rax(value, &mut out, func, &local_offsets, &local_types, &mut fi);
+                                                // Store result to target variable
+                                                if let Some(off) = local_offsets.get(vn) {
+                                                    out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
                                                 }
                                             }
                                         }
@@ -4321,7 +4408,10 @@ r#"        push %rbx
                                                 _ => {}
                                             }
                                             if !nhandled {
-                                                out.push_str(&format!("        jmp {}\n", nend));
+                                                // Use generic expression emitter for unhandled conditions
+                                                linux_emit_expr_to_rax(ncond, &mut out, func, &local_offsets, &local_types, &mut fi);
+                                                out.push_str("        cmp $0, %rax\n");
+                                                out.push_str(&format!("        je {}\n", nend));
                                             }
                                             for ib in nbody {
                                                 match ib {

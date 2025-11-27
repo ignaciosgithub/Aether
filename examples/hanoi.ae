@@ -1,0 +1,7 @@
+pub func main() -> i32 {
+    return hanoi(4);
+}
+
+func hanoi(n: i32) -> i32 {
+    return if (n <= 1) { 1 } else { 2 * hanoi(n - 1) + 1 };
+}

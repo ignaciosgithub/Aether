@@ -1,0 +1,16 @@
+// Challenge: Count digits
+// Count the number of digits in a number using recursion
+
+func count_digits(n: i64) -> i64 {
+    return if (n < 10) { 1 } else { 1 + count_digits(n / 10) };
+}
+
+pub func main() -> i32 {
+    println("count_digits(1) = 1:");
+    println(count_digits(1));
+    println("count_digits(123) = 3:");
+    println(count_digits(123));
+    println("count_digits(1000000) = 7:");
+    println(count_digits(1000000));
+    return 0;
+}

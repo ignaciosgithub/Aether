@@ -1625,17 +1625,16 @@ impl CodeGenerator for X86_64LinuxCodegen {
                             }
                         }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
+                            // Handle concat specially - it gets evaluated at compile time
                             if name == "concat" && args.len() == 2 {
                                 if let Some(s) = eval_concat_string(&Expr::Call(name.clone(), args.clone())) {
                                     let mut bytes = s.clone().into_bytes();
                                     bytes.push(b'\n');
                                     prints.push((String::from_utf8(bytes).unwrap(), s.as_bytes().len() + 1));
-                                } else {
-                                    if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
                                 }
-                            } else {
-                                if !name.starts_with("vec_") { main_print_calls.push((name.clone(), args.clone())); }
                             }
+                            // All other function calls are handled inline in source order
+                            // Skip collection to avoid duplicate emission
                         }
                         Stmt::PrintExpr(Expr::MethodCall(recv, meth, args)) => {
                             if let Expr::Var(rn) = &**recv {
@@ -1925,6 +1924,234 @@ _start:
                                         fi += 1;
                                         continue;
                                     }
+                                }
+                            }
+
+                            Stmt::PrintExpr(Expr::Call(name, args)) => {
+                                // Handle vec_len inline
+                                if name == "vec_len" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
+                                            linux_emit_print_i64(&mut out);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                // Handle vec_pop inline
+                                if name == "vec_pop" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                let lbl_sfx = format!("{}", label_counter);
+                                                label_counter += 1;
+                                                out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                out.push_str("        cmp $0, %r10\n");
+                                                out.push_str(&format!("        je .LVPOP_OOB_{}\n", lbl_sfx));
+                                                out.push_str("        dec %r10\n");
+                                                out.push_str(&format!("        mov %r10, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                                                out.push_str(&format!("        leaq (%rbx,%r10,{}), %rax\n", elem_sz));
+                                                out.push_str("        mov (%rax), %rax\n");
+                                                linux_emit_print_i64(&mut out);
+                                                out.push_str(&format!("        jmp .LVPOP_END_{}\n", lbl_sfx));
+                                                linux_emit_oob_error(&mut out);
+                                                out.push_str(&format!(".LVPOP_OOB_{}:\n", lbl_sfx));
+                                                out.push_str(&format!(".LVPOP_END_{}:\n", lbl_sfx));
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle vec_free inline
+                                if name == "vec_free" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                let lbl_sfx = format!("{}", label_counter);
+                                                label_counter += 1;
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                                out.push_str("        test %rax, %rax\n");
+                                                out.push_str(&format!("        jz .LVFREE_ZERO_{}\n", lbl_sfx));
+                                                out.push_str("        mov %rax, %rdi\n");
+                                                out.push_str(&format!("        mov -{}(%rbp), %rsi\n", off - 16));
+                                                out.push_str(&format!("        imul ${}, %rsi\n", elem_sz));
+                                                out.push_str("        mov $11, %rax\n");
+                                                out.push_str("        syscall\n");
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 16));
+                                                out.push_str("        mov $1, %rax\n");
+                                                out.push_str(&format!("        jmp .LVFREE_END_{}\n", lbl_sfx));
+                                                out.push_str(&format!(".LVFREE_ZERO_{}:\n", lbl_sfx));
+                                                out.push_str("        xor %eax, %eax\n");
+                                                out.push_str(&format!(".LVFREE_END_{}:\n", lbl_sfx));
+                                                linux_emit_print_i64(&mut out);
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle hlist_len inline
+                                if name == "hlist_len" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::HList) = main_local_types.get(vn) {
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
+                                                linux_emit_print_i64(&mut out);
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle readln inline
+                                if name == "readln" && args.is_empty() {
+                                    let inlbl = ".LININBUF_main";
+                                    if !linux_inbuf_main_emitted {
+                                        out.push_str(
+"\n        .bss
+.LININBUF_main:
+        .zero 1024
+        .text
+");
+                                        linux_inbuf_main_emitted = true;
+                                    }
+                                    let sfx = format!("{}", label_counter);
+                                    label_counter += 1;
+                                    linux_emit_readln_into(&mut out, inlbl, &sfx);
+                                    out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LININBUF_main(%rip), %rsi
+        mov %rdx, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                    continue;
+                                }
+                                // Regular zero-argument function call (not vec/hlist)
+                                if args.is_empty() && !name.starts_with("vec_") && !name.starts_with("hlist_") {
+                                    out.push_str("        sub $8, %rsp\n");
+                                    out.push_str(&format!("        call {}\n", name));
+                                    out.push_str("        add $8, %rsp\n");
+                                    out.push_str("        mov %rdx, %rdx\n");
+                                    out.push_str("        mov %rax, %rsi\n");
+                                    out.push_str("        mov $1, %rax\n");
+                                    out.push_str("        mov $1, %rdi\n");
+                                    out.push_str("        syscall\n");
+                                    out.push_str("        mov $1, %rax\n");
+                                    out.push_str("        mov $1, %rdi\n");
+                                    out.push_str("        leaq .LSNL(%rip), %rsi\n");
+                                    out.push_str("        mov $1, %rdx\n");
+                                    out.push_str("        syscall\n");
+                                    continue;
+                                }
+                                // Handle to_int(readln()) inline
+                                if name == "to_int" && args.len() == 1 {
+                                    if let Expr::Call(ref cname0, ref cargs0) = args[0] {
+                                        if cname0 == "readln" && cargs0.is_empty() {
+                                            let inlbl = ".LININBUF_main";
+                                            if !linux_inbuf_main_emitted {
+                                                out.push_str(
+"\n        .bss
+.LININBUF_main:
+        .zero 1024
+        .text
+");
+                                                linux_inbuf_main_emitted = true;
+                                            }
+                                            let sfx = format!("{}", label_counter);
+                                            label_counter += 1;
+                                            linux_emit_readln_into(&mut out, inlbl, &sfx);
+                                            linux_emit_to_int_from_rsi_rdx(&mut out, &sfx);
+                                            linux_emit_print_i64(&mut out);
+                                            out.push_str(&format!(
+"        jmp .TOI_END_{sfx}
+.TOI_ERR_{sfx}:
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LTOIERR(%rip), %rsi
+        mov $13, %rdx
+        syscall
+        mov $60, %rax
+        mov $1, %rdi
+        syscall
+.TOI_END_{sfx}:
+", sfx=sfx));
+                                            if !out.contains(".LTOIERR:\n") {
+                                                out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    // Handle to_int("string literal") inline
+                                    if let Expr::Lit(Value::String(s)) = &args[0] {
+                                        let len = s.len();
+                                        let lbl = format!(".LTOISTR_main_{}", label_counter);
+                                        let sfx = format!("{}", label_counter);
+                                        label_counter += 1;
+                                        call_arg_rodata.push((lbl.clone(), s.clone()));
+                                        out.push_str(&format!(
+"        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+", lbl, len));
+                                        linux_emit_to_int_from_rsi_rdx(&mut out, &sfx);
+                                        linux_emit_print_i64(&mut out);
+                                        out.push_str(&format!(
+"        jmp .TOI_END_{sfx}
+.TOI_ERR_{sfx}:
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LTOIERR(%rip), %rsi
+        mov $13, %rdx
+        syscall
+        mov $60, %rax
+        mov $1, %rdi
+        syscall
+.TOI_END_{sfx}:
+", sfx=sfx));
+                                        if !out.contains(".LTOIERR:\n") {
+                                            out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
+                                        }
+                                        continue;
+                                    }
+                                }
+                                // Function call with arguments - handle inline for source order
+                                if !args.is_empty() && !name.starts_with("vec_") && !name.starts_with("hlist_") {
+                                    let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
+                                    let mut islot = 0usize;
+                                    for a in args.iter() {
+                                        match a {
+                                            Expr::Lit(Value::Int(v)) => {
+                                                if islot < regs.len() {
+                                                    let dst = regs[islot];
+                                                    out.push_str(&format!("        mov ${}, {}\n", v, dst));
+                                                    islot += 1;
+                                                }
+                                            }
+                                            Expr::Var(vn) => {
+                                                if islot < regs.len() {
+                                                    if let Some(off) = main_local_offsets.get(vn) {
+                                                        let dst = regs[islot];
+                                                        out.push_str(&format!("        mov -{}(%rbp), {}\n", off, dst));
+                                                        islot += 1;
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    out.push_str("        sub $8, %rsp\n");
+                                    out.push_str(&format!("        call {}\n", name));
+                                    out.push_str("        add $8, %rsp\n");
+                                    linux_emit_print_i64(&mut out);
+                                    continue;
                                 }
                             }
 

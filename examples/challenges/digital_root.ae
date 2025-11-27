@@ -1,0 +1,20 @@
+// Challenge: Digital Root
+// Repeatedly sum digits until a single digit remains
+
+func digital_root(n: i64) -> i64 {
+    return if (n < 10) { n } else { digital_root(sum_digits(n)) };
+}
+
+func sum_digits(n: i64) -> i64 {
+    return if (n < 10) { n } else { (n - (n / 10) * 10) + sum_digits(n / 10) };
+}
+
+pub func main() -> i32 {
+    println("digital_root(16) = 7:");
+    println(digital_root(16));
+    println("digital_root(942) = 6:");
+    println(digital_root(942));
+    println("digital_root(132189) = 6:");
+    println(digital_root(132189));
+    return 0;
+}

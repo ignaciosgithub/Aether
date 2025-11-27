@@ -1,0 +1,18 @@
+// Challenge: Collatz Conjecture
+// Count steps to reach 1 using the Collatz sequence
+// If n is even, divide by 2; if odd, multiply by 3 and add 1
+
+func collatz_steps(n: i64) -> i64 {
+    return if (n == 1) { 0 } else { 
+        if ((n & 1) == 0) { 1 + collatz_steps(n >> 1) } 
+        else { 1 + collatz_steps(3 * n + 1) }
+    };
+}
+
+pub func main() -> i32 {
+    println("collatz_steps(6) = 8:");
+    println(collatz_steps(6));
+    println("collatz_steps(27) = 111:");
+    println(collatz_steps(27));
+    return 0;
+}

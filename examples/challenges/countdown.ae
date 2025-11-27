@@ -1,0 +1,14 @@
+// Challenge: Countdown
+// Count down from n to 1 using recursion and return the sum
+
+func countdown(n: i64) -> i64 {
+    return if (n < 1) { 0 } else { n + countdown(n - 1) };
+}
+
+pub func main() -> i32 {
+    println("countdown(5) = 15:");
+    println(countdown(5));
+    println("countdown(10) = 55:");
+    println(countdown(10));
+    return 0;
+}

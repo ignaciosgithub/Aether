@@ -1,9 +1,4 @@
-func demo(a: i32, b: i32) -> i32 {
-    println(if a < b { "LT" } else { "GE" });
-    return 0;
-}
-
 pub func main() -> i32 {
-    demo(2, 5);
+    println(if (2 < 5) { "LT" } else { "GE" });
     return 0;
 }

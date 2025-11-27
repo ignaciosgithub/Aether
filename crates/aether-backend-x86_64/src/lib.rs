@@ -737,7 +737,7 @@ LWIN_I64_done_%=:
     }
 
 }
-fn linux_emit_readln_into(out: &mut String, buf_label: &str) {
+fn linux_emit_readln_into(out: &mut String, buf_label: &str, suffix: &str) {
     out.push_str(&format!(
 "        mov $0, %rax
         mov $0, %rdi
@@ -745,67 +745,67 @@ fn linux_emit_readln_into(out: &mut String, buf_label: &str) {
         mov $1024, %rdx
         syscall
         test %rax, %rax
-        jz .LREAD_EMPTY_%=
+        jz .LREAD_EMPTY_{sfx}
         mov %rax, %rdx
         dec %rdx
         mov %bl, (%rsi,%rdx,1)
         cmp $10, %bl
-        jne .LREAD_NO_NL_%=
+        jne .LREAD_NO_NL_{sfx}
         test %rdx, %rdx
-        jz .LREAD_TRIM_%=
+        jz .LREAD_TRIM_{sfx}
         mov %bl, -1(%rsi,%rdx,1)
         cmp $13, %bl
-        jne .LREAD_TRIM_%=
+        jne .LREAD_TRIM_{sfx}
         dec %rdx
-.LREAD_TRIM_%=:
-.LREAD_NO_NL_%=:
-        jmp .LREAD_RET_%=
-.LREAD_EMPTY_%=:
+.LREAD_TRIM_{sfx}:
+.LREAD_NO_NL_{sfx}:
+        jmp .LREAD_RET_{sfx}
+.LREAD_EMPTY_{sfx}:
         xor %rdx, %rdx
-.LREAD_RET_%=:
-", buf=buf_label));
+.LREAD_RET_{sfx}:
+", buf=buf_label, sfx=suffix));
 }
 
-fn linux_emit_to_int_from_rsi_rdx(out: &mut String) {
-    out.push_str(
+fn linux_emit_to_int_from_rsi_rdx(out: &mut String, suffix: &str) {
+    out.push_str(&format!(
 "        xor %rdi, %rdi
         mov $1, %r8
         test %rdx, %rdx
-        jz .TOI_ERR_%=
+        jz .TOI_ERR_{sfx}
         mov (%rsi), %al
         cmp $'+', %al
-        jne .TOI_CHKMIN_%=
+        jne .TOI_CHKMIN_{sfx}
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP_%=
-.TOI_CHKMIN_%=:
+        jmp .TOI_LOOP_{sfx}
+.TOI_CHKMIN_{sfx}:
         cmp $'-', %al
-        jne .TOI_LOOP_%=
+        jne .TOI_LOOP_{sfx}
         mov $-1, %r8
         inc %rsi
         dec %rdx
-.TOI_LOOP_%=:
+.TOI_LOOP_{sfx}:
         test %rdx, %rdx
-        jz .TOI_FIN_%=
+        jz .TOI_FIN_{sfx}
         mov (%rsi), %al
         cmp $'0', %al
-        jb .TOI_ERR_%=
+        jb .TOI_ERR_{sfx}
         cmp $'9', %al
-        ja .TOI_ERR_%=
-        imul %rdi, %rdi, 10
+        ja .TOI_ERR_{sfx}
+        imul $10, %rdi, %rdi
         movzbq %al, %rax
         sub $'0', %rax
         add %rax, %rdi
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP_%=
-.TOI_FIN_%=:
+        jmp .TOI_LOOP_{sfx}
+.TOI_FIN_{sfx}:
         mov %rdi, %rax
         cmp $0, %r8
-        jge .TOI_OK_%=
+        jge .TOI_OK_{sfx}
         neg %rax
-.TOI_OK_%=:
-");
+.TOI_OK_{sfx}:
+", sfx=suffix));
 }
 fn linux_eval_addr_of_expr_to_rax(
     expr: &aether_frontend::ast::Expr,
@@ -1538,6 +1538,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
         }
         let static_names: HashSet<String> = static_types.keys().cloned().collect();
         let mut local_strings: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut label_counter: usize = 0;
         for item in &module.items {
             let func = match item {
                 Item::Function(f) => f,
@@ -2323,7 +2324,9 @@ _start:
 ");
                                         linux_inbuf_main_emitted = true;
                                     }
-                                    linux_emit_readln_into(&mut out, inlbl);
+                                    let sfx = format!("{}", label_counter);
+                                    label_counter += 1;
+                                    linux_emit_readln_into(&mut out, inlbl, &sfx);
                                     out.push_str(
 "        mov $1, %rax
         mov $1, %rdi
@@ -2504,18 +2507,20 @@ _start:
                                             Type::F64 => {
                                                 if slot < xmm_regs.len() {
                                                     let sx = xmm_regs[slot];
+                                                    let sfx = format!("{}", label_counter);
+                                                    label_counter += 1;
                                                     out.push_str("        sub $80, %rsp\n");
                                                     out.push_str(&format!("        cvttsd2si {}, %rax\n", sx));
-                                                    out.push_str(
+                                                    out.push_str(&format!(
 "        leaq 79(%rsp), %r10
         mov $10, %r8
         xor %rcx, %rcx
         test %rax, %rax
-        jnz .F64I64_print_loop_%=
+        jnz .F64I64_print_loop_{sfx}
         movb $48, (%r10)
         mov $1, %rcx
-        jmp .F64I64_print_done_%=
-.F64I64_print_loop_%=:
+        jmp .F64I64_print_done_{sfx}
+.F64I64_print_loop_{sfx}:
         xor %rdx, %rdx
         div %r8
         add $48, %dl
@@ -2523,14 +2528,14 @@ _start:
         dec %r10
         inc %rcx
         test %rax, %rax
-        jnz .F64I64_print_loop_%=
-.F64I64_print_done_%=:
+        jnz .F64I64_print_loop_{sfx}
+.F64I64_print_done_{sfx}:
         leaq 1(%r10), %rsi
         mov %rcx, %rdx
         mov $1, %rax
         mov $1, %rdi
         syscall
-");
+", sfx=sfx));
                                                     if !out.contains(".LCDOT:\n") {
                                                         out.push_str("\n        .section .rodata\n.LCDOT:\n        .ascii \".\"\n        .text\n");
                                                     }
@@ -2548,7 +2553,7 @@ _start:
                                                         out.push_str("\n        .section .rodata\n.LCFTHALF:\n        .double 0.5\n        .text\n");
                                                     }
                                                     out.push_str(&format!(
-"        movapd {}, %xmm0
+"        movapd {sx}, %xmm0
         cvtsi2sd %rax, %xmm1
         subsd %xmm1, %xmm0
         movsd .LCFTSCALE(%rip), %xmm2
@@ -2561,7 +2566,7 @@ _start:
         mov $6, %r11
         mov %rcx, %rax
 
-.F64FRAC_loop_%=:
+.F64FRAC_loop_{sfx}:
         xor %rdx, %rdx
         div %r8
         add $48, %dl
@@ -2569,7 +2574,7 @@ _start:
         dec %r10
         dec %r11
         test %r11, %r11
-        jnz .F64FRAC_loop_%=
+        jnz .F64FRAC_loop_{sfx}
         leaq 1(%r10), %rsi
         mov $6, %rdx
         mov $1, %rax
@@ -2581,7 +2586,7 @@ _start:
         mov $1, %rdx
         syscall
         add $80, %rsp
-", sx));
+", sx=sx, sfx=sfx));
                                                 }
                                             }
                                             Type::String => { slot += 2; continue; }
@@ -2729,7 +2734,9 @@ _start:
 ");
                             linux_inbuf_main_emitted = true;
                         }
-                        linux_emit_readln_into(&mut out, inlbl);
+                        let sfx = format!("{}", label_counter);
+                        label_counter += 1;
+                        linux_emit_readln_into(&mut out, inlbl, &sfx);
                         out.push_str(
 "        mov $1, %rax
         mov $1, %rdi
@@ -2774,12 +2781,14 @@ r#"        add $8, %rsp
 ");
                                         linux_inbuf_main_emitted = true;
                                     }
-                                    linux_emit_readln_into(&mut out, inlbl);
-                                    linux_emit_to_int_from_rsi_rdx(&mut out);
+                                    let sfx = format!("{}", label_counter);
+                                    label_counter += 1;
+                                    linux_emit_readln_into(&mut out, inlbl, &sfx);
+                                    linux_emit_to_int_from_rsi_rdx(&mut out, &sfx);
                                     linux_emit_print_i64(&mut out);
-                                    out.push_str(
-"        jmp .TOI_END_%=
-.TOI_ERR_%=:
+                                    out.push_str(&format!(
+"        jmp .TOI_END_{sfx}
+.TOI_ERR_{sfx}:
         mov $1, %rax
         mov $1, %rdi
         leaq .LTOIERR(%rip), %rsi
@@ -2788,8 +2797,8 @@ r#"        add $8, %rsp
         mov $60, %rax
         mov $1, %rdi
         syscall
-.TOI_END_%=:
-");
+.TOI_END_{sfx}:
+", sfx=sfx));
                                     if !out.contains(".LTOIERR:\n") {
                                         out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                     }
@@ -2812,11 +2821,13 @@ r#"        add $8, %rsp
 "        leaq {}(%rip), %rsi
         mov ${}, %rdx
 ", lbl, len));
-                                linux_emit_to_int_from_rsi_rdx(&mut out);
+                                let sfx = format!("{}", label_counter);
+                                label_counter += 1;
+                                linux_emit_to_int_from_rsi_rdx(&mut out, &sfx);
                                 linux_emit_print_i64(&mut out);
-                                out.push_str(
-"        jmp .TOI_END_%=
-.TOI_ERR_%=:
+                                out.push_str(&format!(
+"        jmp .TOI_END_{sfx}
+.TOI_ERR_{sfx}:
         mov $1, %rax
         mov $1, %rdi
         leaq .LTOIERR(%rip), %rsi
@@ -2825,8 +2836,8 @@ r#"        add $8, %rsp
         mov $60, %rax
         mov $1, %rdi
         syscall
-.TOI_END_%=:
-");
+.TOI_END_{sfx}:
+", sfx=sfx));
                                 if !out.contains(".LTOIERR:\n") {
                                     out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                 }
@@ -3915,7 +3926,9 @@ r#"        push %rbx
 ", inlbl=inlbl));
                                                 linux_inbuf_emitted = true;
                                             }
-                                            linux_emit_readln_into(&mut out, &inlbl);
+                                            let sfx = format!("{}", label_counter);
+                                            label_counter += 1;
+                                            linux_emit_readln_into(&mut out, &inlbl, &sfx);
                                             out.push_str(&format!(
 "        mov $1, %rax
         mov $1, %rdi
@@ -3924,7 +3937,7 @@ r#"        push %rbx
         syscall
 ", inlbl=inlbl));
                                             fi += 1;
-                                        } else if name == "to_int" {
+                                        }else if name == "to_int" {
                                             if args.len() == 1 {
                                                 match &args[0] {
                                                     Expr::Lit(Value::String(s)) => {
@@ -3932,50 +3945,53 @@ r#"        push %rbx
                                                         let bytes = s.clone().into_bytes();
                                                         let len = bytes.len();
                                                         func_rodata.push((lbl.clone(), String::from_utf8(bytes).unwrap()));
-                                                        
+                                                        let sfx = format!("{}", label_counter);
+                                                        label_counter += 1;
                                                         out.push_str(&format!(
 "        leaq {lbl}(%rip), %rsi
         mov ${len}, %rdx
         xor %rdi, %rdi
         mov $1, %r8
         test %rdx, %rdx
-        jz .TOI_ERR_%=
+        jz .TOI_ERR_{sfx}
         mov (%rsi), %al
         cmp $'+', %al
-        jne .TOI_CHKMIN_%=
+        jne .TOI_CHKMIN_{sfx}
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP_%=
-.TOI_CHKMIN_%=:
+        jmp .TOI_LOOP_{sfx}
+.TOI_CHKMIN_{sfx}:
         cmp $'-', %al
-        jne .TOI_LOOP_%=
+        jne .TOI_LOOP_{sfx}
         mov $-1, %r8
         inc %rsi
         dec %rdx
-.TOI_LOOP_%=:
+.TOI_LOOP_{sfx}:
         test %rdx, %rdx
-        jz .TOI_FIN_%=
+        jz .TOI_FIN_{sfx}
         mov (%rsi), %al
         cmp $'0', %al
-        jb .TOI_ERR_%=
+        jb .TOI_ERR_{sfx}
         cmp $'9', %al
-        ja .TOI_ERR_%=
-        imul %rdi, %rdi, 10
+        ja .TOI_ERR_{sfx}
+        imul $10, %rdi, %rdi
         movzbq %al, %rax
         sub $'0', %rax
         add %rax, %rdi
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP_%=
-.TOI_FIN_%=:
+        jmp .TOI_LOOP_{sfx}
+.TOI_FIN_{sfx}:
         mov %rdi, %rax
         cmp $0, %r8
-        jge .TOI_OK_%=
+        jge .TOI_OK_{sfx}
         neg %rax
-.TOI_OK_%=:
+.TOI_OK_{sfx}:
+", lbl=lbl, len=len, sfx=sfx));
 linux_emit_print_i64(&mut out);
-        jmp .TOI_END_%=
-.TOI_ERR_%=:
+                                                        out.push_str(&format!(
+"        jmp .TOI_END_{sfx}
+.TOI_ERR_{sfx}:
         mov $1, %rax
         mov $1, %rdi
         leaq .LTOIERR(%rip), %rsi
@@ -3984,8 +4000,8 @@ linux_emit_print_i64(&mut out);
         mov $60, %rax
         mov $1, %rdi
         syscall
-.TOI_END_%=:
-"));
+.TOI_END_{sfx}:
+", sfx=sfx));
                                                         if !out.contains(".LTOIERR:\n") {
                                                             out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                                         }
@@ -4004,46 +4020,48 @@ linux_emit_print_i64(&mut out);
 ", inlbl=inlbl));
                                                                 linux_inbuf_emitted = true;
                                                             }
-                                                            linux_emit_readln_into(&mut out, &inlbl);
+                                                            let sfx = format!("{}", label_counter);
+                                                            label_counter += 1;
+                                                            linux_emit_readln_into(&mut out, &inlbl, &sfx);
                                                             out.push_str(&format!(
 "        xor %rdi, %rdi
         mov $1, %r8
         test %rdx, %rdx
-        jz .TOI_ERR_%=
+        jz .TOI_ERR_{sfx}
         mov (%rsi), %al
         cmp $'+', %al
-        jne .TOI_CHKMIN2_%=
+        jne .TOI_CHKMIN2_{sfx}
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP2_%=
-.TOI_CHKMIN2_%=:
+        jmp .TOI_LOOP2_{sfx}
+.TOI_CHKMIN2_{sfx}:
         cmp $'-', %al
-        jne .TOI_LOOP2_%=
+        jne .TOI_LOOP2_{sfx}
         mov $-1, %r8
         inc %rsi
         dec %rdx
-.TOI_LOOP2_%=:
+.TOI_LOOP2_{sfx}:
         test %rdx, %rdx
-        jz .TOI_FIN2_%=
+        jz .TOI_FIN2_{sfx}
         mov (%rsi), %al
         cmp $'0', %al
-        jb .TOI_ERR_%=
+        jb .TOI_ERR_{sfx}
         cmp $'9', %al
-        ja .TOI_ERR_%=
-        imul %rdi, %rdi, 10
+        ja .TOI_ERR_{sfx}
+        imul $10, %rdi, %rdi
         movzbq %al, %rax
         sub $'0', %rax
         add %rax, %rdi
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP2_%=
-.TOI_FIN2_%=:
+        jmp .TOI_LOOP2_{sfx}
+.TOI_FIN2_{sfx}:
         mov %rdi, %rax
         cmp $0, %r8
-        jge .TOI_OK2_%=
+        jge .TOI_OK2_{sfx}
         neg %rax
-.TOI_OK2_%=:
-"));
+.TOI_OK2_{sfx}:
+", sfx=sfx));
 linux_emit_print_i64(&mut out);
 
                                                             if !out.contains(".LTOIERR:\n") {
@@ -4196,18 +4214,20 @@ linux_emit_print_i64(&mut out);
                                                     Type::F64 => {
                                                         if slot < xmm_regs.len() {
                                                             let srcx = xmm_regs[slot];
+                                                            let sfx = format!("{}", label_counter);
+                                                            label_counter += 1;
                                                             out.push_str("        sub $80, %rsp\n");
                                                             out.push_str(&format!("        cvttsd2si {}, %rax\n", srcx));
-                                                            out.push_str(
+                                                            out.push_str(&format!(
 "        leaq 79(%rsp), %r10
         mov $10, %r8
         xor %rcx, %rcx
         test %rax, %rax
-        jnz .F64I64_print_loop_%=
+        jnz .F64I64_print_loop_{sfx}
         movb $'0', (%r10)
         mov $1, %rcx
-        jmp .F64I64_print_done_%=
-.F64I64_print_loop_%=:
+        jmp .F64I64_print_done_{sfx}
+.F64I64_print_loop_{sfx}:
         xor %rdx, %rdx
         div %r8
         add $'0', %dl
@@ -4215,14 +4235,14 @@ linux_emit_print_i64(&mut out);
         dec %r10
         inc %rcx
         test %rax, %rax
-        jnz .F64I64_print_loop_%=
-.F64I64_print_done_%=:
+        jnz .F64I64_print_loop_{sfx}
+.F64I64_print_done_{sfx}:
         leaq 1(%r10), %rsi
         mov %rcx, %rdx
         mov $1, %rax
         mov $1, %rdi
         syscall
-");
+", sfx=sfx));
                                                             let dot_lbl = format!(".LSDOT_{}_{}", func.name, fi);
                                                             out.push_str(&format!(
 "        mov $1, %rax
@@ -4246,7 +4266,7 @@ linux_emit_print_i64(&mut out);
         leaq 79(%rsp), %r10
         mov $10, %r8
         mov $6, %r11
-.F64FRAC_loop_%=:
+.F64FRAC_loop_{sfx}:
         xor %rdx, %rdx
         div %r8
         add $'0', %dl
@@ -4254,7 +4274,7 @@ linux_emit_print_i64(&mut out);
         dec %r10
         dec %r11
         test %r11, %r11
-        jnz .F64FRAC_loop_%=
+        jnz .F64FRAC_loop_{sfx}
         leaq 1(%r10), %rsi
         mov $6, %rdx
         mov $1, %rax
@@ -4266,7 +4286,7 @@ linux_emit_print_i64(&mut out);
         mov $1, %rdx
         syscall
         add $80, %rsp
-", sx=srcx));
+", sx=srcx, sfx=sfx));
                                                             if !out.contains(".LCFTSCALE:\n") {
                                                                 out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n");
                                                                 out.push_str(".LCFTHALF:\n        .double 0.5\n        .text\n");
@@ -4296,49 +4316,53 @@ linux_emit_print_i64(&mut out);
                                                             let bytes = s.clone().into_bytes();
                                                             let len = bytes.len();
                                                             func_rodata.push((lbl.clone(), String::from_utf8(bytes).unwrap()));
+                                                            let sfx = format!("{}", label_counter);
+                                                            label_counter += 1;
                                                             out.push_str(&format!(
 "        leaq {lbl}(%rip), %rsi
         mov ${len}, %rdx
         xor %rdi, %rdi
         mov $1, %r8
         test %rdx, %rdx
-        jz .TOI_ERR_%=
+        jz .TOI_ERR_{sfx}
         mov (%rsi), %al
         cmp $'+', %al
-        jne .TOI_CHKMIN_%=
+        jne .TOI_CHKMIN_{sfx}
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP_%=
-.TOI_CHKMIN_%=:
+        jmp .TOI_LOOP_{sfx}
+.TOI_CHKMIN_{sfx}:
         cmp $'-', %al
-        jne .TOI_LOOP_%=
+        jne .TOI_LOOP_{sfx}
         mov $-1, %r8
         inc %rsi
         dec %rdx
-.TOI_LOOP_%=:
+.TOI_LOOP_{sfx}:
         test %rdx, %rdx
-        jz .TOI_FIN_%=
+        jz .TOI_FIN_{sfx}
         mov (%rsi), %al
         cmp $'0', %al
-        jb .TOI_ERR_%=
+        jb .TOI_ERR_{sfx}
         cmp $'9', %al
-        ja .TOI_ERR_%=
-        imul %rdi, %rdi, 10
+        ja .TOI_ERR_{sfx}
+        imul $10, %rdi, %rdi
         movzbq %al, %rax
         sub $'0', %rax
         add %rax, %rdi
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP_%=
-.TOI_FIN_%=:
+        jmp .TOI_LOOP_{sfx}
+.TOI_FIN_{sfx}:
         mov %rdi, %rax
         cmp $0, %r8
-        jge .TOI_OK_%=
+        jge .TOI_OK_{sfx}
         neg %rax
-.TOI_OK_%=:
+.TOI_OK_{sfx}:
+", lbl=lbl, len=len, sfx=sfx));
 linux_emit_print_i64(&mut out);
-        jmp .TOI_END_%=
-.TOI_ERR_%=:
+                                                            out.push_str(&format!(
+"        jmp .TOI_END_{sfx}
+.TOI_ERR_{sfx}:
         mov $1, %rax
         mov $1, %rdi
         leaq .LTOIERR(%rip), %rsi
@@ -4347,8 +4371,8 @@ linux_emit_print_i64(&mut out);
         mov $60, %rax
         mov $1, %rdi
         syscall
-.TOI_END_%=:
-"));
+.TOI_END_{sfx}:
+", sfx=sfx));
                                                             if !out.contains(".LTOIERR:\n") {
                                                                 out.push_str("\n        .section .rodata\n.LTOIERR:\n        .ascii \"to_int error\\n\"\n        .text\n");
                                                             }
@@ -4367,46 +4391,48 @@ linux_emit_print_i64(&mut out);
                                                                     linux_inbuf_emitted = true;
                                                                 }
 
-                                                                linux_emit_readln_into(&mut out, &inlbl);
+                                                                let sfx = format!("{}", label_counter);
+                                                                label_counter += 1;
+                                                                linux_emit_readln_into(&mut out, &inlbl, &sfx);
                                                                 out.push_str(&format!(
 "        xor %rdi, %rdi
         mov $1, %r8
         test %rdx, %rdx
-        jz .TOI_ERR_%=
+        jz .TOI_ERR_{sfx}
         mov (%rsi), %al
         cmp $'+', %al
-        jne .TOI_CHKMIN2_%=
+        jne .TOI_CHKMIN2_{sfx}
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP2_%=
-.TOI_CHKMIN2_%=:
+        jmp .TOI_LOOP2_{sfx}
+.TOI_CHKMIN2_{sfx}:
         cmp $'-', %al
-        jne .TOI_LOOP2_%=
+        jne .TOI_LOOP2_{sfx}
         mov $-1, %r8
         inc %rsi
         dec %rdx
-.TOI_LOOP2_%=:
+.TOI_LOOP2_{sfx}:
         test %rdx, %rdx
-        jz .TOI_FIN2_%=
+        jz .TOI_FIN2_{sfx}
         mov (%rsi), %al
         cmp $'0', %al
-        jb .TOI_ERR_%=
+        jb .TOI_ERR_{sfx}
         cmp $'9', %al
-        ja .TOI_ERR_%=
-        imul %rdi, %rdi, 10
+        ja .TOI_ERR_{sfx}
+        imul $10, %rdi, %rdi
         movzbq %al, %rax
         sub $'0', %rax
         add %rax, %rdi
         inc %rsi
         dec %rdx
-        jmp .TOI_LOOP2_%=
-.TOI_FIN2_%=:
+        jmp .TOI_LOOP2_{sfx}
+.TOI_FIN2_{sfx}:
         mov %rdi, %rax
         cmp $0, %r8
-        jge .TOI_OK2_%=
+        jge .TOI_OK2_{sfx}
         neg %rax
-.TOI_OK2_%=:
-"));
+.TOI_OK2_{sfx}:
+", sfx=sfx));
 linux_emit_print_i64(&mut out);
 
                                                                 if !out.contains(".LTOIERR:\n") {
@@ -4431,7 +4457,9 @@ linux_emit_print_i64(&mut out);
 ", inlbl=inlbl));
                                                 linux_inbuf_emitted = true;
                                             }
-                                            linux_emit_readln_into(&mut out, &inlbl);
+                                            let sfx = format!("{}", label_counter);
+                                            label_counter += 1;
+                                            linux_emit_readln_into(&mut out, &inlbl, &sfx);
                                             out.push_str(&format!(
 "        mov $1, %rax
         mov $1, %rdi
@@ -4667,7 +4695,7 @@ linux_emit_print_i64(&mut out);
                                                 out.push_str(&format!("        jmp {}\n", lt_lbl_else));
                                                 out.push_str(&format!("{}:\n", lt_lbl_then));
                                                 let lbl_then_str = format!(".LSIFTH{}_{}", func.name, fi);
-                                                call_arg_rodata.push((lbl_then_str.clone(), s_then.clone()));
+                                                func_rodata.push((lbl_then_str.clone(), s_then.clone()));
                                                 out.push_str(
 r#"        mov $1, %rax
         mov $1, %rdi
@@ -4680,7 +4708,7 @@ r#"        syscall
                                                 out.push_str(&format!("{}\n", join_lbl));
                                                 out.push_str(&format!("{}:\n", lt_lbl_else));
                                                 let lbl_else_str = format!(".LSIFEL{}_{}", func.name, fi);
-                                                call_arg_rodata.push((lbl_else_str.clone(), s_else.clone()));
+                                                func_rodata.push((lbl_else_str.clone(), s_else.clone()));
                                                 out.push_str(
 r#"        mov $1, %rax
         mov $1, %rdi

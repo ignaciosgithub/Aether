@@ -22,7 +22,7 @@ fn linux_to_int_parses_and_prints() {
     let mut cg = X86_64LinuxCodegen::new_linux();
     let asm = cg.generate(&module).unwrap();
 
-    assert!(asm.contains("imul %rdi, %rdi, 10") || asm.contains("imul rdi, rdi, 10"));
+    assert!(asm.contains("imul $10, %rdi, %rdi") || asm.contains("imul rdi, rdi, 10"));
     assert!(
         asm.contains("sub $'0', %rax")
         || asm.contains("sub rax, 48")

@@ -1057,6 +1057,51 @@ r#"        mov %rsi, %rax
 "#);
 }
 
+// File I/O functions using Linux syscalls
+// file_open(path: String, flags: i64) -> i64 (returns fd or -1 on error)
+// flags: 0=O_RDONLY, 1=O_WRONLY, 2=O_RDWR, 64=O_CREAT, 512=O_TRUNC
+fn linux_emit_file_open(out: &mut String) {
+    out.push_str("\n        .text\n        .globl file_open\nfile_open:\n");
+    out.push_str(
+r#"        mov %rdi, %rdi
+        mov %rdx, %rsi
+        mov $0644, %rdx
+        mov $2, %rax
+        syscall
+        ret
+"#);
+}
+
+// file_read(fd: i64, buf: &i64, count: i64) -> i64 (returns bytes read or -1)
+fn linux_emit_file_read(out: &mut String) {
+    out.push_str("\n        .text\n        .globl file_read\nfile_read:\n");
+    out.push_str(
+r#"        mov $0, %rax
+        syscall
+        ret
+"#);
+}
+
+// file_write(fd: i64, buf: &i64, count: i64) -> i64 (returns bytes written or -1)
+fn linux_emit_file_write(out: &mut String) {
+    out.push_str("\n        .text\n        .globl file_write\nfile_write:\n");
+    out.push_str(
+r#"        mov $1, %rax
+        syscall
+        ret
+"#);
+}
+
+// file_close(fd: i64) -> i64 (returns 0 on success or -1 on error)
+fn linux_emit_file_close(out: &mut String) {
+    out.push_str("\n        .text\n        .globl file_close\nfile_close:\n");
+    out.push_str(
+r#"        mov $3, %rax
+        syscall
+        ret
+"#);
+}
+
 // HList element size: 16 bytes (8 byte tag + 8 byte value)
 // Tag values: 0=i64, 1=f64, 2=string(ptr), 3=i32, 4=f32
 const HLIST_ELEM_SIZE: usize = 16;
@@ -5042,6 +5087,10 @@ r#"        leaq .LC0(%rip), %rax
                 if module_uses_stdlib_func(module, "sqrt_f64") { linux_emit_sqrt_f64(&mut out); }
                 if module_uses_stdlib_func(module, "sqrt_f32") { linux_emit_sqrt_f32(&mut out); }
                 if module_uses_stdlib_func(module, "str_len") { linux_emit_str_len(&mut out); }
+                if module_uses_stdlib_func(module, "file_open") { linux_emit_file_open(&mut out); }
+                if module_uses_stdlib_func(module, "file_read") { linux_emit_file_read(&mut out); }
+                if module_uses_stdlib_func(module, "file_write") { linux_emit_file_write(&mut out); }
+                if module_uses_stdlib_func(module, "file_close") { linux_emit_file_close(&mut out); }
                 // Ensure .LSNL is defined if referenced anywhere in the output
                 if out.contains(".LSNL") && !out.contains(".LSNL:\n") {
                     out.push_str("\n        .section .rodata\n.LSNL:\n        .ascii \"\\n\"\n        .text\n");

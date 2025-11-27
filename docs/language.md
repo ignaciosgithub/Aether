@@ -141,6 +141,13 @@ Math functions:
 String functions:
 - str_len(s: String) -> i64: length of string in bytes
 
+File I/O functions (Linux x86_64):
+- file_open(path: &i64, flags: i64) -> i64: open file, returns fd or -1 on error
+  - flags: 0=O_RDONLY, 1=O_WRONLY, 2=O_RDWR, 64=O_CREAT, 512=O_TRUNC
+- file_read(fd: i64, buf: &i64, count: i64) -> i64: read from fd, returns bytes read or -1
+- file_write(fd: i64, buf: &i64, count: i64) -> i64: write to fd, returns bytes written or -1
+- file_close(fd: i64) -> i64: close fd, returns 0 on success or -1 on error
+
 ## HList (Heterogeneous List)
 
 HList is a dynamic collection that can store values of different types. Each element is tagged with its type.

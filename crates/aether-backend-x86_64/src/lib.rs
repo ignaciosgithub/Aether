@@ -1625,7 +1625,11 @@ impl CodeGenerator for X86_64LinuxCodegen {
                             }
                         }
                         Stmt::PrintExpr(Expr::Call(name, args)) => {
-                            if name == "concat" && args.len() == 2 {
+                            // Zero-argument function calls are handled inline in source order
+                            // Only collect calls with arguments for batched processing
+                            if args.is_empty() && !name.starts_with("vec_") && !name.starts_with("hlist_") {
+                                // Skip - will be handled inline in the main statement loop
+                            } else if name == "concat" && args.len() == 2 {
                                 if let Some(s) = eval_concat_string(&Expr::Call(name.clone(), args.clone())) {
                                     let mut bytes = s.clone().into_bytes();
                                     bytes.push(b'\n');
@@ -1925,6 +1929,133 @@ _start:
                                         fi += 1;
                                         continue;
                                     }
+                                }
+                            }
+
+                            Stmt::PrintExpr(Expr::Call(name, args)) => {
+                                // Handle vec_len inline
+                                if name == "vec_len" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
+                                            linux_emit_print_i64(&mut out);
+                                            continue;
+                                        }
+                                    }
+                                }
+                                // Handle vec_pop inline
+                                if name == "vec_pop" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                let lbl_sfx = format!("{}", label_counter);
+                                                label_counter += 1;
+                                                out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                out.push_str("        cmp $0, %r10\n");
+                                                out.push_str(&format!("        je .LVPOP_OOB_{}\n", lbl_sfx));
+                                                out.push_str("        dec %r10\n");
+                                                out.push_str(&format!("        mov %r10, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                                                out.push_str(&format!("        leaq (%rbx,%r10,{}), %rax\n", elem_sz));
+                                                out.push_str("        mov (%rax), %rax\n");
+                                                linux_emit_print_i64(&mut out);
+                                                out.push_str(&format!("        jmp .LVPOP_END_{}\n", lbl_sfx));
+                                                linux_emit_oob_error(&mut out);
+                                                out.push_str(&format!(".LVPOP_OOB_{}:\n", lbl_sfx));
+                                                out.push_str(&format!(".LVPOP_END_{}:\n", lbl_sfx));
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle vec_free inline
+                                if name == "vec_free" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::Vector(inner_ty)) = main_local_types.get(vn) {
+                                                let elem_sz = size_of_type(inner_ty, &struct_sizes, &collect_structs(module));
+                                                let lbl_sfx = format!("{}", label_counter);
+                                                label_counter += 1;
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                                out.push_str("        test %rax, %rax\n");
+                                                out.push_str(&format!("        jz .LVFREE_ZERO_{}\n", lbl_sfx));
+                                                out.push_str("        mov %rax, %rdi\n");
+                                                out.push_str(&format!("        mov -{}(%rbp), %rsi\n", off - 16));
+                                                out.push_str(&format!("        imul ${}, %rsi\n", elem_sz));
+                                                out.push_str("        mov $11, %rax\n");
+                                                out.push_str("        syscall\n");
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 16));
+                                                out.push_str("        mov $1, %rax\n");
+                                                out.push_str(&format!("        jmp .LVFREE_END_{}\n", lbl_sfx));
+                                                out.push_str(&format!(".LVFREE_ZERO_{}:\n", lbl_sfx));
+                                                out.push_str("        xor %eax, %eax\n");
+                                                out.push_str(&format!(".LVFREE_END_{}:\n", lbl_sfx));
+                                                linux_emit_print_i64(&mut out);
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle hlist_len inline
+                                if name == "hlist_len" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::HList) = main_local_types.get(vn) {
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
+                                                linux_emit_print_i64(&mut out);
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                                // Handle readln inline
+                                if name == "readln" && args.is_empty() {
+                                    let inlbl = ".LININBUF_main";
+                                    if !linux_inbuf_main_emitted {
+                                        out.push_str(
+"\n        .bss
+.LININBUF_main:
+        .zero 1024
+        .text
+");
+                                        linux_inbuf_main_emitted = true;
+                                    }
+                                    let sfx = format!("{}", label_counter);
+                                    label_counter += 1;
+                                    linux_emit_readln_into(&mut out, inlbl, &sfx);
+                                    out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq .LININBUF_main(%rip), %rsi
+        mov %rdx, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                    continue;
+                                }
+                                // Regular zero-argument function call (not vec/hlist)
+                                if args.is_empty() && !name.starts_with("vec_") && !name.starts_with("hlist_") {
+                                    out.push_str("        sub $8, %rsp\n");
+                                    out.push_str(&format!("        call {}\n", name));
+                                    out.push_str("        add $8, %rsp\n");
+                                    out.push_str("        mov %rdx, %rdx\n");
+                                    out.push_str("        mov %rax, %rsi\n");
+                                    out.push_str("        mov $1, %rax\n");
+                                    out.push_str("        mov $1, %rdi\n");
+                                    out.push_str("        syscall\n");
+                                    out.push_str("        mov $1, %rax\n");
+                                    out.push_str("        mov $1, %rdi\n");
+                                    out.push_str("        leaq .LSNL(%rip), %rsi\n");
+                                    out.push_str("        mov $1, %rdx\n");
+                                    out.push_str("        syscall\n");
+                                    continue;
                                 }
                             }
 

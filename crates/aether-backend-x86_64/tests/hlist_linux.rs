@@ -116,3 +116,39 @@ fn hlist_free_releases_memory() {
     let asm = gen_asm(&module);
     assert!(asm.contains("mov $11, %rax"), "expected munmap syscall for free");
 }
+
+#[test]
+fn hlist_index_with_oob_check() {
+    let module = Module {
+        items: vec![
+            Item::Function(Function {
+                name: "main".to_string(),
+                params: vec![],
+                ret: Type::I32,
+                body: vec![
+                    Stmt::Let {
+                        name: "h".to_string(),
+                        ty: Type::HList,
+                        init: Expr::Call("hlist_new".to_string(), vec![Expr::Lit(Value::Int(4))]),
+                    },
+                    Stmt::Expr(Expr::Call("hlist_push".to_string(), vec![
+                        Expr::Var("h".to_string()),
+                        Expr::Lit(Value::Int(0)), // tag: i64
+                        Expr::Lit(Value::Int(42)), // value
+                    ])),
+                    Stmt::PrintExpr(Expr::Index(
+                        Box::new(Expr::Var("h".to_string())),
+                        Box::new(Expr::Lit(Value::Int(0))),
+                    )),
+                    Stmt::Return(Expr::Lit(Value::Int(0))),
+                ],
+                is_pub: true,
+                is_threaded: false,
+            })
+        ],
+    };
+    let asm = gen_asm(&module);
+    assert!(asm.contains("jbe 70f") || asm.contains("jbe"), "expected OOB bounds check");
+    assert!(asm.contains(".LOOBERR:") || asm.contains("index out of bounds"), "expected OOB error message");
+    assert!(asm.contains("mov 8(%rbx), %rax"), "expected value load from element");
+}

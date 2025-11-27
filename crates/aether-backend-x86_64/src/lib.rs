@@ -1886,10 +1886,12 @@ impl CodeGenerator for X86_64LinuxCodegen {
                             }
                         },
                         Stmt::PrintExpr(Expr::Field(recv, fname)) => {
+                            // Static String field prints: collected for Windows, handled inline for Linux
                             if let Expr::Var(rn) = &**recv {
                                 if let Some(tyname) = static_types.get(rn) {
                                     if let Some((off, fty)) = get_field_info(tyname, fname, &field_offsets) {
                                         if let Type::String = fty {
+                                            // Still collect for Windows backend
                                             main_field_prints.push((rn.clone(), off));
                                         }
                                     }
@@ -2170,6 +2172,31 @@ _start:
                                 out.push_str(&format!("        mov ${}, %rax\n", v));
                                 linux_emit_print_i64(&mut out);
                                 continue;
+                            }
+
+                            // Handle static struct field printing inline for source order
+                            Stmt::PrintExpr(Expr::Field(recv, fname)) => {
+                                if let Expr::Var(rn) = &**recv {
+                                    if let Some(tyname) = static_types.get(rn) {
+                                        if let Some((off, fty)) = get_field_info(tyname, fname, &field_offsets) {
+                                            if let Type::String = fty {
+                                                // Emit inline print for static String field
+                                                out.push_str(&format!("        leaq {}(%rip), %r10\n", rn));
+                                                out.push_str(&format!("        mov {}(%r10), %rsi\n", off));
+                                                out.push_str(&format!("        mov {}(%r10), %rdx\n", off + 8));
+                                                out.push_str("        mov $1, %rax\n");
+                                                out.push_str("        mov $1, %rdi\n");
+                                                out.push_str("        syscall\n");
+                                                out.push_str("        mov $1, %rax\n");
+                                                out.push_str("        mov $1, %rdi\n");
+                                                out.push_str("        leaq .LSNL(%rip), %rsi\n");
+                                                out.push_str("        mov $1, %rdx\n");
+                                                out.push_str("        syscall\n");
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             Stmt::PrintExpr(Expr::Call(name, args)) => {
@@ -3594,21 +3621,8 @@ r#"        leaq .LC0(%rip), %rax
         syscall
 ", idx, len));
                     }
-                    if !main_field_prints.is_empty() {
-                        for (bn, off) in &main_field_prints {
-                            out.push_str(&format!("        leaq {}(%rip), %r10\n", bn));
-                            out.push_str(&format!("        mov {}(%r10), %rsi\n", off));
-                            out.push_str(&format!("        mov {}(%r10), %rdx\n", off + 8));
-                            out.push_str("        mov $1, %rax\n");
-                            out.push_str("        mov $1, %rdi\n");
-                            out.push_str("        syscall\n");
-                            out.push_str("        mov $1, %rax\n");
-                            out.push_str("        mov $1, %rdi\n");
-                            out.push_str("        leaq .LSNL(%rip), %rsi\n");
-                            out.push_str("        mov $1, %rdx\n");
-                            out.push_str("        syscall\n");
-                        }
-                    }
+                    // Skip batched field prints for Linux - they are handled inline for source order
+                    // (main_field_prints is still populated for Windows backend)
                     if main_ret_call.is_some() {
                         out.push_str(
 "        mov %eax, %edi
@@ -3665,21 +3679,8 @@ r#"        leaq .LC0(%rip), %rax
         syscall
 ", idx, len));
                     }
-                    if !main_field_prints.is_empty() {
-                        for (bn, off) in &main_field_prints {
-                            out.push_str(&format!("        leaq {}(%rip), %r10\n", bn));
-                            out.push_str(&format!("        mov {}(%r10), %rsi\n", off));
-                            out.push_str(&format!("        mov {}(%r10), %rdx\n", off + 8));
-                            out.push_str("        mov $1, %rax\n");
-                            out.push_str("        mov $1, %rdi\n");
-                            out.push_str("        syscall\n");
-                            out.push_str("        mov $1, %rax\n");
-                            out.push_str("        mov $1, %rdi\n");
-                            out.push_str("        leaq .LSNL(%rip), %rsi\n");
-                            out.push_str("        mov $1, %rdx\n");
-                            out.push_str("        syscall\n");
-                        }
-                    }
+                    // Skip batched field prints for Linux - they are handled inline for source order
+                    // (main_field_prints is still populated for Windows backend)
                     if main_ret_call.is_some() {
                         out.push_str(
 "        mov %eax, %edi

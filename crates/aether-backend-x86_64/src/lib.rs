@@ -865,6 +865,18 @@ r#"        mov %rsi, %rax
 "#);
 }
 
+// HList element size: 16 bytes (8 byte tag + 8 byte value)
+// Tag values: 0=i64, 1=f64, 2=string(ptr), 3=i32, 4=f32
+const HLIST_ELEM_SIZE: usize = 16;
+
+fn linux_emit_hlist_len(out: &mut String) {
+    out.push_str("\n        .text\n        .globl hlist_len\nhlist_len:\n");
+    out.push_str(
+r#"        mov %rsi, %rax
+        ret
+"#);
+}
+
 fn linux_emit_concat_function(out: &mut String) {
     out.push_str("\n        .text\n        .globl concat\nconcat:\n");
     out.push_str(
@@ -1716,6 +1728,34 @@ _start:
                                         }
                                     }
                                 }
+                                // HList: hlist_new(cap) allocates space for cap tagged elements (16 bytes each)
+                                if let (Type::HList, Expr::Call(cname, args)) = (ty, init) {
+                                    if cname == "hlist_new" && args.len() == 1 {
+                                        if let Some(off) = main_local_offsets.get(name) {
+                                            let mut cap_val: Option<i64> = None;
+                                            if let Expr::Lit(Value::Int(v)) = &args[0] {
+                                                cap_val = Some(*v);
+                                            } else if let Some(v) = eval_int_expr(&args[0]) {
+                                                cap_val = Some(v);
+                                            }
+                                            if let Some(mut cap) = cap_val {
+                                                if cap < 1 { cap = 1; }
+                                                let bytes = (cap as usize).saturating_mul(HLIST_ELEM_SIZE) as i64;
+                                                out.push_str("        mov $9, %rax\n");
+                                                out.push_str("        xor %rdi, %rdi\n");
+                                                out.push_str(&format!("        mov ${}, %rsi\n", bytes));
+                                                out.push_str("        mov $3, %rdx\n");
+                                                out.push_str("        mov $0x22, %r10\n");
+                                                out.push_str("        mov $-1, %r8\n");
+                                                out.push_str("        xor %r9, %r9\n");
+                                                out.push_str("        syscall\n");
+                                                out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        movq ${}, -{}(%rbp)\n", cap as i64, off - 16));
+                                            }
+                                        }
+                                    }
+                                }
                                 if let (Type::List(inner), Expr::ArrayLit(elems)) = (ty, init) {
                                     if let Some(off) = main_local_offsets.get(name) {
                                         match &**inner {
@@ -1880,7 +1920,99 @@ _start:
                                         }
                                     }
                                 }
-                                if !cname.starts_with("vec_") {
+                                // HList push: hlist_push(h, tag, value) - tag is type tag (0=i64, 1=f64, 2=string, 3=i32, 4=f32)
+                                if cname == "hlist_push" && args.len() == 3 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::HList) = main_local_types.get(vn) {
+                                                let mut tag_val: Option<i64> = None;
+                                                let mut val_val: Option<i64> = None;
+                                                if let Expr::Lit(Value::Int(t)) = &args[1] { tag_val = Some(*t); }
+                                                else if let Some(t) = eval_int_expr(&args[1]) { tag_val = Some(t); }
+                                                if let Expr::Lit(Value::Int(v)) = &args[2] { val_val = Some(*v); }
+                                                else if let Some(v) = eval_int_expr(&args[2]) { val_val = Some(v); }
+                                                if let (Some(tag), Some(val)) = (tag_val, val_val) {
+                                                    // Check if need to grow
+                                                    out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8)); // len
+                                                    out.push_str(&format!("        mov -{}(%rbp), %r11\n", off - 16)); // cap
+                                                    out.push_str("        mov %r11, %r12\n");
+                                                    out.push_str("        cmp %r10, %r11\n");
+                                                    out.push_str("        jne 50f\n");
+                                                    out.push_str("        cmp $0, %r11\n");
+                                                    out.push_str("        jne 51f\n");
+                                                    out.push_str("        mov $1, %r11\n");
+                                                    out.push_str("        jmp 52f\n");
+                                                    out.push_str("51:\n");
+                                                    out.push_str("        leaq (%r11,%r11,1), %r11\n"); // double cap
+                                                    out.push_str("52:\n");
+                                                    out.push_str(&format!("        mov %r11, %rsi\n        imul ${}, %rsi\n", HLIST_ELEM_SIZE));
+                                                    out.push_str(&format!("        mov -{}(%rbp), %rdi\n", off));
+                                                    out.push_str("        test %rdi, %rdi\n");
+                                                    out.push_str("        jz 53f\n");
+                                                    // mremap
+                                                    out.push_str(&format!("        mov -{}(%rbp), %rdi\n", off));
+                                                    out.push_str(&format!("        mov %r12, %rsi\n        imul ${}, %rsi\n", HLIST_ELEM_SIZE));
+                                                    out.push_str("        mov %r11, %rdx\n");
+                                                    out.push_str(&format!("        imul ${}, %rdx\n", HLIST_ELEM_SIZE));
+                                                    out.push_str("        mov $25, %rax\n"); // mremap
+                                                    out.push_str("        mov $1, %r10\n");
+                                                    out.push_str("        xor %r8, %r8\n");
+                                                    out.push_str("        syscall\n");
+                                                    out.push_str("        jmp 54f\n");
+                                                    out.push_str("53:\n");
+                                                    // mmap new
+                                                    out.push_str("        xor %rdi, %rdi\n");
+                                                    out.push_str("        mov $9, %rax\n");
+                                                    out.push_str("        mov $3, %rdx\n");
+                                                    out.push_str("        mov $0x22, %r10\n");
+                                                    out.push_str("        mov $-1, %r8\n");
+                                                    out.push_str("        xor %r9, %r9\n");
+                                                    out.push_str("        syscall\n");
+                                                    out.push_str("54:\n");
+                                                    out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                                    out.push_str(&format!("        mov %r11, -{}(%rbp)\n", off - 16));
+                                                    out.push_str("50:\n");
+                                                    // Store element: tag at offset, value at offset+8
+                                                    out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                                                    out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                    out.push_str(&format!("        imul ${}, %r10\n", HLIST_ELEM_SIZE));
+                                                    out.push_str("        add %r10, %rbx\n");
+                                                    out.push_str(&format!("        movq ${}, (%rbx)\n", tag)); // store tag
+                                                    out.push_str(&format!("        movq ${}, 8(%rbx)\n", val)); // store value
+                                                    out.push_str(&format!("        mov -{}(%rbp), %r10\n", off - 8));
+                                                    out.push_str("        inc %r10\n");
+                                                    out.push_str(&format!("        mov %r10, -{}(%rbp)\n", off - 8));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                // HList free: hlist_free(h) - returns 1 if freed, 0 if already null
+                                if cname == "hlist_free" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::HList) = main_local_types.get(vn) {
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                                out.push_str("        test %rax, %rax\n");
+                                                out.push_str("        jz 60f\n");
+                                                out.push_str("        mov %rax, %rdi\n");
+                                                out.push_str(&format!("        mov -{}(%rbp), %rsi\n", off - 16));
+                                                out.push_str(&format!("        imul ${}, %rsi\n", HLIST_ELEM_SIZE));
+                                                out.push_str("        mov $11, %rax\n"); // munmap
+                                                out.push_str("        syscall\n");
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 8));
+                                                out.push_str(&format!("        movq $0, -{}(%rbp)\n", off - 16));
+                                                out.push_str("        mov $1, %rax\n");
+                                                out.push_str("        jmp 61f\n");
+                                                out.push_str("60:\n");
+                                                out.push_str("        xor %eax, %eax\n");
+                                                out.push_str("61:\n");
+                                            }
+                                        }
+                                    }
+                                }
+                                if !cname.starts_with("vec_") && !cname.starts_with("hlist_") {
                                     if args.is_empty() {
                                         out.push_str("        sub $8, %rsp\n");
                                         out.push_str(&format!("        call {}\n", cname));
@@ -2016,6 +2148,17 @@ _start:
                                         if let Some(off) = main_local_offsets.get(vn) {
                                             out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
                                             linux_emit_print_i64(&mut out);
+                                        }
+                                    }
+                                }
+                                // HList len: hlist_len(h) returns the number of elements
+                                if cname == "hlist_len" && args.len() == 1 {
+                                    if let Expr::Var(vn) = &args[0] {
+                                        if let Some(off) = main_local_offsets.get(vn) {
+                                            if let Some(Type::HList) = main_local_types.get(vn) {
+                                                out.push_str(&format!("        mov -{}(%rbp), %rax\n", off - 8));
+                                                linux_emit_print_i64(&mut out);
+                                            }
                                         }
                                     }
                                 }

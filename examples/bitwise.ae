@@ -1,0 +1,13 @@
+pub fn main() -> i64 {
+    let a: i64 = 12;
+    let b: i64 = 10;
+    
+    let and_result: i64 = a & b;
+    let or_result: i64 = a | b;
+    let xor_result: i64 = a ^ b;
+    let shl_result: i64 = 1 << 4;
+    let shr_result: i64 = 16 >> 2;
+    let not_result: i64 = ~0;
+    
+    return and_result + or_result + xor_result + shl_result + shr_result;
+}

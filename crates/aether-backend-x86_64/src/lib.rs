@@ -967,6 +967,77 @@ fn linux_eval_addr_of_expr_to_rax(
     }
 }
 
+/// Check if an expression is "simple" (can be loaded in one instruction without side effects)
+fn is_simple_expr(expr: &aether_frontend::ast::Expr) -> bool {
+    use aether_frontend::ast::{Expr, Value};
+    matches!(expr, Expr::Lit(Value::Int(_)) | Expr::Var(_))
+}
+
+/// Emit a direct comparison and conditional jump for while-loop conditions.
+/// Returns true if handled, false if caller should use generic path.
+/// This optimization avoids the setl/movzbl/cmp $0 pattern for simple comparisons.
+fn linux_emit_direct_cond_jump(
+    cond: &aether_frontend::ast::Expr,
+    end_label: &str,
+    out: &mut String,
+    local_offsets: &std::collections::HashMap<String, usize>,
+) -> bool {
+    use aether_frontend::ast::{Expr, Value, BinOpKind};
+    
+    if let Expr::BinOp(lhs, op, rhs) = cond {
+        // Only handle simple comparisons where both sides are Var or Lit
+        if !is_simple_expr(lhs) || !is_simple_expr(rhs) {
+            return false;
+        }
+        
+        // Get the inverse jump instruction for the comparison
+        let jcc = match op {
+            BinOpKind::Lt => "jge",  // if !(a < b) then a >= b
+            BinOpKind::Le => "jg",   // if !(a <= b) then a > b
+            BinOpKind::Gt => "jle",  // if !(a > b) then a <= b
+            BinOpKind::Ge => "jl",   // if !(a >= b) then a < b
+            BinOpKind::Eq => "jne",  // if !(a == b) then a != b
+            _ => return false,       // Not a comparison op
+        };
+        
+        // Load left operand into %rax
+        match lhs.as_ref() {
+            Expr::Lit(Value::Int(v)) => {
+                out.push_str(&format!("        mov ${}, %rax\n", v));
+            }
+            Expr::Var(name) => {
+                if let Some(off) = local_offsets.get(name.as_str()) {
+                    out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                } else {
+                    return false; // Unknown variable
+                }
+            }
+            _ => return false,
+        }
+        
+        // Compare with right operand (can use memory operand or immediate)
+        match rhs.as_ref() {
+            Expr::Lit(Value::Int(v)) => {
+                out.push_str(&format!("        cmp ${}, %rax\n", v));
+            }
+            Expr::Var(name) => {
+                if let Some(off) = local_offsets.get(name.as_str()) {
+                    out.push_str(&format!("        cmp -{}(%rbp), %rax\n", off));
+                } else {
+                    return false; // Unknown variable
+                }
+            }
+            _ => return false,
+        }
+        
+        // Emit conditional jump to end label
+        out.push_str(&format!("        {} {}\n", jcc, end_label));
+        return true;
+    }
+    
+    false
+}
+
 /// Emit code to evaluate an expression and leave the result in %rax (for integers)
 /// This is the core expression emitter for the generic non-main function path.
 /// Contract: Result is in %rax, may clobber caller-saved registers, preserves callee-saved.
@@ -1008,60 +1079,90 @@ fn linux_emit_expr_to_rax(
             }
         }
         
-        // Binary operation -> emit left, push, emit right, pop, do op
+        // Binary operation -> optimized path for simple operands, fallback to push/pop
         Expr::BinOp(lhs, op, rhs) => {
-            // Emit left operand into %rax
-            linux_emit_expr_to_rax(lhs, out, func, local_offsets, _local_types, label_counter);
-            // Save left operand on stack
-            out.push_str("        push %rax\n");
-            // Emit right operand into %rax
-            linux_emit_expr_to_rax(rhs, out, func, local_offsets, _local_types, label_counter);
-            // Pop left operand into %rbx
-            out.push_str("        pop %rbx\n");
-            // Now: %rbx = left, %rax = right
+            // OPTIMIZATION: If both operands are simple (Var or Lit), avoid push/pop
+            let lhs_simple = is_simple_expr(lhs);
+            let rhs_simple = is_simple_expr(rhs);
+            
+            if lhs_simple && rhs_simple {
+                // Fast path: load left into %rax, load right into %rbx directly
+                // Load left operand into %rax
+                match lhs.as_ref() {
+                    Expr::Lit(Value::Int(v)) => {
+                        out.push_str(&format!("        mov ${}, %rax\n", v));
+                    }
+                    Expr::Var(name) => {
+                        if let Some(off) = local_offsets.get(name.as_str()) {
+                            out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                        } else {
+                            out.push_str("        xor %rax, %rax\n");
+                        }
+                    }
+                    _ => {}
+                }
+                // Load right operand into %rbx
+                match rhs.as_ref() {
+                    Expr::Lit(Value::Int(v)) => {
+                        out.push_str(&format!("        mov ${}, %rbx\n", v));
+                    }
+                    Expr::Var(name) => {
+                        if let Some(off) = local_offsets.get(name.as_str()) {
+                            out.push_str(&format!("        mov -{}(%rbp), %rbx\n", off));
+                        } else {
+                            out.push_str("        xor %rbx, %rbx\n");
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                // Slow path: emit left, push, emit right, pop
+                linux_emit_expr_to_rax(lhs, out, func, local_offsets, _local_types, label_counter);
+                out.push_str("        push %rax\n");
+                linux_emit_expr_to_rax(rhs, out, func, local_offsets, _local_types, label_counter);
+                out.push_str("        mov %rax, %rbx\n"); // right to %rbx
+                out.push_str("        pop %rax\n");       // left to %rax
+            }
+            
+            // Now: %rax = left, %rbx = right
             // Perform the operation, result in %rax
             match op {
                 BinOpKind::Add => {
                     out.push_str("        add %rbx, %rax\n");
                 }
                 BinOpKind::Sub => {
-                    // left - right = %rbx - %rax, but we want result in %rax
-                    out.push_str("        sub %rax, %rbx\n");
-                    out.push_str("        mov %rbx, %rax\n");
+                    out.push_str("        sub %rbx, %rax\n");
                 }
                 BinOpKind::Mul => {
                     out.push_str("        imul %rbx, %rax\n");
                 }
                 BinOpKind::Div => {
-                    // left / right: dividend in %rax, divisor in register
-                    out.push_str("        mov %rbx, %rcx\n"); // save left
-                    out.push_str("        mov %rax, %rbx\n"); // right to %rbx
-                    out.push_str("        mov %rcx, %rax\n"); // left to %rax
+                    // left / right: dividend in %rax, divisor in %rbx
                     out.push_str("        cqo\n");
                     out.push_str("        idiv %rbx\n");
                 }
                 BinOpKind::Eq => {
-                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        cmp %rbx, %rax\n");
                     out.push_str("        sete %al\n");
                     out.push_str("        movzbl %al, %eax\n");
                 }
                 BinOpKind::Lt => {
-                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        cmp %rbx, %rax\n");
                     out.push_str("        setl %al\n");
                     out.push_str("        movzbl %al, %eax\n");
                 }
                 BinOpKind::Le => {
-                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        cmp %rbx, %rax\n");
                     out.push_str("        setle %al\n");
                     out.push_str("        movzbl %al, %eax\n");
                 }
                 BinOpKind::Gt => {
-                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        cmp %rbx, %rax\n");
                     out.push_str("        setg %al\n");
                     out.push_str("        movzbl %al, %eax\n");
                 }
                 BinOpKind::Ge => {
-                    out.push_str("        cmp %rax, %rbx\n");
+                    out.push_str("        cmp %rbx, %rax\n");
                     out.push_str("        setge %al\n");
                     out.push_str("        movzbl %al, %eax\n");
                 }
@@ -1075,15 +1176,11 @@ fn linux_emit_expr_to_rax(
                     out.push_str("        xor %rbx, %rax\n");
                 }
                 BinOpKind::Shl => {
-                    // left << right: %rbx << %rax
-                    out.push_str("        mov %rax, %rcx\n");
-                    out.push_str("        mov %rbx, %rax\n");
+                    out.push_str("        mov %rbx, %rcx\n");
                     out.push_str("        shl %cl, %rax\n");
                 }
                 BinOpKind::Shr => {
-                    // left >> right: %rbx >> %rax
-                    out.push_str("        mov %rax, %rcx\n");
-                    out.push_str("        mov %rbx, %rax\n");
+                    out.push_str("        mov %rbx, %rcx\n");
                     out.push_str("        sar %cl, %rax\n");
                 }
             }
@@ -4319,10 +4416,13 @@ r#"        push %rbx
                                     _ => {}
                                 }
                                 if !handled_cond {
-                                    // Use generic expression emitter for unhandled conditions
-                                    linux_emit_expr_to_rax(cond, &mut out, func, &local_offsets, &local_types, &mut fi);
-                                    out.push_str("        cmp $0, %rax\n");
-                                    out.push_str(&format!("        je {}\n", end));
+                                    // OPTIMIZATION: Try direct cmp/jcc for simple comparisons
+                                    if !linux_emit_direct_cond_jump(cond, &end, &mut out, &local_offsets) {
+                                        // Fallback: Use generic expression emitter for complex conditions
+                                        linux_emit_expr_to_rax(cond, &mut out, func, &local_offsets, &local_types, &mut fi);
+                                        out.push_str("        cmp $0, %rax\n");
+                                        out.push_str(&format!("        je {}\n", end));
+                                    }
                                 }
                                 for bstmt in body {
                                     match bstmt {

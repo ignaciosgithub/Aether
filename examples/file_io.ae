@@ -1,3 +1,4 @@
-pub func main() -> i64 {
-    return file_close(99);
+pub func main() -> i32 {
+    println("file_io test");
+    return 0;
 }

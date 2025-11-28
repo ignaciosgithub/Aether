@@ -1247,6 +1247,20 @@ fn linux_emit_expr_to_rax(
             }
         }
         
+        // Cast expression -> evaluate inner, result is in %rax
+        // For integer casts, the value is already in %rax, just need to handle sign extension
+        Expr::Cast(inner, target_ty) => {
+            linux_emit_expr_to_rax(inner, out, func, local_offsets, _local_types, label_counter);
+            // For i32 cast, sign-extend from 32-bit to 64-bit
+            match target_ty {
+                aether_frontend::ast::Type::I32 => {
+                    out.push_str("        movslq %eax, %rax\n");
+                }
+                // For other types, the value is already in %rax
+                _ => {}
+            }
+        }
+        
         // Default: emit 0
         _ => {
             out.push_str("        xor %rax, %rax\n");
@@ -1861,6 +1875,7 @@ impl CodeGenerator for X86_64LinuxCodegen {
         let mut spawn_sites: Vec<(String, String, Option<i64>)> = Vec::new();
         let mut join_sites: Vec<(String, String)> = Vec::new();
         let mut destroy_sites: Vec<(String, String)> = Vec::new();
+        let mut main_ret_var: Option<String> = None;
 
         let mut other_funcs: Vec<&aether_frontend::ast::Function> = Vec::new();
         use std::collections::{HashMap, HashSet};
@@ -1895,6 +1910,9 @@ impl CodeGenerator for X86_64LinuxCodegen {
                             if let Expr::Call(name, args) = expr {
                                 if !name.starts_with("vec_") { calls.push((name.clone(), args.clone())); }
                                 main_ret_call = Some((name.clone(), args.clone()));
+                            }
+                            if let Expr::Var(vn) = expr {
+                                main_ret_var = Some(vn.clone());
                             }
                         }
                         Stmt::Println(_s) => {
@@ -2049,10 +2067,10 @@ _start:
                         out.push_str("\n        .text\n");
                         for (sidx, (_hname, fname, arg_opt)) in spawn_sites.iter().enumerate() {
                             out.push_str(&format!(
-"        leaq TSTACK{0}(%rip), %rdi
-        add $65536, %rdi
+"        leaq TSTACK{0}(%rip), %rsi
+        add $65536, %rsi
         mov $56, %rax
-        mov $17, %rsi
+        mov $17, %rdi
         syscall
         test %rax, %rax
         jnz .LPARENT_{0}
@@ -2151,6 +2169,24 @@ _start:
         mov %rsp, %rbp
         sub ${}, %rsp
 ", locals_size));
+                    }
+                    // Copy join results from TRESJ to stack locations
+                    for (jidx, (rname, _hname)) in join_sites.iter().enumerate() {
+                        if let Some(off) = main_local_offsets.get(rname) {
+                            out.push_str(&format!(
+"        mov TRESJ{}(%rip), %eax
+        mov %eax, -{}(%rbp)
+", jidx, off));
+                        }
+                    }
+                    // Copy destroy results from TRESD to stack locations
+                    for (didx, (rname, _hname)) in destroy_sites.iter().enumerate() {
+                        if let Some(off) = main_local_offsets.get(rname) {
+                            out.push_str(&format!(
+"        mov TRESD{}(%rip), %eax
+        mov %eax, -{}(%rbp)
+", didx, off));
+                        }
                     }
                 }
                 let mut linux_inbuf_main_emitted: bool = false;
@@ -2602,29 +2638,37 @@ _start:
                                     }
                                 }
                                 // Handle simple integer Let statements (i64, i32)
-                                if let Some(off) = main_local_offsets.get(name) {
-                                    match (ty, init) {
-                                        (Type::I64, Expr::Lit(Value::Int(v))) => {
-                                            out.push_str(&format!("        movq ${}, -{}(%rbp)\n", v, off));
-                                        }
-                                        (Type::I32, Expr::Lit(Value::Int(v))) => {
-                                            out.push_str(&format!("        movl ${}, -{}(%rbp)\n", *v as i32, off));
-                                        }
-                                        (Type::I64, _) => {
-                                            // Use generic expression emitter for non-literal init
-                                            if let Some(mf) = main_func {
-                                                linux_emit_expr_to_rax(init, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
-                                                out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                // Skip spawn/join/destroy calls - they're handled by inline thread code
+                                let is_thread_builtin = if let Expr::Call(cname, _) = init {
+                                    cname == "spawn" || cname == "join" || cname == "destroy"
+                                } else {
+                                    false
+                                };
+                                if !is_thread_builtin {
+                                    if let Some(off) = main_local_offsets.get(name) {
+                                        match (ty, init) {
+                                            (Type::I64, Expr::Lit(Value::Int(v))) => {
+                                                out.push_str(&format!("        movq ${}, -{}(%rbp)\n", v, off));
                                             }
-                                        }
-                                        (Type::I32, _) => {
-                                            // Use generic expression emitter for non-literal init
-                                            if let Some(mf) = main_func {
-                                                linux_emit_expr_to_rax(init, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
-                                                out.push_str(&format!("        mov %eax, -{}(%rbp)\n", off));
+                                            (Type::I32, Expr::Lit(Value::Int(v))) => {
+                                                out.push_str(&format!("        movl ${}, -{}(%rbp)\n", *v as i32, off));
                                             }
+                                            (Type::I64, _) => {
+                                                // Use generic expression emitter for non-literal init
+                                                if let Some(mf) = main_func {
+                                                    linux_emit_expr_to_rax(init, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
+                                                    out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                                }
+                                            }
+                                            (Type::I32, _) => {
+                                                // Use generic expression emitter for non-literal init
+                                                if let Some(mf) = main_func {
+                                                    linux_emit_expr_to_rax(init, &mut out, mf, &main_local_offsets, &main_local_types, &mut label_counter);
+                                                    out.push_str(&format!("        mov %eax, -{}(%rbp)\n", off));
+                                                }
+                                            }
+                                            _ => {}
                                         }
-                                        _ => {}
                                     }
                                 }
                                 if let (Type::List(inner), Expr::ArrayLit(elems)) = (ty, init) {
@@ -3804,11 +3848,44 @@ r#"        leaq .LC0(%rip), %rax
         syscall
 ");
                     } else {
-                        out.push_str(&format!(
+                        // Check if return variable is a join result
+                        let mut join_ret_idx: Option<usize> = None;
+                        if let Some(ref rv) = main_ret_var {
+                            for (jidx, (rname, _hname)) in join_sites.iter().enumerate() {
+                                if rname == rv {
+                                    join_ret_idx = Some(jidx);
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(jidx) = join_ret_idx {
+                            out.push_str(&format!(
+"        mov TRESJ{}(%rip), %edi
+        mov $60, %rax
+        syscall
+", jidx));
+                        } else if let Some(ref rv) = main_ret_var {
+                            // Check if return variable is a regular local variable
+                            if let Some(off) = main_local_offsets.get(rv) {
+                                out.push_str(&format!(
+"        mov -{}(%rbp), %edi
+        mov $60, %rax
+        syscall
+", off));
+                            } else {
+                                out.push_str(&format!(
 "        mov $60, %rax
         mov ${}, %rdi
         syscall
 ", exit_code));
+                            }
+                        } else {
+                            out.push_str(&format!(
+"        mov $60, %rax
+        mov ${}, %rdi
+        syscall
+", exit_code));
+                        }
                     }
                     let lo = bits as u32;
                     let hi = (bits >> 32) as u32;
@@ -3862,11 +3939,44 @@ r#"        leaq .LC0(%rip), %rax
         syscall
 ");
                     } else {
-                        out.push_str(&format!(
+                        // Check if return variable is a join result
+                        let mut join_ret_idx: Option<usize> = None;
+                        if let Some(ref rv) = main_ret_var {
+                            for (jidx, (rname, _hname)) in join_sites.iter().enumerate() {
+                                if rname == rv {
+                                    join_ret_idx = Some(jidx);
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(jidx) = join_ret_idx {
+                            out.push_str(&format!(
+"        mov TRESJ{}(%rip), %edi
+        mov $60, %rax
+        syscall
+", jidx));
+                        } else if let Some(ref rv) = main_ret_var {
+                            // Check if return variable is a regular local variable
+                            if let Some(off) = main_local_offsets.get(rv) {
+                                out.push_str(&format!(
+"        mov -{}(%rbp), %edi
+        mov $60, %rax
+        syscall
+", off));
+                            } else {
+                                out.push_str(&format!(
 "        mov $60, %rax
         mov ${}, %rdi
         syscall
 ", exit_code));
+                            }
+                        } else {
+                            out.push_str(&format!(
+"        mov $60, %rax
+        mov ${}, %rdi
+        syscall
+", exit_code));
+                        }
                     }
                     if !prints.is_empty() || !call_arg_rodata.is_empty() {
                         out.push_str("\n        .section .rodata\n");

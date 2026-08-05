@@ -396,7 +396,12 @@ impl<'a> Parser<'a> {
         }
         if self.eat_kind(&TokenKind::Minus) {
             let rhs = self.parse_unary()?;
-            return Ok(Expr::BinOp(Box::new(Expr::Lit(Value::Int(0))), BinOpKind::Sub, Box::new(rhs)));
+            return Ok(match rhs {
+                Expr::Lit(Value::Int(v)) => Expr::Lit(Value::Int(v.wrapping_neg())),
+                Expr::Lit(Value::Float64(v)) => Expr::Lit(Value::Float64(-v)),
+                Expr::Lit(Value::Float32(v)) => Expr::Lit(Value::Float32(-v)),
+                other => Expr::BinOp(Box::new(Expr::Lit(Value::Int(0))), BinOpKind::Sub, Box::new(other)),
+            });
         }
         if self.eat_kind(&TokenKind::Plus) {
             let rhs = self.parse_unary()?;

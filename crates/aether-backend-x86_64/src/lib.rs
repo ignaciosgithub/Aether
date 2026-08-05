@@ -2,6 +2,13 @@ use anyhow::Result;
 use aether_codegen::{CodeGenerator, Target, TargetArch, TargetOs};
 use aether_frontend::ast::{Module, Item, Stmt, Expr, Value, BinOpKind, UnaryOpKind, Type};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static LOCAL_LABEL_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn fresh_label_id() -> String {
+    LOCAL_LABEL_ID.fetch_add(1, Ordering::Relaxed).to_string()
+}
 
 pub struct X86_64LinuxCodegen {
     target: Target,
@@ -151,6 +158,146 @@ fn eval_int_expr(expr: &Expr) -> Option<i64> {
             }
         }
         _ => None,
+    }
+}
+
+fn eval_int_expr_env(expr: &Expr, env: &HashMap<String, i64>) -> Option<i64> {
+    match expr {
+        Expr::Var(n) => env.get(n).copied(),
+        Expr::Lit(Value::Int(v)) => Some(*v),
+        Expr::BinOp(a, op, b) => {
+            let lv = eval_int_expr_env(a, env)?;
+            let rv = eval_int_expr_env(b, env)?;
+            match op {
+                BinOpKind::Add => Some(lv + rv),
+                BinOpKind::Sub => Some(lv - rv),
+                BinOpKind::Mul => Some(lv * rv),
+                BinOpKind::Div => {
+                    if rv == 0 { None } else { Some(lv / rv) }
+                }
+                BinOpKind::Eq => Some(if lv == rv { 1 } else { 0 }),
+                BinOpKind::Lt => Some(if lv < rv { 1 } else { 0 }),
+                BinOpKind::Le => Some(if lv <= rv { 1 } else { 0 }),
+                BinOpKind::Gt => Some(if lv > rv { 1 } else { 0 }),
+                BinOpKind::Ge => Some(if lv >= rv { 1 } else { 0 }),
+                BinOpKind::BitAnd => Some(lv & rv),
+                BinOpKind::BitOr => Some(lv | rv),
+                BinOpKind::BitXor => Some(lv ^ rv),
+                BinOpKind::Shl => Some(lv << rv),
+                BinOpKind::Shr => Some(lv >> rv),
+            }
+        }
+        Expr::UnaryOp(op, e) => {
+            let v = eval_int_expr_env(e, env)?;
+            match op {
+                UnaryOpKind::BitNot => Some(!v),
+            }
+        }
+        Expr::IfElse { cond, then_expr, else_expr } => {
+            let cv = eval_int_expr_env(cond, env)?;
+            if cv != 0 { eval_int_expr_env(then_expr, env) } else { eval_int_expr_env(else_expr, env) }
+        }
+        _ => None,
+    }
+}
+
+fn win_expr_int_supported(expr: &Expr, params: &[(String, Type)]) -> bool {
+    match expr {
+        Expr::Lit(Value::Int(_)) => true,
+        Expr::Lit(Value::Bool(_)) => true,
+        Expr::Var(n) => params.iter().any(|(p, _)| p == n),
+        Expr::BinOp(a, _, b) => win_expr_int_supported(a, params) && win_expr_int_supported(b, params),
+        Expr::UnaryOp(_, e) => win_expr_int_supported(e, params),
+        Expr::Cast(e, t) => matches!(t, Type::I32 | Type::I64 | Type::Bool) && win_expr_int_supported(e, params),
+        Expr::IfElse { cond, then_expr, else_expr } => {
+            win_expr_int_supported(cond, params)
+                && win_expr_int_supported(then_expr, params)
+                && win_expr_int_supported(else_expr, params)
+        }
+        Expr::Call(_, args) => args.len() <= 4 && args.iter().all(|a| win_expr_int_supported(a, params)),
+        _ => false,
+    }
+}
+
+fn win_emit_expr_int(expr: &Expr, out: &mut String, params: &[(String, Type)], depth: &mut usize) {
+    match expr {
+        Expr::Lit(Value::Int(v)) => {
+            out.push_str(&format!("        mov rax, {}\n", v));
+        }
+        Expr::Lit(Value::Bool(b)) => {
+            out.push_str(&format!("        mov rax, {}\n", if *b { 1 } else { 0 }));
+        }
+        Expr::Var(n) => {
+            let idx = params.iter().position(|(p, _)| p == n).unwrap();
+            match params[idx].1 {
+                Type::I32 => out.push_str(&format!("        movsxd rax, dword ptr [rbp+{}]\n", 16 + 8 * idx)),
+                _ => out.push_str(&format!("        mov rax, qword ptr [rbp+{}]\n", 16 + 8 * idx)),
+            }
+        }
+        Expr::Cast(e, t) => {
+            win_emit_expr_int(e, out, params, depth);
+            if matches!(t, Type::I32) {
+                out.push_str("        movsxd rax, eax\n");
+            }
+        }
+        Expr::UnaryOp(op, e) => {
+            win_emit_expr_int(e, out, params, depth);
+            match op {
+                UnaryOpKind::BitNot => out.push_str("        not rax\n"),
+            }
+        }
+        Expr::BinOp(a, op, b) => {
+            win_emit_expr_int(a, out, params, depth);
+            out.push_str("        push rax\n");
+            *depth += 1;
+            win_emit_expr_int(b, out, params, depth);
+            out.push_str("        mov r10, rax\n        pop rax\n");
+            *depth -= 1;
+            match op {
+                BinOpKind::Add => out.push_str("        add rax, r10\n"),
+                BinOpKind::Sub => out.push_str("        sub rax, r10\n"),
+                BinOpKind::Mul => out.push_str("        imul rax, r10\n"),
+                BinOpKind::Div => out.push_str("        cqo\n        idiv r10\n"),
+                BinOpKind::Eq => out.push_str("        cmp rax, r10\n        sete al\n        movzx rax, al\n"),
+                BinOpKind::Lt => out.push_str("        cmp rax, r10\n        setl al\n        movzx rax, al\n"),
+                BinOpKind::Le => out.push_str("        cmp rax, r10\n        setle al\n        movzx rax, al\n"),
+                BinOpKind::Gt => out.push_str("        cmp rax, r10\n        setg al\n        movzx rax, al\n"),
+                BinOpKind::Ge => out.push_str("        cmp rax, r10\n        setge al\n        movzx rax, al\n"),
+                BinOpKind::BitAnd => out.push_str("        and rax, r10\n"),
+                BinOpKind::BitOr => out.push_str("        or rax, r10\n"),
+                BinOpKind::BitXor => out.push_str("        xor rax, r10\n"),
+                BinOpKind::Shl => out.push_str("        mov rcx, r10\n        shl rax, cl\n"),
+                BinOpKind::Shr => out.push_str("        mov rcx, r10\n        sar rax, cl\n"),
+            }
+        }
+        Expr::IfElse { cond, then_expr, else_expr } => {
+            let u = fresh_label_id();
+            let lelse = format!("WGE_ELSE_{}", u);
+            let lend = format!("WGE_END_{}", u);
+            win_emit_expr_int(cond, out, params, depth);
+            out.push_str("        test rax, rax\n");
+            out.push_str(&format!("        je {}\n", lelse));
+            win_emit_expr_int(then_expr, out, params, depth);
+            out.push_str(&format!("        jmp {}\n", lend));
+            out.push_str(&format!("{}:\n", lelse));
+            win_emit_expr_int(else_expr, out, params, depth);
+            out.push_str(&format!("{}:\n", lend));
+        }
+        Expr::Call(name, args) => {
+            let regs = ["rcx", "rdx", "r8", "r9"];
+            for a in args {
+                win_emit_expr_int(a, out, params, depth);
+                out.push_str("        push rax\n");
+                *depth += 1;
+            }
+            for i in (0..args.len()).rev() {
+                out.push_str(&format!("        pop {}\n", regs[i]));
+                *depth -= 1;
+            }
+            let pad = if *depth % 2 == 1 { 40 } else { 32 };
+            out.push_str(&format!("        sub rsp, {}\n        call {}\n        add rsp, {}\n", pad, name, pad));
+        }
+        _ => {}
     }
 }
 
@@ -660,6 +807,12 @@ fn linux_emit_print_i64(out: &mut String) {
 r#"        sub $80, %rsp
         leaq 79(%rsp), %r10
         mov $10, %r8
+        movq $0, (%rsp)
+        test %rax, %rax
+        jns 3f
+        neg %rax
+        movq $1, (%rsp)
+3:
         xor %rcx, %rcx
         test %rax, %rax
         jnz 1f
@@ -677,6 +830,12 @@ r#"        sub $80, %rsp
         test %rax, %rax
         jnz 1b
 2:
+        cmpq $0, (%rsp)
+        je 4f
+        movb $45, (%r10)
+        dec %r10
+        inc %rcx
+4:
         leaq 1(%r10), %rsi
         mov %rcx, %rdx
         mov $1, %rax
@@ -690,6 +849,117 @@ r#"        sub $80, %rsp
         add $80, %rsp
 "#);
 }
+fn linux_ensure_f64_print_data(out: &mut String) {
+    if !out.contains(".LSNL:\n") {
+        out.push_str("\n        .section .rodata\n.LSNL:\n        .ascii \"\\n\"\n        .text\n");
+    }
+    if !out.contains(".LCDOT:\n") {
+        out.push_str("\n        .section .rodata\n.LCDOT:\n        .ascii \".\"\n        .text\n");
+    }
+    if !out.contains(".LCMINUS:\n") {
+        out.push_str("\n        .section .rodata\n.LCMINUS:\n        .ascii \"-\"\n        .text\n");
+    }
+    if !out.contains(".LCFTSCALE:\n") {
+        out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n        .text\n");
+    }
+    if !out.contains(".LCFTHALF:\n") {
+        out.push_str("\n        .section .rodata\n.LCFTHALF:\n        .double 0.5\n        .text\n");
+    }
+    if !out.contains(".LCABSMASK:\n") {
+        out.push_str("\n        .section .rodata\n        .align 16\n.LCABSMASK:\n        .quad 0x7FFFFFFFFFFFFFFF\n        .quad 0x7FFFFFFFFFFFFFFF\n        .text\n");
+    }
+}
+
+// Prints the f64 in %xmm0 (loaded by `load_xmm0`) as [-]ipart.ffffff
+// (6 fractional digits, rounded) plus a trailing newline.
+// Clobbers rax, rcx, rdx, rsi, rdi, r8, r10, r11, xmm0-xmm1.
+fn linux_emit_print_f64_value(out: &mut String, load_xmm0: &str) {
+    linux_ensure_f64_print_data(out);
+    let u = fresh_label_id();
+    out.push_str(load_xmm0);
+    out.push_str(&format!(
+r#"        sub $112, %rsp
+        movsd %xmm0, (%rsp)
+        movq %xmm0, %rax
+        test %rax, %rax
+        jns .LPF64_pos_{u}
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LCMINUS(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        movsd (%rsp), %xmm0
+        andpd .LCABSMASK(%rip), %xmm0
+        movsd %xmm0, (%rsp)
+.LPF64_pos_{u}:
+        movsd (%rsp), %xmm0
+        cvttsd2si %xmm0, %rax
+        mov %rax, 8(%rsp)
+        leaq 111(%rsp), %r10
+        mov $10, %r8
+        xor %rcx, %rcx
+        test %rax, %rax
+        jnz .LPF64_iloop_{u}
+        movb $48, (%r10)
+        mov $1, %rcx
+        dec %r10
+        jmp .LPF64_idone_{u}
+.LPF64_iloop_{u}:
+        xor %rdx, %rdx
+        div %r8
+        add $48, %dl
+        mov %dl, (%r10)
+        dec %r10
+        inc %rcx
+        test %rax, %rax
+        jnz .LPF64_iloop_{u}
+.LPF64_idone_{u}:
+        leaq 1(%r10), %rsi
+        mov %rcx, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LCDOT(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        movsd (%rsp), %xmm0
+        cvtsi2sdq 8(%rsp), %xmm1
+        subsd %xmm1, %xmm0
+        mulsd .LCFTSCALE(%rip), %xmm0
+        addsd .LCFTHALF(%rip), %xmm0
+        cvttsd2si %xmm0, %rax
+        cmp $999999, %rax
+        jle .LPF64_fok_{u}
+        mov $999999, %rax
+.LPF64_fok_{u}:
+        leaq 111(%rsp), %r10
+        mov $10, %r8
+        mov $6, %r11
+.LPF64_floop_{u}:
+        xor %rdx, %rdx
+        div %r8
+        add $48, %dl
+        mov %dl, (%r10)
+        dec %r10
+        dec %r11
+        test %r11, %r11
+        jnz .LPF64_floop_{u}
+        leaq 1(%r10), %rsi
+        mov $6, %rdx
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+        add $112, %rsp
+"#, u=u));
+}
+
 fn linux_emit_print_f64_from_mem(out: &mut String, mem: &str) {
     if !out.contains(".LCFTSCALE:\n") {
         out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n        .text\n");
@@ -747,18 +1017,26 @@ r#"        mov $1, %rax
 }
 
 fn win_emit_print_i64(out: &mut String) {
+    let u = fresh_label_id();
     out.push_str(
-r#"        mov r11, rcx
+&r#"        mov r11, rcx
         sub rsp, 40
         mov rcx, r12
         sub rsp, 80
         lea r10, [rsp+79]
         mov r8, 10
         xor r9, r9
+        mov qword ptr [rsp], 0
+        test rax, rax
+        jns LWIN_I64_pos_%=
+        neg rax
+        mov qword ptr [rsp], 1
+LWIN_I64_pos_%=:
         test rax, rax
         jnz LWIN_I64_loop_%=
         mov byte ptr [r10], '0'
         mov r9, 1
+        dec r10
         jmp LWIN_I64_done_%=
 LWIN_I64_loop_%=:
         xor rdx, rdx
@@ -770,15 +1048,21 @@ LWIN_I64_loop_%=:
         test rax, rax
         jnz LWIN_I64_loop_%=
 LWIN_I64_done_%=:
+        cmp qword ptr [rsp], 0
+        je LWIN_I64_nosign_%=
+        mov byte ptr [r10], '-'
+        dec r10
+        inc r9
+LWIN_I64_nosign_%=:
         lea rdx, [r10+1]
-        mov r8, r9d
+        mov r8d, r9d
         xor r9d, r9d
         mov qword ptr [rsp+32], 0
         call WriteFile
         add rsp, 80
         add rsp, 40
         mov rcx, r11
-"#);
+"#.replace("%=", &u));
     win_emit_print_newline(out);
  
     if !out.contains("W_OOBERR:\n") {
@@ -1471,10 +1755,10 @@ fn linux_emit_concat_function(out: &mut String) {
 r#"        push %rbp
         mov %rsp, %rbp
         sub $32, %rsp
-        mov -8(%rbp), %rdi
-        mov -16(%rbp), %rsi
-        mov -24(%rbp), %rdx
-        mov -32(%rbp), %rcx
+        mov %rdi, -8(%rbp)
+        mov %rsi, -16(%rbp)
+        mov %rdx, -24(%rbp)
+        mov %rcx, -32(%rbp)
 "#);
     out.push_str(
 r#"        mov -16(%rbp), %rax
@@ -1544,6 +1828,107 @@ r#"        push rbp
 
 
 
+fn win_ensure_f64_print_data(out: &mut String) {
+    if !out.contains("\nWFDOT:\n") {
+        out.push_str("\n        .data\nWFDOT:\n        .ascii \".\"\nWFMINUS:\n        .ascii \"-\"\n        .align 16\nWFABSMASK:\n        .quad 0x7FFFFFFFFFFFFFFF\n        .quad 0x7FFFFFFFFFFFFFFF\nWFTSCALE:\n        .quad 0x412E848000000000\nWFTHALF:\n        .quad 0x3FE0000000000000\n        .text\n");
+    }
+}
+
+// Prints the f64 in xmm0 (loaded by `load_xmm0`) as [-]ipart.ffffff
+// (6 fractional digits, rounded) plus a trailing newline.
+// Requires r12 = stdout handle. Clobbers rax, rcx, rdx, r8-r11, xmm0-xmm1.
+fn win_emit_print_f64_value(out: &mut String, load_xmm0: &str) {
+    win_ensure_f64_print_data(out);
+    let u = fresh_label_id();
+    out.push_str(load_xmm0);
+    out.push_str(
+&r#"        sub rsp, 168
+        movsd qword ptr [rsp+128], xmm0
+        movq rax, xmm0
+        test rax, rax
+        jns WPF64_pos_%=
+        mov rcx, r12
+        lea rdx, [rip+WFMINUS]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        movsd xmm0, qword ptr [rsp+128]
+        andpd xmm0, xmmword ptr [rip+WFABSMASK]
+        movsd qword ptr [rsp+128], xmm0
+WPF64_pos_%=:
+        movsd xmm0, qword ptr [rsp+128]
+        cvttsd2si rax, xmm0
+        mov qword ptr [rsp+136], rax
+        lea r10, [rsp+167]
+        mov r8, 10
+        xor r9, r9
+        test rax, rax
+        jnz WPF64_iloop_%=
+        mov byte ptr [r10], '0'
+        mov r9, 1
+        dec r10
+        jmp WPF64_idone_%=
+WPF64_iloop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        inc r9
+        test rax, rax
+        jnz WPF64_iloop_%=
+WPF64_idone_%=:
+        mov rcx, r12
+        lea rdx, [r10+1]
+        mov r8d, r9d
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        mov rcx, r12
+        lea rdx, [rip+WFDOT]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        movsd xmm0, qword ptr [rsp+128]
+        cvtsi2sd xmm1, qword ptr [rsp+136]
+        subsd xmm0, xmm1
+        mulsd xmm0, qword ptr [rip+WFTSCALE]
+        addsd xmm0, qword ptr [rip+WFTHALF]
+        cvttsd2si rax, xmm0
+        cmp rax, 999999
+        jle WPF64_fok_%=
+        mov rax, 999999
+WPF64_fok_%=:
+        lea r10, [rsp+167]
+        mov r8, 10
+        mov r11, 6
+WPF64_floop_%=:
+        xor rdx, rdx
+        div r8
+        add dl, '0'
+        mov byte ptr [r10], dl
+        dec r10
+        dec r11
+        test r11, r11
+        jnz WPF64_floop_%=
+        mov rcx, r12
+        lea rdx, [r10+1]
+        mov r8d, 6
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 168
+"#.replace("%=", &u));
+}
+
 fn win_emit_readln_to_rsi_rdx(out: &mut String, buf_label: &str, len_label: &str) {
     out.push_str(
 "        sub rsp, 40
@@ -1552,6 +1937,7 @@ fn win_emit_readln_to_rsi_rdx(out: &mut String, buf_label: &str, len_label: &str
         add rsp, 40
         mov r13, rax
 ");
+    let u = fresh_label_id();
     out.push_str(&format!(
 "        sub rsp, 40
         mov rcx, r13
@@ -1561,28 +1947,22 @@ fn win_emit_readln_to_rsi_rdx(out: &mut String, buf_label: &str, len_label: &str
         mov qword ptr [rsp+32], 0
         call ReadFile
         add rsp, 40
-        mov rax, qword ptr [rip+{len}]
-        test rax, rax
-        jz WREAD_EMPTY_%=
         lea rsi, [rip+{buf}]
-        mov rdx, rax
-        dec rdx
-        mov bl, byte ptr [rsi+rdx]
-        cmp bl, 10
-        jne WREAD_NO_NL_%=
+        mov rdx, qword ptr [rip+{len}]
         test rdx, rdx
-        jz WREAD_TRIM_NL_%=
-        mov bl, byte ptr [rsi+rdx-1]
-        cmp bl, 13
-        jne WREAD_TRIM_NL_%=
+        jz WREAD_RET_{sfx}
+        mov al, byte ptr [rsi+rdx-1]
+        cmp al, 10
+        jne WREAD_RET_{sfx}
         dec rdx
-WREAD_TRIM_NL_%=:
-WREAD_NO_NL_%=:
-        jmp WREAD_RET_%=
-WREAD_EMPTY_%=:
-        xor rdx, rdx
-WREAD_RET_%=:
-", buf=buf_label, len=len_label));
+        test rdx, rdx
+        jz WREAD_RET_{sfx}
+        mov al, byte ptr [rsi+rdx-1]
+        cmp al, 13
+        jne WREAD_RET_{sfx}
+        dec rdx
+WREAD_RET_{sfx}:
+", buf=buf_label, len=len_label, sfx=u));
 }
 
 fn win_emit_readln_to_rbx_rcx(out: &mut String, buf_label: &str, len_label: &str) {
@@ -1593,6 +1973,7 @@ fn win_emit_readln_to_rbx_rcx(out: &mut String, buf_label: &str, len_label: &str
         add rsp, 40
         mov r13, rax
 ");
+    let u = fresh_label_id();
     out.push_str(&format!(
 "        sub rsp, 40
         mov rcx, r13
@@ -1602,75 +1983,70 @@ fn win_emit_readln_to_rbx_rcx(out: &mut String, buf_label: &str, len_label: &str
         mov qword ptr [rsp+32], 0
         call ReadFile
         add rsp, 40
-        mov rax, qword ptr [rip+{len}]
-        test rax, rax
-        jz WREAD_EMPTY_%=
         lea rbx, [rip+{buf}]
-        mov rcx, rax
-        dec rcx
-        mov bl, byte ptr [rbx+rcx]
-        cmp bl, 10
-        jne WREAD_NO_NL_%=
+        mov rcx, qword ptr [rip+{len}]
         test rcx, rcx
-        jz WREAD_TRIM_NL_%=
-        mov bl, byte ptr [rbx+rcx-1]
-        cmp bl, 13
-        jne WREAD_TRIM_NL_%=
+        jz WREAD_RET_{sfx}
+        mov dl, byte ptr [rbx+rcx-1]
+        cmp dl, 10
+        jne WREAD_RET_{sfx}
         dec rcx
-WREAD_TRIM_NL_%=:
-WREAD_NO_NL_%=:
-        jmp WREAD_RET_%=
-WREAD_EMPTY_%=:
-        xor rcx, rcx
-        lea rbx, [rip+{buf}]
-WREAD_RET_%=:
-", buf=buf_label, len=len_label));
+        test rcx, rcx
+        jz WREAD_RET_{sfx}
+        mov dl, byte ptr [rbx+rcx-1]
+        cmp dl, 13
+        jne WREAD_RET_{sfx}
+        dec rcx
+WREAD_RET_{sfx}:
+", buf=buf_label, len=len_label, sfx=u));
 }
 
 fn win_emit_to_int_from_mem(out: &mut String, ptr: &str, len: &str) {
+    let u = fresh_label_id();
     out.push_str(&format!(
 "        xor rdi, rdi
         mov r8, 1
         test {ln}, {ln}
-        jz WTOI_ERR_%=
+        jz WTOI_ERR_{sfx}
         mov al, byte ptr [{pt}]
         cmp al, '+'
-        jne WTOI_CHKMIN_%=
+        jne WTOI_CHKMIN_{sfx}
         inc {pt}
         dec {ln}
-        jmp WTOI_LOOP_%=
-WTOI_CHKMIN_%=:
+        jmp WTOI_LOOP_{sfx}
+WTOI_CHKMIN_{sfx}:
         cmp al, '-'
-        jne WTOI_LOOP_%=
+        jne WTOI_LOOP_{sfx}
         mov r8, -1
         inc {pt}
         dec {ln}
-WTOI_LOOP_%=:
+WTOI_LOOP_{sfx}:
         test {ln}, {ln}
-        jz WTOI_FIN_%=
+        jz WTOI_FIN_{sfx}
         mov al, byte ptr [{pt}]
         cmp al, '0'
-        jb WTOI_ERR_%=
+        jb WTOI_ERR_{sfx}
         cmp al, '9'
-        ja WTOI_ERR_%=
+        ja WTOI_ERR_{sfx}
         imul rdi, rdi, 10
         movzx rax, al
         sub rax, '0'
         add rdi, rax
         inc {pt}
         dec {ln}
-        jmp WTOI_LOOP_%=
-WTOI_FIN_%=:
+        jmp WTOI_LOOP_{sfx}
+WTOI_FIN_{sfx}:
         mov rax, rdi
         cmp r8, 0
-        jge WTOI_OK_%=
+        jge WTOI_OK_{sfx}
         neg rax
-WTOI_OK_%=:
-", pt=ptr, ln=len));
+WTOI_OK_{sfx}:
+", pt=ptr, ln=len, sfx=u));
 }
 fn win_emit_to_int_from_rbx_rcx(out: &mut String) {
+    let u = fresh_label_id();
     out.push_str(
-r#"        xor rdi, rdi
+&r#"        xor rdi, rdi
         mov r8, 1
         test rcx, rcx
         jz WTOI_ERR_%=
@@ -1711,10 +2087,17 @@ WTOI_OK_%=:
         lea r10, [rsp+79]
         mov r8, 10
         xor rcx, rcx
+        mov qword ptr [rsp], 0
+        test rax, rax
+        jns WTOI_I64_pos_%=
+        neg rax
+        mov qword ptr [rsp], 1
+WTOI_I64_pos_%=:
         test rax, rax
         jnz WTOI_I64_loop_%=
         mov byte ptr [r10], '0'
         mov rcx, 1
+        dec r10
         jmp WTOI_I64_done_%=
 WTOI_I64_loop_%=:
         xor rdx, rdx
@@ -1726,6 +2109,12 @@ WTOI_I64_loop_%=:
         test rax, rax
         jnz WTOI_I64_loop_%=
 WTOI_I64_done_%=:
+        cmp qword ptr [rsp], 0
+        je WTOI_I64_nosign_%=
+        mov byte ptr [r10], '-'
+        dec r10
+        inc rcx
+WTOI_I64_nosign_%=:
         lea rsi, [r10+1]
         mov rdx, rcx
         mov r11, rcx
@@ -1766,7 +2155,7 @@ WTOI_ERR_%=:
         call ExitProcess
         add rsp, 40
 WTOI_END_%=:
-"#);
+"#.replace("%=", &u));
 }
 
 
@@ -1898,14 +2287,24 @@ impl CodeGenerator for X86_64LinuxCodegen {
             };
             if func.name == "main" {
                 main_func = Some(func);
+                let mut pre_env: HashMap<String, i64> = HashMap::new();
                 for stmt in &func.body {
+                    if let Stmt::Let { name, init, ty } = stmt {
+                        if matches!(ty, Type::I64 | Type::I32) {
+                            if let Some(v) = eval_int_expr_env(init, &pre_env) {
+                                pre_env.insert(name.clone(), v);
+                            }
+                        }
+                    }
                     match stmt {
                         Stmt::Return(expr) => {
-                            if let Some(v) = eval_int_expr(expr) {
+                            if let Some(v) = eval_int_expr_env(expr, &pre_env) {
                                 exit_code = v.clamp(0, 255);
                             }
-                            if let Some(fv) = eval_f64_expr(expr) {
-                                f64_ret = Some(fv);
+                            if matches!(func.ret, Type::F64 | Type::F32) {
+                                if let Some(fv) = eval_f64_expr(expr) {
+                                    f64_ret = Some(fv);
+                                }
                             }
                             if let Expr::Call(name, args) = expr {
                                 if !name.starts_with("vec_") { calls.push((name.clone(), args.clone())); }
@@ -2190,6 +2589,7 @@ _start:
                     }
                 }
                 let mut linux_inbuf_main_emitted: bool = false;
+                let mut lin_const_env: HashMap<String, i64> = HashMap::new();
                 if let Some(f) = main_func {
                     let mut fi = 0usize;
                     for stmt in &f.body {
@@ -2302,8 +2702,20 @@ _start:
 
                             // Handle literal integer printing inline for source order
                             Stmt::PrintExpr(Expr::Lit(Value::Int(v))) => {
-                                out.push_str(&format!("        mov ${}, %rax\n", v));
+                                out.push_str(&format!("        movabsq ${}, %rax\n", v));
                                 linux_emit_print_i64(&mut out);
+                                continue;
+                            }
+
+                            // Handle literal float printing inline for source order
+                            Stmt::PrintExpr(Expr::Lit(Value::Float64(fv))) => {
+                                let bits = fv.to_bits() as i64;
+                                linux_emit_print_f64_value(&mut out, &format!("        movabsq ${}, %rax\n        movq %rax, %xmm0\n", bits));
+                                continue;
+                            }
+                            Stmt::PrintExpr(Expr::Lit(Value::Float32(fv))) => {
+                                let bits = (*fv as f64).to_bits() as i64;
+                                linux_emit_print_f64_value(&mut out, &format!("        movabsq ${}, %rax\n        movq %rax, %xmm0\n", bits));
                                 continue;
                             }
 
@@ -2361,8 +2773,8 @@ _start:
                                                 out.push_str("        mov (%rax), %rax\n");
                                                 linux_emit_print_i64(&mut out);
                                                 out.push_str(&format!("        jmp .LVPOP_END_{}\n", lbl_sfx));
-                                                linux_emit_oob_error(&mut out);
                                                 out.push_str(&format!(".LVPOP_OOB_{}:\n", lbl_sfx));
+                                                linux_emit_oob_error(&mut out);
                                                 out.push_str(&format!(".LVPOP_END_{}:\n", lbl_sfx));
                                                 continue;
                                             }
@@ -2555,7 +2967,22 @@ _start:
                                     out.push_str("        sub $8, %rsp\n");
                                     out.push_str(&format!("        call {}\n", name));
                                     out.push_str("        add $8, %rsp\n");
-                                    linux_emit_print_i64(&mut out);
+                                    let ret_is_string = module.items.iter().any(|it| matches!(it, Item::Function(cf) if cf.name == *name && matches!(cf.ret, Type::String)));
+                                    if ret_is_string {
+                                        out.push_str(
+"        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                    } else {
+                                        linux_emit_print_i64(&mut out);
+                                    }
                                     continue;
                                 }
                             }
@@ -2648,10 +3075,30 @@ _start:
                                     if let Some(off) = main_local_offsets.get(name) {
                                         match (ty, init) {
                                             (Type::I64, Expr::Lit(Value::Int(v))) => {
-                                                out.push_str(&format!("        movq ${}, -{}(%rbp)\n", v, off));
+                                                lin_const_env.insert(name.clone(), *v);
+                                                out.push_str(&format!("        movabsq ${}, %rax\n        movq %rax, -{}(%rbp)\n", v, off));
                                             }
                                             (Type::I32, Expr::Lit(Value::Int(v))) => {
-                                                out.push_str(&format!("        movl ${}, -{}(%rbp)\n", *v as i32, off));
+                                                lin_const_env.insert(name.clone(), *v);
+                                                out.push_str(&format!("        movq ${}, -{}(%rbp)\n", *v as i32, off));
+                                            }
+                                            (Type::F64, _) if eval_f64_expr(init).is_some() => {
+                                                let fv = eval_f64_expr(init).unwrap();
+                                                out.push_str(&format!("        movabsq ${}, %rax\n        movq %rax, -{}(%rbp)\n", fv.to_bits() as i64, off));
+                                            }
+                                            (Type::F32, _) if eval_f32_expr(init).is_some() => {
+                                                let fv = eval_f32_expr(init).unwrap();
+                                                out.push_str(&format!("        movl ${}, -{}(%rbp)\n", fv.to_bits() as i32, off));
+                                            }
+                                            (Type::I64, _) if eval_int_expr_env(init, &lin_const_env).is_some() => {
+                                                let v = eval_int_expr_env(init, &lin_const_env).unwrap();
+                                                lin_const_env.insert(name.clone(), v);
+                                                out.push_str(&format!("        movabsq ${}, %rax\n        movq %rax, -{}(%rbp)\n", v, off));
+                                            }
+                                            (Type::I32, _) if eval_int_expr_env(init, &lin_const_env).is_some() => {
+                                                let v = eval_int_expr_env(init, &lin_const_env).unwrap();
+                                                lin_const_env.insert(name.clone(), v);
+                                                out.push_str(&format!("        movq ${}, -{}(%rbp)\n", v as i32, off));
                                             }
                                             (Type::I64, _) => {
                                                 // Use generic expression emitter for non-literal init
@@ -2803,8 +3250,8 @@ _start:
                                                 out.push_str(&format!("        leaq (%rbx,%r10,{}), %rax\n", elem_sz));
                                                 out.push_str("        mov (%rax), %rax\n");
                                                 out.push_str("        jmp 21f\n");
-                                                linux_emit_oob_error(&mut out);
                                                 out.push_str("20:\n");
+                                                linux_emit_oob_error(&mut out);
                                                 out.push_str("21:\n");
                                             }
                                         }
@@ -3051,8 +3498,8 @@ _start:
                                                     _ => { }
                                                 }
                                                 out.push_str("        jmp 61f\n");
-                                                linux_emit_oob_error(&mut out);
                                                 out.push_str("60:\n");
+                                                linux_emit_oob_error(&mut out);
                                                 out.push_str("61:\n");
                                             }
                                         }
@@ -3080,8 +3527,8 @@ _start:
                                                 out.push_str("        mov 8(%rbx), %rax\n"); // get value (skip tag)
                                                 linux_emit_print_i64(&mut out);
                                                 out.push_str("        jmp 71f\n");
-                                                linux_emit_oob_error(&mut out);
                                                 out.push_str("70:\n");
+                                                linux_emit_oob_error(&mut out);
                                                 out.push_str("71:\n");
                                             }
                                         }
@@ -3133,8 +3580,8 @@ _start:
                                                 out.push_str("        mov (%rax), %rax\n");
                                                 linux_emit_print_i64(&mut out);
                                                 out.push_str("        jmp 31f\n");
-                                                linux_emit_oob_error(&mut out);
                                                 out.push_str("30:\n");
+                                                linux_emit_oob_error(&mut out);
                                                 out.push_str("31:\n");
                                             }
                                         }
@@ -3180,6 +3627,14 @@ _start:
                                                     linux_emit_print_i64(&mut out);
                                                     continue;
                                                 }
+                                                Type::F64 => {
+                                                    linux_emit_print_f64_value(&mut out, &format!("        movsd -{}(%rbp), %xmm0\n", off));
+                                                    continue;
+                                                }
+                                                Type::F32 => {
+                                                    linux_emit_print_f64_value(&mut out, &format!("        cvtss2sd -{}(%rbp), %xmm0\n", off));
+                                                    continue;
+                                                }
                                                 _ => {} // Let other types fall through to parameter handling
                                             }
                                         }
@@ -3202,86 +3657,7 @@ _start:
                                             Type::F64 => {
                                                 if slot < xmm_regs.len() {
                                                     let sx = xmm_regs[slot];
-                                                    let sfx = format!("{}", label_counter);
-                                                    label_counter += 1;
-                                                    out.push_str("        sub $80, %rsp\n");
-                                                    out.push_str(&format!("        cvttsd2si {}, %rax\n", sx));
-                                                    out.push_str(&format!(
-"        leaq 79(%rsp), %r10
-        mov $10, %r8
-        xor %rcx, %rcx
-        test %rax, %rax
-        jnz .F64I64_print_loop_{sfx}
-        movb $48, (%r10)
-        mov $1, %rcx
-        jmp .F64I64_print_done_{sfx}
-.F64I64_print_loop_{sfx}:
-        xor %rdx, %rdx
-        div %r8
-        add $48, %dl
-        mov %dl, (%r10)
-        dec %r10
-        inc %rcx
-        test %rax, %rax
-        jnz .F64I64_print_loop_{sfx}
-.F64I64_print_done_{sfx}:
-        leaq 1(%r10), %rsi
-        mov %rcx, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-", sfx=sfx));
-                                                    if !out.contains(".LCDOT:\n") {
-                                                        out.push_str("\n        .section .rodata\n.LCDOT:\n        .ascii \".\"\n        .text\n");
-                                                    }
-                                                    out.push_str(
-"        mov $1, %rax
-        mov $1, %rdi
-        leaq .LCDOT(%rip), %rsi
-        mov $1, %rdx
-        syscall
-");
-                                                    if !out.contains(".LCFTSCALE:\n") {
-                                                        out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n        .text\n");
-                                                    }
-                                                    if !out.contains(".LCFTHALF:\n") {
-                                                        out.push_str("\n        .section .rodata\n.LCFTHALF:\n        .double 0.5\n        .text\n");
-                                                    }
-                                                    out.push_str(&format!(
-"        movapd {sx}, %xmm0
-        cvtsi2sd %rax, %xmm1
-        subsd %xmm1, %xmm0
-        movsd .LCFTSCALE(%rip), %xmm2
-        mulsd %xmm2, %xmm0
-        movsd .LCFTHALF(%rip), %xmm3
-        addsd %xmm3, %xmm0
-        cvttsd2si %xmm0, %rcx
-        leaq 79(%rsp), %r10
-        mov $10, %r8
-        mov $6, %r11
-        mov %rcx, %rax
-
-.F64FRAC_loop_{sfx}:
-        xor %rdx, %rdx
-        div %r8
-        add $48, %dl
-        mov %dl, (%r10)
-        dec %r10
-        dec %r11
-        test %r11, %r11
-        jnz .F64FRAC_loop_{sfx}
-        leaq 1(%r10), %rsi
-        mov $6, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-        add $80, %rsp
-", sx=sx, sfx=sfx));
+                                                    linux_emit_print_f64_value(&mut out, &format!("        movapd {}, %xmm0\n", sx));
                                                 }
                                             }
                                             Type::String => { slot += 2; continue; }
@@ -4430,8 +4806,112 @@ r#"        push %rbx
                     let mut ret_f: Option<f64> = None;
                     let mut fi: usize = 0;
                     let mut lwh_idx: usize = 0;
+                    let mut const_int_lists: HashMap<String, Vec<i64>> = HashMap::new();
+                    let mut const_str_lists: HashMap<String, Vec<(String, usize)>> = HashMap::new();
+                    let mut const_str_locals: HashMap<String, (String, usize)> = HashMap::new();
                     for stmt in &func.body {
                         match stmt {
+                            Stmt::Let { name, ty: Type::String, init: Expr::Lit(Value::String(sv)) } => {
+                                let lbl = format!(".LLSV_{}_{}", func.name, fi);
+                                fi += 1;
+                                func_rodata.push((lbl.clone(), sv.clone()));
+                                const_str_locals.insert(name.clone(), (lbl, sv.as_bytes().len()));
+                            }
+                            Stmt::PrintExpr(Expr::Var(vn)) if const_str_locals.contains_key(vn) => {
+                                let (lbl, len) = &const_str_locals[vn];
+                                out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", lbl, len));
+                                need_nl = true;
+                            }
+                            Stmt::Let { name, ty: Type::List(elem_ty), init: Expr::ArrayLit(elems) } => {
+                                match elem_ty.as_ref() {
+                                    Type::I32 | Type::I64 => {
+                                        if let Some(vals) = elems.iter().map(eval_int_expr).collect::<Option<Vec<i64>>>() {
+                                            let lbl = format!(".LLIST_{}_{}", func.name, fi);
+                                            fi += 1;
+                                            out.push_str(&format!("\n        .section .rodata\n{}:\n", lbl));
+                                            for v in &vals {
+                                                out.push_str(&format!("        .quad {}\n", v));
+                                            }
+                                            out.push_str("        .text\n");
+                                            const_int_lists.insert(name.clone(), vals);
+                                        }
+                                    }
+                                    Type::String => {
+                                        let mut labels: Vec<(String, usize)> = Vec::new();
+                                        for e in elems {
+                                            if let Expr::Lit(Value::String(sv)) = e {
+                                                let lbl = format!(".LLSTR_{}_{}", func.name, fi);
+                                                fi += 1;
+                                                func_rodata.push((lbl.clone(), sv.clone()));
+                                                labels.push((lbl, sv.as_bytes().len()));
+                                            }
+                                        }
+                                        if labels.len() == elems.len() {
+                                            const_str_lists.insert(name.clone(), labels);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Stmt::PrintExpr(Expr::Call(cname, cargs))
+                                if cname == "len"
+                                    && cargs.len() == 1
+                                    && matches!(&cargs[0], Expr::Var(vn) if const_int_lists.contains_key(vn) || const_str_lists.contains_key(vn)) =>
+                            {
+                                if let Expr::Var(vn) = &cargs[0] {
+                                    let n = const_int_lists
+                                        .get(vn)
+                                        .map(|v| v.len())
+                                        .or_else(|| const_str_lists.get(vn).map(|v| v.len()))
+                                        .unwrap_or(0);
+                                    out.push_str(&format!("        mov ${}, %rax\n", n));
+                                    linux_emit_print_i64(&mut out);
+                                }
+                            }
+                            Stmt::PrintExpr(Expr::Index(base, idx))
+                                if matches!(&**base, Expr::Var(vn) if const_int_lists.contains_key(vn) || const_str_lists.contains_key(vn)) =>
+                            {
+                                if let (Expr::Var(vn), Some(k)) = (&**base, eval_int_expr(idx)) {
+                                    if let Some(vals) = const_int_lists.get(vn) {
+                                        if (k as usize) < vals.len() {
+                                            out.push_str(&format!("        movabsq ${}, %rax\n", vals[k as usize]));
+                                            linux_emit_print_i64(&mut out);
+                                        } else {
+                                            linux_emit_oob_error(&mut out);
+                                        }
+                                    } else if let Some(labels) = const_str_lists.get(vn) {
+                                        if (k as usize) < labels.len() {
+                                            let (lbl, len) = &labels[k as usize];
+                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", lbl, len));
+                                            need_nl = true;
+                                        } else {
+                                            linux_emit_oob_error(&mut out);
+                                        }
+                                    }
+                                }
+                            }
                             Stmt::While { cond, body } => {
                                 let head = format!(".LWH_HEAD_{}_{}", func.name, lwh_idx);
                                 let end = format!(".LWH_END_{}_{}", func.name, lwh_idx);
@@ -4536,7 +5016,7 @@ r#"        push %rbx
                                 }
                                 for bstmt in body {
                                     match bstmt {
-                                        Stmt::Println(s) => {
+                                        Stmt::Println(s) | Stmt::PrintExpr(Expr::Lit(Value::String(s))) => {
                                             let mut bytes = s.clone().into_bytes();
                                             bytes.push(b'\n');
                                             let len = s.as_bytes().len() + 1;
@@ -4750,7 +5230,38 @@ r#"        push %rbx
                                     }
 
                                     Expr::Call(name, args) => {
-                                        if name == "readln" && args.is_empty() {
+                                        if name == "concat" && args.len() == 2 {
+                                            let mut lbls: Vec<(String, usize)> = Vec::new();
+                                            for a in args {
+                                                if let Expr::Lit(Value::String(sv)) = a {
+                                                    let lbl = format!(".LCC_{}_{}", func.name, fi);
+                                                    func_rodata.push((lbl.clone(), sv.clone()));
+                                                    lbls.push((lbl, sv.as_bytes().len()));
+                                                    fi += 1;
+                                                }
+                                            }
+                                            if lbls.len() == 2 {
+                                                out.push_str(&format!(
+"        leaq {}(%rip), %rdi
+        mov ${}, %rsi
+        leaq {}(%rip), %rdx
+        mov ${}, %rcx
+        sub $8, %rsp
+        call concat
+        add $8, %rsp
+        mov %rax, %rsi
+        mov $1, %rax
+        mov $1, %rdi
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", lbls[0].0, lbls[0].1, lbls[1].0, lbls[1].1));
+                                                need_nl = true;
+                                            }
+                                        } else if name == "readln" && args.is_empty() {
                                             let inlbl = format!(".LININBUF_{}_{}", func.name, fi);
                                             if !linux_inbuf_emitted {
                                                 out.push_str(&format!(
@@ -5049,83 +5560,7 @@ linux_emit_print_i64(&mut out);
                                                     Type::F64 => {
                                                         if slot < xmm_regs.len() {
                                                             let srcx = xmm_regs[slot];
-                                                            let sfx = format!("{}", label_counter);
-                                                            label_counter += 1;
-                                                            out.push_str("        sub $80, %rsp\n");
-                                                            out.push_str(&format!("        cvttsd2si {}, %rax\n", srcx));
-                                                            out.push_str(&format!(
-"        leaq 79(%rsp), %r10
-        mov $10, %r8
-        xor %rcx, %rcx
-        test %rax, %rax
-        jnz .F64I64_print_loop_{sfx}
-        movb $'0', (%r10)
-        mov $1, %rcx
-        jmp .F64I64_print_done_{sfx}
-.F64I64_print_loop_{sfx}:
-        xor %rdx, %rdx
-        div %r8
-        add $'0', %dl
-        mov %dl, (%r10)
-        dec %r10
-        inc %rcx
-        test %rax, %rax
-        jnz .F64I64_print_loop_{sfx}
-.F64I64_print_done_{sfx}:
-        leaq 1(%r10), %rsi
-        mov %rcx, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-", sfx=sfx));
-                                                            let dot_lbl = format!(".LSDOT_{}_{}", func.name, fi);
-                                                            out.push_str(&format!(
-"        mov $1, %rax
-        mov $1, %rdi
-        leaq {dl}(%rip), %rsi
-        mov $1, %rdx
-        syscall
-", dl=dot_lbl));
-                                                            func_rodata.push((dot_lbl, ".".to_string()));
-                                                            out.push_str(&format!(
-"        movsd {sx}, %xmm0
-        cvtsi2sd %rax, %xmm1
-        subsd %xmm1, %xmm0
-        leaq .LCFTSCALE(%rip), %rax
-        movsd (%rax), %xmm2
-        mulsd %xmm2, %xmm0
-        leaq .LCFTHALF(%rip), %rax
-        movsd (%rax), %xmm3
-        addsd %xmm3, %xmm0
-        cvttsd2si %xmm0, %rcx
-        leaq 79(%rsp), %r10
-        mov $10, %r8
-        mov $6, %r11
-.F64FRAC_loop_{sfx}:
-        xor %rdx, %rdx
-        div %r8
-        add $'0', %dl
-        mov %dl, (%r10)
-        dec %r10
-        dec %r11
-        test %r11, %r11
-        jnz .F64FRAC_loop_{sfx}
-        leaq 1(%r10), %rsi
-        mov $6, %rdx
-        mov $1, %rax
-        mov $1, %rdi
-        syscall
-        mov $1, %rax
-        mov $1, %rdi
-        leaq .LSNL(%rip), %rsi
-        mov $1, %rdx
-        syscall
-        add $80, %rsp
-", sx=srcx, sfx=sfx));
-                                                            if !out.contains(".LCFTSCALE:\n") {
-                                                                out.push_str("\n        .section .rodata\n.LCFTSCALE:\n        .double 1000000.0\n");
-                                                                out.push_str(".LCFTHALF:\n        .double 0.5\n        .text\n");
-                                                            }
+                                                            linux_emit_print_f64_value(&mut out, &format!("        movapd {}, %xmm0\n", srcx));
                                                             need_nl = true;
                                                             handled = true
                                                         }
@@ -5869,6 +6304,18 @@ r#"        syscall
                                     _ => {}
                                 }
                             },
+                            Stmt::Return(Expr::Lit(Value::String(s))) if matches!(func.ret, Type::String) => {
+                                let u = fresh_label_id();
+                                let lbl = format!(".LSRET_{}_{}", func.name, u);
+                                func_rodata.push((lbl.clone(), s.clone()));
+                                out.push_str(&format!("        leaq {}(%rip), %rax\n", lbl));
+                                out.push_str(&format!("        mov ${}, %rdx\n", s.len()));
+                                if locals_size > 0 {
+                                    out.push_str("        mov %rbp, %rsp\n");
+                                }
+                                out.push_str("        pop %rbp\n");
+                                out.push_str("        ret\n");
+                            }
                             Stmt::Return(expr) => {
                                 // Use the general expression emitter for all return expressions
                                 // This handles literals, variables, binops, calls, if-else, etc.
@@ -5958,6 +6405,7 @@ r#"
         .extern WriteFile
         .extern ReadFile
         .extern VirtualAlloc
+        .extern ExitProcess
         .global main
         .text
 main:
@@ -5965,6 +6413,7 @@ main:
         mov rbp, rsp
         push rbx
         push r12
+        push r13
         sub rsp, 40
         mov ecx, -11
         call GetStdHandle
@@ -5988,6 +6437,26 @@ LSNL:
                 let mut win_inbuf_emitted: bool = false;
 
                     win_emitted_main_in_order = true;
+
+                    let mut win_main_local_offsets: HashMap<String, usize> = HashMap::new();
+                    let mut win_main_local_types: HashMap<String, Type> = HashMap::new();
+                    let mut win_const_env: HashMap<String, i64> = HashMap::new();
+                    {
+                        let mut cur_off = 0usize;
+                        for stmt in &f.body {
+                            if let Stmt::Let { name, ty, .. } = stmt {
+                                if matches!(ty, Type::I64 | Type::I32 | Type::F64 | Type::F32) {
+                                    cur_off += 8;
+                                    win_main_local_offsets.insert(name.clone(), cur_off);
+                                    win_main_local_types.insert(name.clone(), ty.clone());
+                                }
+                            }
+                        }
+                        if cur_off > 0 {
+                            let frame = (cur_off + 15) / 16 * 16;
+                            out.push_str(&format!("        sub rsp, {}\n", frame));
+                        }
+                    }
 
                     for stmt in &f.body {
                         match stmt {
@@ -6032,6 +6501,59 @@ r#"        sub rsp, 40
                                 out.push_str(
 r#"        add rsp, 40
 "#);
+                            },
+                            Stmt::Let { name, ty, init } => {
+                                if let Some(off) = win_main_local_offsets.get(name) {
+                                    let addr = off + 24;
+                                    match ty {
+                                        Type::I64 | Type::I32 => {
+                                            if let Some(v) = eval_int_expr_env(init, &win_const_env) {
+                                                win_const_env.insert(name.clone(), v);
+                                                out.push_str(&format!("        mov rax, {}\n        mov qword ptr [rbp-{}], rax\n", v, addr));
+                                            } else if let Expr::Call(cname, cargs) = init {
+                                                if matches!(cname.as_str(), "spawn" | "join" | "destroy" | "to_int" | "readln" | "concat")
+                                                    || cname.starts_with("vec_") || cname.starts_with("hlist_") {
+                                                    continue;
+                                                }
+                                                let arg_regs = ["rcx", "rdx", "r8", "r9"];
+                                                for (i, a) in cargs.iter().enumerate().take(4) {
+                                                    if let Some(v) = eval_int_expr(a) {
+                                                        out.push_str(&format!("        mov {}, {}\n", arg_regs[i], v));
+                                                    }
+                                                }
+                                                out.push_str(&format!("        sub rsp, 40\n        call {}\n        add rsp, 40\n", cname));
+                                                if matches!(ty, Type::I32) {
+                                                    out.push_str("        movsxd rax, eax\n");
+                                                }
+                                                out.push_str(&format!("        mov qword ptr [rbp-{}], rax\n", addr));
+                                            }
+                                        }
+                                        Type::F64 => {
+                                            if let Some(fv) = eval_f64_expr(init) {
+                                                out.push_str(&format!("        mov rax, {}\n        mov qword ptr [rbp-{}], rax\n", fv.to_bits() as i64, addr));
+                                            }
+                                        }
+                                        Type::F32 => {
+                                            if let Some(fv) = eval_f32_expr(init) {
+                                                out.push_str(&format!("        mov rax, {}\n        mov qword ptr [rbp-{}], rax\n", (fv as f64).to_bits() as i64, addr));
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            },
+                            Stmt::PrintExpr(Expr::Lit(Value::Int(v))) => {
+                                out.push_str(&format!("        mov rax, {}\n", v));
+                                win_emit_print_i64(&mut out);
+                                win_need_lsnl = true;
+                            },
+                            Stmt::PrintExpr(Expr::Lit(Value::Float64(fv))) => {
+                                win_emit_print_f64_value(&mut out, &format!("        mov rax, {}\n        movq xmm0, rax\n", fv.to_bits() as i64));
+                                win_need_lsnl = true;
+                            },
+                            Stmt::PrintExpr(Expr::Lit(Value::Float32(fv))) => {
+                                win_emit_print_f64_value(&mut out, &format!("        mov rax, {}\n        movq xmm0, rax\n", (*fv as f64).to_bits() as i64));
+                                win_need_lsnl = true;
                             },
                             Stmt::PrintExpr(Expr::Lit(Value::String(s))) => {
                                 let bytes = s.clone().into_bytes();
@@ -6149,24 +6671,206 @@ r#"        mov r11, rcx
                                         win_emit_print_newline(&mut out);
                                         win_need_lsnl = false;
                                     }
-                                } else {
-                                    if !args.is_empty() {
-                                        for (i, a) in args.iter().enumerate().take(4) {
-                                            match (i, a) {
-                                                (0, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov ecx, {}\n", *v as i32)),
-                                                (1, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov edx, {}\n", *v as i32)),
-                                                (2, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r8d, {}\n", *v as i32)),
-                                                (3, Expr::Lit(Value::Int(v))) => out.push_str(&format!("        mov r9d, {}\n", *v as i32)),
+                                } else if !(matches!(name.as_str(), "spawn" | "join" | "destroy")
+                                    || name.starts_with("vec_") || name.starts_with("hlist_")) {
+                                    win_emit_print_call_result(&mut out, name, args);
+                                    win_need_lsnl = true;
+                                }
+                                },
+                            Stmt::PrintExpr(Expr::IfElse { cond, then_expr, else_expr }) => {
+                                let cond_val = match &**cond {
+                                    Expr::BinOp(l, op, r) => {
+                                        match (eval_int_expr(l), eval_int_expr(r)) {
+                                            (Some(a), Some(b)) => match op {
+                                                aether_frontend::ast::BinOpKind::Lt => Some(a < b),
+                                                aether_frontend::ast::BinOpKind::Le => Some(a <= b),
+                                                aether_frontend::ast::BinOpKind::Gt => Some(a > b),
+                                                aether_frontend::ast::BinOpKind::Ge => Some(a >= b),
+                                                aether_frontend::ast::BinOpKind::Eq => Some(a == b),
+                                                _ => None,
+                                            },
+                                            _ => None,
+                                        }
+                                    }
+                                    e => eval_int_expr(e).map(|v| v != 0),
+                                };
+                                if let Some(cv) = cond_val {
+                                    let chosen = if cv { then_expr } else { else_expr };
+                                    match &**chosen {
+                                        Expr::Lit(Value::String(s)) => {
+                                            let u = fresh_label_id();
+                                            let lbl = format!("LSIF_{}", u);
+                                            out.push_str(
+r#"        sub rsp, 40
+        mov rcx, r12
+"#);
+                                            out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                            out.push_str(&format!("        mov r8d, {}\n", s.len() as i32));
+                                            out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                            win_emit_print_newline(&mut out);
+                                            win_order_ls.push((lbl, s.clone()));
+                                            win_order_ls_idx += 1;
+                                            win_need_lsnl = true;
+                                        }
+                                        e => {
+                                            if let Some(v) = eval_int_expr(e) {
+                                                out.push_str(&format!("        mov rax, {}\n", v));
+                                                win_emit_print_i64(&mut out);
+                                                win_need_lsnl = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            Stmt::While { cond, body } => {
+                                let cond_true = match cond {
+                                    Expr::BinOp(l, op, r) => match (eval_int_expr(l.as_ref()), eval_int_expr(r.as_ref())) {
+                                        (Some(a), Some(b)) => match op {
+                                            aether_frontend::ast::BinOpKind::Lt => Some(a < b),
+                                            aether_frontend::ast::BinOpKind::Le => Some(a <= b),
+                                            aether_frontend::ast::BinOpKind::Gt => Some(a > b),
+                                            aether_frontend::ast::BinOpKind::Ge => Some(a >= b),
+                                            aether_frontend::ast::BinOpKind::Eq => Some(a == b),
+                                            _ => None,
+                                        },
+                                        _ => None,
+                                    },
+                                    e => eval_int_expr(e).map(|v| v != 0),
+                                };
+                                if cond_true == Some(true) {
+                                    let u = fresh_label_id();
+                                    let head = format!("LWH_HEAD_{}", u);
+                                    let end = format!("LWH_END_{}", u);
+                                    out.push_str(&format!("{}:\n", head));
+                                    for bstmt in body {
+                                        match bstmt {
+                                            Stmt::Println(s) => {
+                                                let mut bytes = s.clone().into_bytes();
+                                                bytes.push(b'\n');
+                                                let len = bytes.len();
+                                                let lbl = format!("LS{}", win_order_ls_idx);
+                                                out.push_str(
+r#"        sub rsp, 40
+        mov rcx, r12
+"#);
+                                                out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                                out.push_str(&format!("        mov r8d, {}\n", len as i32));
+                                                out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
+                                                win_order_ls_idx += 1;
+                                            }
+                                            Stmt::Break => {
+                                                out.push_str(&format!("        jmp {}\n", end));
+                                            }
+                                            Stmt::Continue => {
+                                                out.push_str(&format!("        jmp {}\n", head));
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    out.push_str(&format!("        jmp {}\n{}:\n", head, end));
+                                }
+                            },
+                            Stmt::PrintExpr(Expr::MethodCall(recv, meth, _margs)) => {
+                                if let Expr::Var(rn) = &**recv {
+                                    if let Some(tyname) = static_types.get(rn) {
+                                        let fname = format!("{}_{}", tyname, meth);
+                                        let ret_is_string = module.items.iter().any(|it| matches!(it, Item::Function(cf) if cf.name == fname && matches!(cf.ret, Type::String)));
+                                        out.push_str(&format!("        lea rcx, [rip+{}]\n", rn));
+                                        if ret_is_string {
+                                            win_emit_print_call_result(&mut out, &fname, &[]);
+                                        } else {
+                                            out.push_str(&format!("        sub rsp, 40\n        call {}\n        add rsp, 40\n", fname));
+                                            win_emit_print_i64(&mut out);
+                                        }
+                                        win_need_lsnl = true;
+                                    }
+                                }
+                            },
+                            Stmt::PrintExpr(Expr::Field(recv, fname)) => {
+                                if let Expr::Var(rn) = &**recv {
+                                    if let Some(sv) = local_strings.get(rn).and_then(|m| m.get(fname)) {
+                                        let u = fresh_label_id();
+                                        let lbl = format!("LSLF_{}", u);
+                                        out.push_str(
+r#"        sub rsp, 40
+        mov rcx, r12
+"#);
+                                        out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                        out.push_str(&format!("        mov r8d, {}\n", sv.len() as i32));
+                                        out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                        win_emit_print_newline(&mut out);
+                                        win_order_ls.push((lbl.clone(), sv.clone()));
+                                        win_order_ls_idx += 1;
+                                        win_need_lsnl = true;
+                                    } else if let Some(tyname) = static_types.get(rn) {
+                                        if let Some((foff, fty)) = get_field_info(tyname, fname, &field_offsets) {
+                                            match fty {
+                                                Type::String => {
+                                                    out.push_str(&format!("        lea r10, [rip+{}]\n", rn));
+                                                    out.push_str(&format!("        mov rdx, qword ptr [r10+{}]\n", foff));
+                                                    out.push_str(&format!("        mov r8d, dword ptr [r10+{}]\n", foff + 8));
+                                                    out.push_str(
+r#"        sub rsp, 40
+        mov rcx, r12
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                                    win_emit_print_newline(&mut out);
+                                                    win_need_lsnl = true;
+                                                }
+                                                Type::I64 => {
+                                                    out.push_str(&format!("        lea r10, [rip+{}]\n", rn));
+                                                    out.push_str(&format!("        mov rax, qword ptr [r10+{}]\n", foff));
+                                                    win_emit_print_i64(&mut out);
+                                                    win_need_lsnl = true;
+                                                }
+                                                Type::I32 => {
+                                                    out.push_str(&format!("        lea r10, [rip+{}]\n", rn));
+                                                    out.push_str(&format!("        movsxd rax, dword ptr [r10+{}]\n", foff));
+                                                    win_emit_print_i64(&mut out);
+                                                    win_need_lsnl = true;
+                                                }
                                                 _ => {}
                                             }
                                         }
                                     }
-                                    win_emit_print_call_result(&mut out, name, args);
-                                    win_emit_print_newline(&mut out);
-                                    win_need_lsnl = false;
                                 }
-                                },
+                            },
                             Stmt::PrintExpr(Expr::Index(_, _)) => {
+                            },
+                            Stmt::PrintExpr(Expr::Var(name)) if win_main_local_offsets.contains_key(name) => {
+                                let off = win_main_local_offsets[name] + 24;
+                                match win_main_local_types[name] {
+                                    Type::F64 => {
+                                        win_emit_print_f64_value(&mut out, &format!("        movsd xmm0, qword ptr [rbp-{}]\n", off));
+                                    }
+                                    Type::F32 => {
+                                        win_emit_print_f64_value(&mut out, &format!("        movsd xmm0, qword ptr [rbp-{}]\n", off));
+                                    }
+                                    _ => {
+                                        out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", off));
+                                        win_emit_print_i64(&mut out);
+                                    }
+                                }
+                                win_need_lsnl = true;
                             },
                             Stmt::PrintExpr(Expr::Var(name)) => {
                                 let regs_gpr = ["rcx","rdx","r8","r9"];
@@ -6234,103 +6938,15 @@ r#"        sub rsp, 40
                                                 if slot < regs_xmm.len() {
                                                     let sx = regs_xmm[slot];
                                                     out.push_str(
-r#"        sub rsp, 80
-"#);
-                                                    out.push_str(&format!("        cvttsd2si rax, {}\n", sx));
-                                                    out.push_str(
-r#"        lea r10, [rsp+79]
-        mov r8, 10
-        xor rcx, rcx
-        test rax, rax
-        jnz F64I64_loop_%=
-        mov byte ptr [r10], '0'
-        mov rcx, 1
-        jmp F64I64_done_%=
-F64I64_loop_%=:
-        xor rdx, rdx
-        div r8
-        add dl, '0'
-        mov byte ptr [r10], dl
-        dec r10
-        inc rcx
-        test rax, rax
-        jnz F64I64_loop_%=
-F64I64_done_%=:
-        lea rdx, [r10+1]
-        mov r8, rcx
-        mov rcx, r12
-        sub rsp, 40
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
+r#"        sub rsp, 40
+        mov ecx, -11
+        call GetStdHandle
         add rsp, 40
-        mov rcx, r11
+        mov r12, rax
 "#);
-                                                    let dot_lbl = format!("LSDOT_{}_{}", f.name, win_order_ls_idx);
-                                            out.push_str(
-r#"        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-"#);
-                                                    out.push_str(&format!("        lea rdx, [rip+{}]\n", dot_lbl));
-                                                    out.push_str(
-r#"        mov r8d, 1
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-"#);
-                                                    out.push_str(&format!("        movsd xmm0, {}\n", sx));
-                                                    out.push_str(
-r#"        cvtsi2sd xmm1, rax
-        subsd xmm0, xmm1
-        lea rax, [rip+LFTSCALEW]
-        movsd xmm2, qword ptr [rax]
-        mulsd xmm2, xmm0
-        lea rax, [rip+LFHALFW]
-        movsd xmm3, qword ptr [rax]
-        addsd xmm3, xmm0
-        cvttsd2si rcx, xmm0
-        lea r10, [rsp+79]
-        mov r8, 10
-        mov r11, 6
-F64FRACW_loop_%=:
-        xor rdx, rdx
-        div r8
-        add dl, '0'
-        mov byte ptr [r10], dl
-        dec r10
-        dec r11
-        test r11, r11
-        jnz F64FRACW_loop_%=
-        lea rdx, [r10+1]
-        mov r8, 6
-        mov rcx, r12
-        sub rsp, 40
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        mov r11, rcx
-        sub rsp, 40
-        mov rcx, r12
-        lea rdx, [rip+LSNL]
-        mov r8d, 1
-        xor r9d, r9d
-        mov qword ptr [rsp+32], 0
-        call WriteFile
-        add rsp, 40
-        mov rcx, r11
-        add rsp, 80
-"#);
-                                                    win_order_ls.push((dot_lbl, ".".to_string()));
+                                                    win_emit_print_f64_value(&mut out, &format!("        movapd xmm0, {}\n", sx));
                                                     win_need_lsnl = true;
                                                     handled = true;
-                                                    if !out.contains("LFTSCALEW:\n") {
-                                                        out.push_str("\n        .data\nLFTSCALEW:\n        .quad 0x412E848000000000\nLFHALFW:\n        .quad 0x3FE0000000000000\n        .text\n");
-                                                    }
                                                 }
                                             }
                                             _ => {}
@@ -6475,9 +7091,15 @@ r#"        xor r9d, r9d
                                 }
                             },
                             Stmt::Return(expr) => {
-                                if let Some(v) = eval_int_expr(expr) {
+                                if let Some(v) = eval_int_expr_env(expr, &win_const_env) {
                                     let v32 = v as i32;
                                     out.push_str(&format!("        mov eax, {}\n        jmp WMAIN_EPILOG\n", v32));
+                                } else if let Expr::Var(vn) = expr {
+                                    if let Some(off) = win_main_local_offsets.get(vn) {
+                                        out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n        jmp WMAIN_EPILOG\n", off + 24));
+                                    } else {
+                                        out.push_str("        xor eax, eax\n        jmp WMAIN_EPILOG\n");
+                                    }
                                 } else if let Expr::Lit(Value::String(s)) = expr {
                                     let bytes = s.clone().into_bytes();
                                     let lbl = format!("LSRET_main_{}", win_order_ls_idx);
@@ -6535,11 +7157,11 @@ r#"        xor r9d, r9d
                     }
                 }
 
-                    out.push_str("WMAIN_EPILOG:\n        ret\n");
+                    out.push_str("WMAIN_EPILOG:\n        mov ecx, eax\n        sub rsp, 40\n        call ExitProcess\n");
 
                     if win_need_lsnl || !win_order_ls.is_empty() {
                         out.push_str("\n        .data\n");
-                        if win_need_lsnl {
+                        if win_need_lsnl && !out.contains("\nLSNL:\n") {
                             out.push_str("LSNL:\n        .byte 10\n");
                         }
                         for (lbl, s) in &win_order_ls {
@@ -6560,6 +7182,7 @@ r#"        xor r9d, r9d
                     }
                 if !static_types.is_empty() {
                     out.push_str("\n        .data\n");
+                    let mut win_static_strs: Vec<(String, String)> = Vec::new();
                     for (sname, ty) in &static_types {
                         let sz = struct_sizes.get(ty).cloned().unwrap_or(8);
                         let mut emitted = false;
@@ -6589,18 +7212,7 @@ r#"        xor r9d, r9d
                                                     }
                                                     (Type::String, Expr::Lit(Value::String(sv))) => {
                                                         let lbl = format!("LSS_{}_{}", sname, fname);
-                                                        out.push_str(&format!("{}:\n        .ascii \"", lbl));
-                                                        for b in sv.as_bytes() {
-                                                            let ch = *b as char;
-                                                            match ch {
-                                                                '\n' => out.push_str("\\n"),
-                                                                '\t' => out.push_str("\\t"),
-                                                                '\"' => out.push_str("\\\""),
-                                                                '\\' => out.push_str("\\\\"),
-                                                                _ => out.push(ch),
-                                                            }
-                                                        }
-                                                        out.push_str("\"\n");
+                                                        win_static_strs.push((lbl.clone(), sv.clone()));
                                                         out.push_str(&format!("        .quad {}\n", lbl));
                                                         out.push_str(&format!("        .quad {}\n", sv.as_bytes().len()));
                                                     }
@@ -6627,18 +7239,7 @@ r#"        xor r9d, r9d
                                                                         }
                                                                         (Type::String, Expr::Lit(Value::String(sv))) => {
                                                                             let lbl = format!("LSS_{}_{}_{}", sname, fname, ff.name);
-                                                                            out.push_str(&format!("{}:\n        .ascii \"", lbl));
-                                                                            for b in sv.as_bytes() {
-                                                                                let ch = *b as char;
-                                                                                match ch {
-                                                                                    '\n' => out.push_str("\\n"),
-                                                                                    '\t' => out.push_str("\\t"),
-                                                                                    '\"' => out.push_str("\\\""),
-                                                                                    '\\' => out.push_str("\\\\"),
-                                                                                    _ => out.push(ch),
-                                                                                }
-                                                                            }
-                                                                            out.push_str("\"\n");
+                                                                            win_static_strs.push((lbl.clone(), sv.clone()));
                                                                             out.push_str(&format!("        .quad {}\n", lbl));
                                                                             out.push_str(&format!("        .quad {}\n", sv.as_bytes().len()));
                                                                         }
@@ -6764,6 +7365,20 @@ r#"        xor r9d, r9d
                         if !emitted {
                             out.push_str(&format!("{}:\n        .zero {}\n", sname, sz));
                         }
+                    }
+                    for (lbl, sv) in &win_static_strs {
+                        out.push_str(&format!("{}:\n        .ascii \"", lbl));
+                        for b in sv.as_bytes() {
+                            let ch = *b as char;
+                            match ch {
+                                '\n' => out.push_str("\\n"),
+                                '\t' => out.push_str("\\t"),
+                                '\"' => out.push_str("\\\""),
+                                '\\' => out.push_str("\\\\"),
+                                _ => out.push(ch),
+                            }
+                        }
+                        out.push_str("\"\n");
                     }
                     out.push_str("\n        .text\n");
                 }
@@ -7199,6 +7814,29 @@ r#"        xor r9d, r9d
                     }
 
                     out.push_str(&format!("{}:\n", func.name));
+
+                    {
+                        let gparams: Vec<(String, Type)> = func.params.iter().map(|p| (p.name.clone(), p.ty.clone())).collect();
+                        let general_ok = matches!(func.ret, Type::I32 | Type::I64 | Type::Bool)
+                            && gparams.len() <= 4
+                            && gparams.iter().all(|(_, t)| matches!(t, Type::I32 | Type::I64 | Type::Bool))
+                            && func.body.len() == 1
+                            && matches!(&func.body[0], Stmt::Return(e) if win_expr_int_supported(e, &gparams));
+                        if general_ok {
+                            out.push_str("        push rbp\n        mov rbp, rsp\n");
+                            let regs = ["rcx", "rdx", "r8", "r9"];
+                            for (i, _) in gparams.iter().enumerate() {
+                                out.push_str(&format!("        mov qword ptr [rbp+{}], {}\n", 16 + 8 * i, regs[i]));
+                            }
+                            if let Stmt::Return(e) = &func.body[0] {
+                                let mut depth = 0usize;
+                                win_emit_expr_int(e, &mut out, &gparams, &mut depth);
+                            }
+                            out.push_str("        pop rbp\n        ret\n");
+                            continue;
+                        }
+                    }
+
                     out.push_str(
 r#"        push rbp
         mov rbp, rsp
@@ -7344,13 +7982,16 @@ r#"        mov r11, rcx
                                                             if let Some(ix_off) = local_offsets.get(ixn) {
                                                                 out.push_str(&format!("        mov ecx, dword ptr [rbp-{}]\n", ix_off));
                                                                 out.push_str(&format!("        cmp ecx, {}\n", n as i32));
-                                                                out.push_str("        jae OOBH_%=\n");
+                                                                let u = fresh_label_id();
+                                                                out.push_str(&format!("        jae OOBH_{}\n", u));
                                                                 out.push_str(&format!("        lea rax, [rbp-{}]\n", arr_off));
                                                                 out.push_str("        lea rax, [rax+rcx*4]\n");
                                                                 out.push_str(&format!("        mov edx, {}\n", *v as i32));
                                                                 out.push_str("        mov dword ptr [rax], edx\n");
+                                                                out.push_str(&format!("        jmp OOBOK_{}\n", u));
+                                                                out.push_str(&format!("OOBH_{}:\n", u));
                                                                 win_emit_oob_error(&mut out);
-                                                                out.push_str("OOBH_%=:\n");
+                                                                out.push_str(&format!("OOBOK_{}:\n", u));
                                                             }
                                                         }
                                                         _ => { }
@@ -7362,13 +8003,16 @@ r#"        mov r11, rcx
                                                             if let Some(ix_off) = local_offsets.get(ixn) {
                                                                 out.push_str(&format!("        mov ecx, dword ptr [rbp-{}]\n", ix_off));
                                                                 out.push_str(&format!("        cmp ecx, {}\n", n as i32));
-                                                                out.push_str("        jae OOBH_%=\n");
+                                                                let u = fresh_label_id();
+                                                                out.push_str(&format!("        jae OOBH_{}\n", u));
                                                                 out.push_str(&format!("        lea rax, [rbp-{}]\n", arr_off));
                                                                 out.push_str("        lea rax, [rax+rcx*8]\n");
                                                                 out.push_str(&format!("        mov rdx, {}\n", *v as i64));
                                                                 out.push_str("        mov qword ptr [rax], rdx\n");
+                                                                out.push_str(&format!("        jmp OOBOK_{}\n", u));
+                                                                out.push_str(&format!("OOBH_{}:\n", u));
                                                                 win_emit_oob_error(&mut out);
-                                                                out.push_str("OOBH_%=:\n");
+                                                                out.push_str(&format!("OOBOK_{}:\n", u));
                                                             }
                                                         }
                                                         _ => { }
@@ -7609,6 +8253,21 @@ r#"        mov r11, rcx
                                 match expr {
                                     Expr::Lit(Value::Int(v)) => {
                                         out.push_str(&format!("        mov eax, {}\n", *v as i32));
+                                        out.push_str(&format!("        jmp {}\n", lret));
+                                    }
+                                    Expr::Lit(Value::String(s)) => {
+                                        let u = fresh_label_id();
+                                        let lbl = format!("LSRETW_{}_{}", func.name, u);
+                                        let esc: String = s.chars().flat_map(|c| match c {
+                                            '\n' => "\\n".chars().collect::<Vec<_>>(),
+                                            '\t' => "\\t".chars().collect::<Vec<_>>(),
+                                            '"' => "\\\"".chars().collect::<Vec<_>>(),
+                                            '\\' => "\\\\".chars().collect::<Vec<_>>(),
+                                            c => vec![c],
+                                        }).collect();
+                                        out.push_str(&format!("\n        .data\n{}:\n        .ascii \"{}\"\n        .text\n", lbl, esc));
+                                        out.push_str(&format!("        lea rax, [rip+{}]\n", lbl));
+                                        out.push_str(&format!("        mov edx, {}\n", s.len() as i32));
                                         out.push_str(&format!("        jmp {}\n", lret));
                                     }
                                     Expr::IfElse { cond, then_expr, else_expr } => {

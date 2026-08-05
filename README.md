@@ -1,19 +1,10 @@
-Threading (portable MVP)
-
-For detailed architecture and backend internals, see docs.md.
-- spawn("func", i64) -> i64 handle
-- join(i64) -> i32
-- destroy(i64) -> i32 (1 success, 0 failure)
-
-Targets:
-- Windows x86_64: CreateThread + WaitForSingleObject + GetExitCodeThread + CloseHandle + TerminateThread
-- Linux x86_64/AArch64: clone(SIGCHLD) + wait4 + kill(SIGKILL), 64KiB stacks in .bss
-
-Examples: examples/threads_simple.ae, examples/threads_map_reduce.ae
-
-See docs/BUILD.md for per-target run steps.
+<p align="center">
+  <img src="assets/logo.png" alt="Aether logo" width="220">
+</p>
 
 # Aether
+
+**More with less.**
 
 Aether is a small, portable systems language and compiler with a clear, readable syntax and a focus on performance and cross‑platform code generation.
 
@@ -26,7 +17,7 @@ What you can do now:
 - Define functions and call them (including recursion)
 - Integer and float expressions and returns (f64 in proper FP return regs)
 - Control flow: if/else, while with break/continue
-- Println of Strings across all targets; println of i64 on Linux
+- Println of Strings across all targets; println of integers (incl. negatives) and floats on x86_64 Linux and Windows
 - Basic object‑oriented data: structs, statics, field access; single inheritance (Child : Parent) with parent‑first layout
 - Generate assembly per target and assemble/link via scripts
 
@@ -152,8 +143,8 @@ pub func main() -> i32 {
 ### Types
 
 Aether supports the following types:
-- Integers: `i32`, `i64`
-- Floats: `f32`, `f64`
+- Integers: `i32`, `i64` (signed; negative literals like `-42` are supported)
+- Floats: `f32`, `f64` (including negative literals like `-2.5`)
 - Strings: `String` (UTF-8, stored as ptr+len pairs)
 - Arrays: `[T; N]` (fixed-size, e.g., `[i32; 4]`)
 - Vectors: `vec[T]` (dynamic, heap-allocated)
@@ -174,6 +165,44 @@ while (i < 10) {
     i = i + 1;
 }
 ```
+
+### Floats and Negative Numbers
+
+Float literals use a decimal point; the literal's type follows the declared type (`f32` or `f64`). Unary minus works on both integer and float literals and preserves the literal's type:
+
+```
+pub func main() -> i32 {
+    let pi: f64 = 3.14;
+    let neg: f64 = -2.5;
+    let small: f32 = -0.25;
+    let n: i64 = -7;
+    println(pi);     // 3.140000
+    println(neg);    // -2.500000
+    println(small);  // -0.250000
+    println(n);      // -7
+    return 0;
+}
+```
+
+Floats print with six fractional digits on both Linux and Windows. Float arithmetic (`+`, `-`, `*`, `/`) and f32→f64 conversion are supported on x86_64.
+
+### Error Handling (try / except / throw)
+
+Exceptions carry a String value explaining why they were thrown. `throw` raises an exception; `except (e: String)` catches it and binds the message:
+
+```
+pub func main() -> i32 {
+    try {
+        throw "division by zero";
+    } except (e: String) {
+        println("caught:");
+        println(e);      // prints: division by zero
+    }
+    return 0;
+}
+```
+
+An uncaught `throw` prints `Exception: <message>` and exits with code 1. See examples/try_except.ae.
 
 ### Recursion Example (Factorial)
 
@@ -268,7 +297,26 @@ See docs/language.md for complete syntax reference and OO layout details.
 ## Printing
 
 - println(String) works across Linux x86_64, Windows x86_64, and AArch64 Linux.
-- println(i64) is implemented on Linux x86_64 to make integer work observable (used by benchmarks).
+- println of integers (including negatives) and floats (f32/f64) works on Linux and Windows x86_64.
+
+## Threading (portable MVP)
+
+For detailed architecture and backend internals, see docs.md.
+- spawn("func", i64) -> i64 handle
+- join(i64) -> i32
+- destroy(i64) -> i32 (1 success, 0 failure)
+
+Targets:
+- Windows x86_64: CreateThread + WaitForSingleObject + GetExitCodeThread + CloseHandle + TerminateThread
+- Linux x86_64/AArch64: clone(SIGCHLD) + wait4 + kill(SIGKILL), 64KiB stacks in .bss
+
+Examples: examples/threads_simple.ae, examples/threads_map_reduce.ae
+
+## Known Limitations (x86_64)
+
+- `vec_*` and `hlist_*` builtins are not yet implemented on the Windows backend (Linux only for now).
+- On Windows, `join()` does not yet propagate the worker thread's return value.
+- Casting float function parameters for printing (`print_casts.ae`) is still incorrect on both OSes.
 
 ## Benchmarks
 ## Stdin (readln)

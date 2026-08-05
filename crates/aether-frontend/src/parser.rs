@@ -261,6 +261,36 @@ impl<'a> Parser<'a> {
             }
             return Ok(Stmt::While { cond, body });
         }
+        if self.eat_kind(&TokenKind::Try) {
+            self.expect(&TokenKind::LBrace)?;
+            let mut body = Vec::new();
+            while !self.eat_kind(&TokenKind::RBrace) {
+                body.push(self.parse_stmt()?);
+            }
+            self.expect(&TokenKind::Except)?;
+            self.expect(&TokenKind::LParen)?;
+            let err_name = if let Some(TokenKind::Ident(n)) = self.peek().map(|t| t.kind.clone()) {
+                self.pos += 1;
+                n
+            } else {
+                return Err(anyhow!("expected identifier in except clause"));
+            };
+            if self.eat_kind(&TokenKind::Colon) {
+                self.expect(&TokenKind::StringType)?;
+            }
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::LBrace)?;
+            let mut handler = Vec::new();
+            while !self.eat_kind(&TokenKind::RBrace) {
+                handler.push(self.parse_stmt()?);
+            }
+            return Ok(Stmt::Try { body, err_name, handler });
+        }
+        if self.eat_kind(&TokenKind::Throw) {
+            let expr = self.parse_expr()?;
+            self.expect(&TokenKind::Semicolon)?;
+            return Ok(Stmt::Throw(expr));
+        }
         if self.eat_kind(&TokenKind::Break) {
             self.expect(&TokenKind::Semicolon)?;
             return Ok(Stmt::Break);
@@ -396,7 +426,12 @@ impl<'a> Parser<'a> {
         }
         if self.eat_kind(&TokenKind::Minus) {
             let rhs = self.parse_unary()?;
-            return Ok(Expr::BinOp(Box::new(Expr::Lit(Value::Int(0))), BinOpKind::Sub, Box::new(rhs)));
+            return Ok(match rhs {
+                Expr::Lit(Value::Int(v)) => Expr::Lit(Value::Int(v.wrapping_neg())),
+                Expr::Lit(Value::Float64(v)) => Expr::Lit(Value::Float64(-v)),
+                Expr::Lit(Value::Float32(v)) => Expr::Lit(Value::Float32(-v)),
+                other => Expr::BinOp(Box::new(Expr::Lit(Value::Int(0))), BinOpKind::Sub, Box::new(other)),
+            });
         }
         if self.eat_kind(&TokenKind::Plus) {
             let rhs = self.parse_unary()?;

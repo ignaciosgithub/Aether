@@ -50,8 +50,8 @@ This document describes the features currently supported by the compiler. The la
 
 ## Types
 
-- Integers: i32, i64
-- Floats: f32, f64
+- Integers: i32, i64 — signed; negative literals (e.g. `-42`) are folded at parse time and keep their integer type
+- Floats: f32, f64 — literals use a decimal point (e.g. `3.14`); unary minus preserves the float type (`-2.5` is an f64 literal, `-0.25` typed as f32 stays f32); printed with six fractional digits on x86_64 Linux and Windows
 - String: UTF‑8 string literal type (lowered as (ptr,len) in backends)
 - Structs: user‑defined types with named fields; single inheritance
 
@@ -70,6 +70,13 @@ This document describes the features currently supported by the compiler. The la
   while (cond) { ... }
 
 Parentheses around if conditions are allowed.
+
+## Error handling (try / except / throw)
+
+- throw "message"; raises an exception carrying a String value that explains why it was thrown.
+- try { ... } except (e: String) { ... } catches an exception thrown in the try block; `e` binds the message and can be printed with println(e).
+- An uncaught throw prints `Exception: <message>` (stderr on Linux) and terminates the process with exit code 1.
+- Supported on x86_64 Linux and Windows. Example: examples/try_except.ae
 
 ## Println
 

@@ -76,6 +76,8 @@ pub enum Stmt {
     Continue,
     Let { name: String, ty: Type, init: Expr },
     Assign { target: Expr, value: Expr },
+    Try { body: Vec<Stmt>, err_name: String, handler: Vec<Stmt> },
+    Throw(Expr),
 }
 
 #[derive(Debug, Clone)]

@@ -2988,6 +2988,99 @@ _start:
                             }
 
                             // Handle string println inline for source order
+                            Stmt::Throw(Expr::Lit(Value::String(msg))) => {
+                                let full = format!("Exception: {}\n", msg);
+                                let lbl = format!(".LEXC_main_{}", label_counter);
+                                label_counter += 1;
+                                call_arg_rodata.push((lbl.clone(), full.clone()));
+                                out.push_str(&format!(
+"        mov $1, %rax
+        mov $2, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+        mov $60, %rax
+        mov $1, %rdi
+        syscall
+", lbl, full.len()));
+                                continue;
+                            }
+                            Stmt::Try { body, err_name, handler } => {
+                                let tid = fresh_label_id();
+                                let catch_lbl = format!(".LCATCH_{}", tid);
+                                let end_lbl = format!(".LTRYEND_{}", tid);
+                                for bstmt in body {
+                                    match bstmt {
+                                        Stmt::Println(s) => {
+                                            let lbl = format!(".LSPR_main_{}", label_counter);
+                                            label_counter += 1;
+                                            call_arg_rodata.push((lbl.clone(), s.clone()));
+                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", lbl, s.len()));
+                                        }
+                                        Stmt::Throw(Expr::Lit(Value::String(m))) => {
+                                            let lbl = format!(".LEXC_main_{}", label_counter);
+                                            label_counter += 1;
+                                            call_arg_rodata.push((lbl.clone(), m.clone()));
+                                            out.push_str(&format!(
+"        leaq {}(%rip), %r14
+        mov ${}, %r15
+        jmp {}
+", lbl, m.len(), catch_lbl));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                out.push_str(&format!("        jmp {}\n{}:\n", end_lbl, catch_lbl));
+                                for hstmt in handler {
+                                    match hstmt {
+                                        Stmt::Println(s) => {
+                                            let lbl = format!(".LSPR_main_{}", label_counter);
+                                            label_counter += 1;
+                                            call_arg_rodata.push((lbl.clone(), s.clone()));
+                                            out.push_str(&format!(
+"        mov $1, %rax
+        mov $1, %rdi
+        leaq {}(%rip), %rsi
+        mov ${}, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+", lbl, s.len()));
+                                        }
+                                        Stmt::PrintExpr(Expr::Var(v)) if v == err_name => {
+                                            out.push_str(
+"        mov $1, %rax
+        mov $1, %rdi
+        mov %r14, %rsi
+        mov %r15, %rdx
+        syscall
+        mov $1, %rax
+        mov $1, %rdi
+        leaq .LSNL(%rip), %rsi
+        mov $1, %rdx
+        syscall
+");
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                out.push_str(&format!("{}:\n", end_lbl));
+                                continue;
+                            }
                             Stmt::Println(s) => {
                                 let lbl = format!(".LSPR_main_{}", label_counter);
                                 label_counter += 1;
@@ -6460,6 +6553,116 @@ LSNL:
 
                     for stmt in &f.body {
                         match stmt {
+                            Stmt::Throw(Expr::Lit(Value::String(msg))) => {
+                                let full = format!("Exception: {}\n", msg);
+                                let len = full.len();
+                                let lbl = format!("LEXC{}", win_order_ls_idx);
+                                out.push_str(
+r#"        sub rsp, 40
+        mov rcx, r12
+"#);
+                                out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                out.push_str(&format!("        mov r8d, {}\n", len as i32));
+                                out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov ecx, 1
+        sub rsp, 40
+        call ExitProcess
+"#);
+                                win_order_ls.push((lbl, full));
+                                win_order_ls_idx += 1;
+                            },
+                            Stmt::Try { body, err_name, handler } => {
+                                let tid = fresh_label_id();
+                                let catch_lbl = format!("WCATCH_{}", tid);
+                                let end_lbl = format!("WTRYEND_{}", tid);
+                                for bstmt in body {
+                                    match bstmt {
+                                        Stmt::Println(s) => {
+                                            let mut bytes = s.clone().into_bytes();
+                                            bytes.push(b'\n');
+                                            let len = bytes.len();
+                                            let lbl = format!("LS{}", win_order_ls_idx);
+                                            out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+"#);
+                                            out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                            out.push_str(&format!("        mov r8d, {}\n", len as i32));
+                                            out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+                                            win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
+                                            win_order_ls_idx += 1;
+                                        }
+                                        Stmt::Throw(Expr::Lit(Value::String(m))) => {
+                                            let lbl = format!("LEXC{}", win_order_ls_idx);
+                                            out.push_str(&format!("        lea r14, [rip+{}]\n", lbl));
+                                            out.push_str(&format!("        mov r15d, {}\n", m.len() as i32));
+                                            out.push_str(&format!("        jmp {}\n", catch_lbl));
+                                            win_order_ls.push((lbl, m.clone()));
+                                            win_order_ls_idx += 1;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                out.push_str(&format!("        jmp {}\n{}:\n", end_lbl, catch_lbl));
+                                for hstmt in handler {
+                                    match hstmt {
+                                        Stmt::Println(s) => {
+                                            let mut bytes = s.clone().into_bytes();
+                                            bytes.push(b'\n');
+                                            let len = bytes.len();
+                                            let lbl = format!("LS{}", win_order_ls_idx);
+                                            out.push_str(
+r#"        mov r11, rcx
+        sub rsp, 40
+        mov rcx, r12
+"#);
+                                            out.push_str(&format!("        lea rdx, [rip+{}]\n", lbl));
+                                            out.push_str(&format!("        mov r8d, {}\n", len as i32));
+                                            out.push_str(
+r#"        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+        mov rcx, r11
+"#);
+                                            win_order_ls.push((lbl, String::from_utf8(bytes).unwrap()));
+                                            win_order_ls_idx += 1;
+                                        }
+                                        Stmt::PrintExpr(Expr::Var(v)) if v == err_name => {
+                                            out.push_str(
+r#"        sub rsp, 40
+        mov rcx, r12
+        mov rdx, r14
+        mov r8d, r15d
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        mov rcx, r12
+        lea rdx, [rip+LSNL]
+        mov r8d, 1
+        xor r9d, r9d
+        mov qword ptr [rsp+32], 0
+        call WriteFile
+        add rsp, 40
+"#);
+                                            win_need_lsnl = true;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                out.push_str(&format!("{}:\n", end_lbl));
+                            },
                             Stmt::Println(s) => {
                                 let mut bytes = s.clone().into_bytes();
                                 bytes.push(b'\n');

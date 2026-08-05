@@ -71,6 +71,13 @@ This document describes the features currently supported by the compiler. The la
 
 Parentheses around if conditions are allowed.
 
+## Error handling (try / except / throw)
+
+- throw "message"; raises an exception carrying a String value that explains why it was thrown.
+- try { ... } except (e: String) { ... } catches an exception thrown in the try block; `e` binds the message and can be printed with println(e).
+- An uncaught throw prints `Exception: <message>` (stderr on Linux) and terminates the process with exit code 1.
+- Supported on x86_64 Linux and Windows. Example: examples/try_except.ae
+
 ## Println
 
 - println(String expr)

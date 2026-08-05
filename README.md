@@ -186,6 +186,24 @@ pub func main() -> i32 {
 
 Floats print with six fractional digits on both Linux and Windows. Float arithmetic (`+`, `-`, `*`, `/`) and f32→f64 conversion are supported on x86_64.
 
+### Error Handling (try / except / throw)
+
+Exceptions carry a String value explaining why they were thrown. `throw` raises an exception; `except (e: String)` catches it and binds the message:
+
+```
+pub func main() -> i32 {
+    try {
+        throw "division by zero";
+    } except (e: String) {
+        println("caught:");
+        println(e);      // prints: division by zero
+    }
+    return 0;
+}
+```
+
+An uncaught `throw` prints `Exception: <message>` and exits with code 1. See examples/try_except.ae.
+
 ### Recursion Example (Factorial)
 
 ```

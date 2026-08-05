@@ -261,6 +261,36 @@ impl<'a> Parser<'a> {
             }
             return Ok(Stmt::While { cond, body });
         }
+        if self.eat_kind(&TokenKind::Try) {
+            self.expect(&TokenKind::LBrace)?;
+            let mut body = Vec::new();
+            while !self.eat_kind(&TokenKind::RBrace) {
+                body.push(self.parse_stmt()?);
+            }
+            self.expect(&TokenKind::Except)?;
+            self.expect(&TokenKind::LParen)?;
+            let err_name = if let Some(TokenKind::Ident(n)) = self.peek().map(|t| t.kind.clone()) {
+                self.pos += 1;
+                n
+            } else {
+                return Err(anyhow!("expected identifier in except clause"));
+            };
+            if self.eat_kind(&TokenKind::Colon) {
+                self.expect(&TokenKind::StringType)?;
+            }
+            self.expect(&TokenKind::RParen)?;
+            self.expect(&TokenKind::LBrace)?;
+            let mut handler = Vec::new();
+            while !self.eat_kind(&TokenKind::RBrace) {
+                handler.push(self.parse_stmt()?);
+            }
+            return Ok(Stmt::Try { body, err_name, handler });
+        }
+        if self.eat_kind(&TokenKind::Throw) {
+            let expr = self.parse_expr()?;
+            self.expect(&TokenKind::Semicolon)?;
+            return Ok(Stmt::Throw(expr));
+        }
         if self.eat_kind(&TokenKind::Break) {
             self.expect(&TokenKind::Semicolon)?;
             return Ok(Stmt::Break);

@@ -1,0 +1,13 @@
+pub func main() -> i32 {
+    println("before try");
+    try {
+        println("in try");
+        throw "division by zero";
+        println("unreachable");
+    } except (e: String) {
+        println("caught:");
+        println(e);
+    }
+    println("after try");
+    return 0;
+}

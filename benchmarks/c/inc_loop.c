@@ -4,6 +4,7 @@ int main() {
     int64_t i = 0;
     while (i <= end_value) {
         i += 1;
+        __asm__ volatile("" : "+r"(i));
     }
     return 0;
 }

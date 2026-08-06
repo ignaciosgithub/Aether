@@ -11,7 +11,8 @@ fn main() {
     let mut i: i64 = 0;
     let mut acc: i64 = 0;
     while i < reps {
-        acc += fact(12);
+        acc += fact(black_box(12));
+        acc = black_box(acc);
         i += 1;
     }
     println!("{}", acc);

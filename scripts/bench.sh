@@ -7,8 +7,8 @@ RESULTS="$ROOT/benchmarks/results.txt"
 CHECKSUMS="$ROOT/benchmarks/checksums.txt"
 
 ITER="${ITER:-10}"
-N="${N:-200000000}"
-FREPEAT="${FREPEAT:-3000000}"
+N="${N:-500000000}"  # must match the fixed N in benchmarks/loop_sum.ae
+FREPEAT="${FREPEAT:-5000000}"  # must match the fixed repeat count in benchmarks/factorial.ae
 PCOUNT="${PCOUNT:-100000}"
 
 mkdir -p "$OUT"
@@ -50,6 +50,8 @@ ae "$ROOT/benchmarks/factorial.ae" "$OUT/factorial.s"
 ae "$ROOT/benchmarks/print_concat.ae" "$OUT/print_concat.s"
 ae "$ROOT/benchmarks/inc_loop.ae" "$OUT/inc_loop.s"
 ae "$ROOT/benchmarks/inc_loop_verify.ae" "$OUT/inc_loop_verify.s"
+ae "$ROOT/benchmarks/fib_bench.ae" "$OUT/fib_bench.s"
+ae "$ROOT/benchmarks/sum_squares.ae" "$OUT/sum_squares.s"
 
 gcc -O3 -march=native -mtune=native "$ROOT/benchmarks/c/loop_sum.c" -o "$OUT/loop_sum_c"
 rustc -C opt-level=3 "$ROOT/benchmarks/rust/loop_sum.rs" -o "$OUT/loop_sum_rust"
@@ -61,6 +63,10 @@ gcc -O3 -march=native -mtune=native "$ROOT/benchmarks/c/inc_loop.c" -o "$OUT/inc
 rustc -C opt-level=3 "$ROOT/benchmarks/rust/inc_loop.rs" -o "$OUT/inc_loop_rust"
 gcc -O3 -march=native -mtune=native "$ROOT/benchmarks/c/inc_loop_verify.c" -o "$OUT/inc_loop_verify_c"
 rustc -C opt-level=3 "$ROOT/benchmarks/rust/inc_loop_verify.rs" -o "$OUT/inc_loop_verify_rust"
+gcc -O3 -march=native -mtune=native "$ROOT/benchmarks/fib_bench.c" -o "$OUT/fib_bench_c"
+rustc -C opt-level=3 "$ROOT/benchmarks/fib_bench.rs" -o "$OUT/fib_bench_rust"
+gcc -O3 -march=native -mtune=native "$ROOT/benchmarks/sum_squares.c" -o "$OUT/sum_squares_c"
+rustc -C opt-level=3 "$ROOT/benchmarks/sum_squares.rs" -o "$OUT/sum_squares_rust"
 
 echo "=== CHECKSUMS ===" | tee -a "$CHECKSUMS"
 exp_loop_sum=$(awk -v n="$N" 'BEGIN{printf "%.0f\n", (n*(n-1))/2}')
@@ -87,6 +93,15 @@ echo "C inc_loop: $("$OUT/inc_loop_verify_c")" | tee -a "$CHECKSUMS"
 echo "Rust inc_loop: $("$OUT/inc_loop_verify_rust")" | tee -a "$CHECKSUMS"
 echo "Python inc_loop: $(python3 "$ROOT/benchmarks/python/inc_loop_verify.py")" | tee -a "$CHECKSUMS"
 
+echo "Expected fib(40): 102334155" | tee -a "$CHECKSUMS"
+echo "Aether fib: $("$OUT/fib_bench.s.bin")" | tee -a "$CHECKSUMS"
+echo "C fib: $("$OUT/fib_bench_c")" | tee -a "$CHECKSUMS"
+echo "Rust fib: $("$OUT/fib_bench_rust")" | tee -a "$CHECKSUMS"
+
+echo "Aether sum_squares: $("$OUT/sum_squares.s.bin")" | tee -a "$CHECKSUMS"
+echo "C sum_squares: $("$OUT/sum_squares_c")" | tee -a "$CHECKSUMS"
+echo "Rust sum_squares: $("$OUT/sum_squares_rust")" | tee -a "$CHECKSUMS"
+
 bench_cmd_repeat "Aether loop_sum" "$OUT/loop_sum.s.bin"
 bench_cmd_repeat "C loop_sum" env N="$N" "$OUT/loop_sum_c"
 bench_cmd_repeat "Rust loop_sum" env N="$N" "$OUT/loop_sum_rust"
@@ -101,6 +116,16 @@ bench_cmd_repeat "Aether inc_loop (no output)" "$OUT/inc_loop.s.bin"
 bench_cmd_repeat "C inc_loop (no output)" "$OUT/inc_loop_c"
 bench_cmd_repeat "Rust inc_loop (no output)" "$OUT/inc_loop_rust"
 bench_cmd_repeat "Python inc_loop (no output)" python3 "$ROOT/benchmarks/python/inc_loop.py"
+
+bench_cmd_repeat "Aether fib" "$OUT/fib_bench.s.bin"
+bench_cmd_repeat "C fib" "$OUT/fib_bench_c"
+bench_cmd_repeat "Rust fib" "$OUT/fib_bench_rust"
+bench_cmd_repeat "Python fib" python3 "$ROOT/benchmarks/fib_bench.py"
+
+bench_cmd_repeat "Aether sum_squares" "$OUT/sum_squares.s.bin"
+bench_cmd_repeat "C sum_squares" "$OUT/sum_squares_c"
+bench_cmd_repeat "Rust sum_squares" "$OUT/sum_squares_rust"
+bench_cmd_repeat "Python sum_squares" python3 "$ROOT/benchmarks/sum_squares.py"
 
 bench_cmd_repeat "Aether print_concat" "$OUT/print_concat.s.bin"
 bench_cmd_repeat "C print_concat" env PCOUNT="$PCOUNT" "$OUT/print_concat_c"

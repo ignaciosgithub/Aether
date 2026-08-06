@@ -2854,19 +2854,23 @@ _start:
                                 }
                                 // Regular zero-argument function call (not vec/hlist)
                                 if args.is_empty() && !name.starts_with("vec_") && !name.starts_with("hlist_") {
+                                    let ret_is_string = module.items.iter().any(|it| matches!(it, Item::Function(cf) if cf.name == *name && matches!(cf.ret, Type::String)));
                                     out.push_str("        sub $8, %rsp\n");
                                     out.push_str(&format!("        call {}\n", name));
                                     out.push_str("        add $8, %rsp\n");
-                                    out.push_str("        mov %rdx, %rdx\n");
-                                    out.push_str("        mov %rax, %rsi\n");
-                                    out.push_str("        mov $1, %rax\n");
-                                    out.push_str("        mov $1, %rdi\n");
-                                    out.push_str("        syscall\n");
-                                    out.push_str("        mov $1, %rax\n");
-                                    out.push_str("        mov $1, %rdi\n");
-                                    out.push_str("        leaq .LSNL(%rip), %rsi\n");
-                                    out.push_str("        mov $1, %rdx\n");
-                                    out.push_str("        syscall\n");
+                                    if ret_is_string {
+                                        out.push_str("        mov %rax, %rsi\n");
+                                        out.push_str("        mov $1, %rax\n");
+                                        out.push_str("        mov $1, %rdi\n");
+                                        out.push_str("        syscall\n");
+                                        out.push_str("        mov $1, %rax\n");
+                                        out.push_str("        mov $1, %rdi\n");
+                                        out.push_str("        leaq .LSNL(%rip), %rsi\n");
+                                        out.push_str("        mov $1, %rdx\n");
+                                        out.push_str("        syscall\n");
+                                    } else {
+                                        linux_emit_print_i64(&mut out);
+                                    }
                                     continue;
                                 }
                                 // Handle to_int(readln()) inline

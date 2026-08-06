@@ -1,11 +1,23 @@
 === CHECKSUMS ===
-Expected loop_sum: 19999999900000000
-Aether loop_sum: 
-C loop_sum: 19999999900000000
-Rust loop_sum: 19999999900000000
-Python loop_sum: 19999999900000000
-Expected factorial acc: 1437004800000000
-Aether factorial: 
-C factorial: 1437004800000000
-Rust factorial: 1437004800000000
-Python factorial: 1437004800000000
+Expected loop_sum: 124999999750000000
+Aether loop_sum: 124999999750000000
+C loop_sum: 124999999750000000
+Rust loop_sum: 124999999750000000
+Python loop_sum: 124999999750000000
+Expected factorial acc: 2395008000000000
+Aether factorial: 2395008000000000
+C factorial: 2395008000000000
+Rust factorial: 2395008000000000
+Python factorial: 2395008000000000
+Expected inc_loop final i: 2147483647
+Aether inc_loop: 2147483647
+C inc_loop: 2147483647
+Rust inc_loop: 2147483647
+Python inc_loop: 2147483647
+Expected fib(40): 102334155
+Aether fib: 102334155
+C fib: 102334155
+Rust fib: 102334155
+Aether sum_squares: -5527844008078842496
+C sum_squares: -5527844008078842496
+Rust sum_squares: -5527844008078842496

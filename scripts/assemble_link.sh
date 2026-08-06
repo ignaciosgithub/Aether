@@ -13,7 +13,16 @@ OUT="$3"
 
 case "$TARGET" in
   x86_64-linux)
-    clang -no-integrated-as -nostartfiles -o "$OUT" "$ASM" -fuse-ld=lld
+    if command -v clang >/dev/null 2>&1 && command -v ld.lld >/dev/null 2>&1; then
+      clang -no-integrated-as -nostartfiles -o "$OUT" "$ASM" -fuse-ld=lld
+    elif command -v clang >/dev/null 2>&1; then
+      clang -no-integrated-as -nostartfiles -o "$OUT" "$ASM"
+    elif command -v gcc >/dev/null 2>&1; then
+      gcc -nostartfiles -o "$OUT" "$ASM"
+    else
+      echo "No suitable compiler found (need clang or gcc). Install with: sudo apt-get install -y clang lld"
+      exit 3
+    fi
     ;;
   x86_64-windows)
     if command -v x86_64-w64-mingw32-clang >/dev/null 2>&1; then

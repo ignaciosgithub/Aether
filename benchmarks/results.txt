@@ -1,39 +1,75 @@
 Building Aether compiler...
 Compiling benchmarks...
-=== Aether loop_sum (x10) ===
-min 0.001927
-avg 0.002116
-=== C loop_sum (x10) ===
-min 0.019062
-avg 0.019415
-=== Rust loop_sum (x10) ===
-min 0.003559
-avg 0.003878
-=== Python loop_sum (x10) ===
-min 11.366484
-avg 12.456608
-=== Aether factorial (x10) ===
-min 0.001764
-avg 0.001991
-=== C factorial (x10) ===
-min 0.003300
-avg 0.003429
-=== Rust factorial (x10) ===
-min 0.003470
-avg 0.003645
-=== Python factorial (x10) ===
-min 2.060149
-avg 2.139894
-=== Aether print_concat (x10) ===
-min 0.001769
-avg 0.002021
-=== C print_concat (x10) ===
-min 0.006898
-avg 0.007213
-=== Rust print_concat (x10) ===
-min 0.105916
-avg 0.109266
-=== Python print_concat (x10) ===
-min 0.248739
-avg 0.255058
+=== Aether loop_sum (x5) ===
+min 0.579708
+avg 0.610957
+=== C loop_sum (x5) ===
+min 0.018281
+avg 0.019593
+=== Rust loop_sum (x5) ===
+min 0.001603
+avg 0.001714
+=== Python loop_sum (x5) ===
+min 17.886731
+avg 17.932388
+=== Aether factorial (x5) ===
+min 0.071681
+avg 0.071780
+=== C factorial (x5) ===
+min 0.015556
+avg 0.015652
+=== Rust factorial (x5) ===
+min 0.015570
+avg 0.015831
+=== Python factorial (x5) ===
+min 3.524277
+avg 3.677092
+=== Aether inc_loop (no output) (x5) ===
+min 2.986507
+avg 3.000736
+=== C inc_loop (no output) (x5) ===
+min 0.543755
+avg 0.547344
+=== Rust inc_loop (no output) (x5) ===
+min 3.229452
+avg 3.239925
+=== Python inc_loop (no output) (x5) ===
+min 80.612286
+avg 85.128947
+=== Aether fib (x5) ===
+min 0.636669
+avg 0.638342
+=== C fib (x5) ===
+min 0.134305
+avg 0.136145
+=== Rust fib (x5) ===
+min 0.227373
+avg 0.230332
+=== Python fib (x5) ===
+min 14.440545
+avg 14.559568
+=== Aether sum_squares (x5) ===
+min 0.068562
+avg 0.068785
+=== C sum_squares (x5) ===
+min 0.017020
+avg 0.017522
+=== Rust sum_squares (x5) ===
+min 0.001107
+avg 0.001354
+=== Python sum_squares (x5) ===
+min 4.773099
+avg 4.809495
+=== Aether print_concat (x5) ===
+min 0.043138
+avg 0.043850
+=== C print_concat (x5) ===
+min 0.006271
+avg 0.006370
+=== Rust print_concat (x5) ===
+min 0.036682
+avg 0.037013
+=== Python print_concat (x5) ===
+min 0.042986
+avg 0.043875
 Done. Results written to /home/ubuntu/repos/Aether/benchmarks/results.txt; checks to /home/ubuntu/repos/Aether/benchmarks/checksums.txt

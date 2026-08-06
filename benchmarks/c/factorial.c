@@ -11,8 +11,11 @@ int main(){
     const char* env = getenv("FREPEAT");
     int64_t reps = env ? atoll(env) : 5000000;
     int64_t acc = 0;
+    int64_t base = 12;
     for (int64_t i = 0; i < reps; i++) {
-        acc += fact(12);
+        __asm__ volatile("" : "+r"(base));
+        acc += fact(base);
+        __asm__ volatile("" : "+r"(acc));
     }
     printf("%lld\n", (long long)acc);
     return 0;

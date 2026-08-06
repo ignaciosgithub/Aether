@@ -98,7 +98,7 @@ fn linux_threaded_recursion_while_codegen() {
     assert!(asm.contains("TSTACK0"), "thread stack missing");
     assert!(asm.contains("worker:\n") || asm.contains("\nworker:\r\n") || asm.contains("\nworker:\n"), "worker label missing");
     assert!(asm.contains("call fact"), "recursive call to fact missing");
-    let has_worker_while = asm.contains("LWH_HEAD_worker_0:") || asm.contains(".LWH_HEAD_worker_0:");
-    let has_main_while = asm.contains("LWH_HEAD_main_0:") || asm.contains(".LWH_HEAD_main_0:");
+    let has_worker_while = asm.contains(".LWH_HEAD_worker_0:") || asm.contains(".LG_WH_worker_");
+    let has_main_while = asm.contains(".LWH_HEAD_main_0:") || asm.contains(".LG_WH_main_");
     assert!(has_worker_while || has_main_while, "while-head label for worker/main missing");
 }

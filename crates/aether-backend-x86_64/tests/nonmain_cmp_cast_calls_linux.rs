@@ -63,7 +63,7 @@ fn nonmain_cmp_cast_calls_recursion_linux() {
     let asm = cg.generate(&m).expect("codegen ok");
 
     assert!(asm.contains("\nmath_fn:\n") || asm.contains("\nmath_fn:\r\n"), "expects non-main function label 'math_fn:'");
-    assert!(asm.contains("LWH_HEAD_") || asm.contains(".LWH_HEAD_"), "expects while head label");
-    assert!(asm.contains("LWH_END_") || asm.contains(".LWH_END_"), "expects while end label");
+    assert!(asm.contains(".LWH_HEAD_") || asm.contains(".LG_WH_"), "expects while head label");
+    assert!(asm.contains(".LWH_END_") || asm.contains(".LG_WE_"), "expects while end label");
     assert!(asm.contains("syscall"), "expects write syscall usage for prints");
 }

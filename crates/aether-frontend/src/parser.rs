@@ -464,10 +464,10 @@ impl<'a> Parser<'a> {
         let mut node = self.parse_unary()?;
         loop {
             if self.eat_kind(&TokenKind::Star) {
-                let rhs = self.parse_postfix()?;
+                let rhs = self.parse_unary()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Mul, Box::new(rhs));
             } else if self.eat_kind(&TokenKind::Slash) {
-                let rhs = self.parse_postfix()?;
+                let rhs = self.parse_unary()?;
                 node = Expr::BinOp(Box::new(node), BinOpKind::Div, Box::new(rhs));
             } else {
                 break;

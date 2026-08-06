@@ -58,8 +58,24 @@ fn linux_nested_while_in_function_emits_unique_labels() {
     let m = Module { items: vec![worker, main_fn] };
     let mut cg = X86_64LinuxCodegen::new_linux();
     let asm = cg.generate(&m).expect("codegen ok");
-    assert!(asm.contains("LWH_HEAD_worker_0:") || asm.contains(".LWH_HEAD_worker_0:"), "missing outer while head");
-    assert!(asm.contains("LWH_END_worker_0:") || asm.contains(".LWH_END_worker_0:"), "missing outer while end");
-    assert!(asm.contains("LWH_HEAD_worker_1:") || asm.contains(".LWH_HEAD_worker_1:"), "missing inner while head");
-    assert!(asm.contains("LWH_END_worker_1:") || asm.contains(".LWH_END_worker_1:"), "missing inner while end");
+    // Both the legacy (.LWH_*) and the general emitter (.LG_WH_*) label schemes
+    // are accepted; what matters is that the two nested whiles get distinct labels.
+    let heads: Vec<&str> = asm
+        .lines()
+        .map(str::trim)
+        .filter(|l| {
+            (l.starts_with(".LWH_HEAD_worker_") || l.starts_with(".LG_WH_worker_")) && l.ends_with(':')
+        })
+        .collect();
+    let ends: Vec<&str> = asm
+        .lines()
+        .map(str::trim)
+        .filter(|l| {
+            (l.starts_with(".LWH_END_worker_") || l.starts_with(".LG_WE_worker_")) && l.ends_with(':')
+        })
+        .collect();
+    assert_eq!(heads.len(), 2, "expected two distinct while heads, got {:?}", heads);
+    assert_eq!(ends.len(), 2, "expected two distinct while ends, got {:?}", ends);
+    assert_ne!(heads[0], heads[1], "while head labels must be unique");
+    assert_ne!(ends[0], ends[1], "while end labels must be unique");
 }

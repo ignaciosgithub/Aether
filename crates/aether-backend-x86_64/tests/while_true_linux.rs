@@ -26,11 +26,22 @@ fn linux_while_true_enters_body() {
     let mut cg = X86_64LinuxCodegen::new_linux();
     let asm = cg.generate(&m).expect("codegen ok");
 
-    assert!(asm.contains(".LWH_HEAD_main_0") && asm.contains(".LWH_END_main_0"), "loop labels missing");
-    let head_idx = asm.find(".LWH_HEAD_main_0").unwrap();
-    let end_idx = asm.find(".LWH_END_main_0").unwrap();
-    let head_to_end = &asm[head_idx..end_idx];
-    assert!(!head_to_end.contains("jmp .LWH_END_main_0\n"), "should not unconditionally jump to END at loop head for true");
+    // Accept both the legacy (.LWH_*) and general emitter (.LG_WH_*) schemes.
+    let (head, end): (&str, String) = if asm.contains(".LWH_HEAD_main_0") {
+        (".LWH_HEAD_main_0", ".LWH_END_main_0".to_string())
+    } else {
+        let head_idx = asm.find(".LG_WH_main_").expect("loop head label missing");
+        let head = &asm[head_idx..head_idx + asm[head_idx..].find([':', '\n']).unwrap()];
+        let end_idx = asm.find(".LG_WE_main_").expect("loop end label missing");
+        let end = asm[end_idx..end_idx + asm[end_idx..].find([':', '\n']).unwrap()].to_string();
+        (head, end)
+    };
+    // Between the loop head and the body's first write there must be no
+    // unconditional jump to END: `while (true)` always enters the body.
+    let head_idx = asm.find(&format!("{}:", head)).unwrap();
+    let body_idx = head_idx + asm[head_idx..].find("syscall").unwrap_or(asm.len() - head_idx);
+    let head_to_body = &asm[head_idx..body_idx];
+    assert!(!head_to_body.contains(&format!("jmp {}\n", end)), "should not unconditionally jump to END at loop head for true");
     assert!(asm.contains("syscall") || asm.contains("write"), "expected a write/syscall in loop body");
-    assert!(asm.contains("jmp .LWH_HEAD_main_0"), "expected backedge to loop head");
+    assert!(asm.contains(&format!("jmp {}", head)), "expected backedge to loop head");
 }

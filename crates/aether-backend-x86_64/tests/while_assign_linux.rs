@@ -37,10 +37,11 @@ fn linux_main_while_var_increment_codegen() {
     let mut cg = X86_64LinuxCodegen::new_linux();
     let asm = cg.generate(&m).expect("codegen ok");
 
-    assert!(asm.contains("\n.LWH_HEAD_main_0:\n") || asm.contains("\n.LWH_HEAD_main_0:\r\n"), "expected while head label");
-    assert!(asm.contains("\n.LWH_END_main_0:\n") || asm.contains("\n.LWH_END_main_0:\r\n"), "expected while end label");
-    let has_add64 = asm.contains("mov -") && asm.contains("(%rbp), %rax") && asm.contains("add $1, %rax") && asm.contains("mov %rax, -");
+    // Accept both the legacy (.LWH_*) and general emitter (.LG_WH_*) schemes.
+    assert!(asm.contains(".LWH_HEAD_main_0:") || asm.contains(".LG_WH_main_"), "expected while head label");
+    assert!(asm.contains(".LWH_END_main_0:") || asm.contains(".LG_WE_main_"), "expected while end label");
+    let has_add64 = asm.contains("mov -") && asm.contains("(%rbp), %rax") && (asm.contains("add $1, %rax") || asm.contains("add %rbx, %rax")) && asm.contains("mov %rax, -");
     let has_add32 = asm.contains("mov -") && asm.contains("(%rbp), %eax") && asm.contains("add $1, %eax") && asm.contains("mov %eax, -");
     assert!(has_add64 || has_add32, "expected load/add/store for i = i + 1");
-    assert!(asm.contains("jmp .LWH_HEAD_main_0"), "expected backedge to loop head");
+    assert!(asm.contains("jmp .LWH_HEAD_main_0") || asm.contains("jmp .LG_WH_main_"), "expected backedge to loop head");
 }

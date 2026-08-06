@@ -1,3 +1,5 @@
+mod linux_gen;
+
 use anyhow::Result;
 use aether_codegen::{CodeGenerator, Target, TargetArch, TargetOs};
 use aether_frontend::ast::{Module, Item, Stmt, Expr, Value, BinOpKind, UnaryOpKind, Type};
@@ -799,7 +801,7 @@ r#"        sub rsp, 40
 }
 
 
-fn linux_emit_print_i64(out: &mut String) {
+pub(crate) fn linux_emit_print_i64(out: &mut String) {
     if !out.contains(".LSNL:\n") {
         out.push_str("\n        .section .rodata\n.LSNL:\n        .ascii \"\\n\"\n        .text\n");
     }
@@ -873,7 +875,7 @@ fn linux_ensure_f64_print_data(out: &mut String) {
 // Prints the f64 in %xmm0 (loaded by `load_xmm0`) as [-]ipart.ffffff
 // (6 fractional digits, rounded) plus a trailing newline.
 // Clobbers rax, rcx, rdx, rsi, rdi, r8, r10, r11, xmm0-xmm1.
-fn linux_emit_print_f64_value(out: &mut String, load_xmm0: &str) {
+pub(crate) fn linux_emit_print_f64_value(out: &mut String, load_xmm0: &str) {
     linux_ensure_f64_print_data(out);
     let u = fresh_label_id();
     out.push_str(load_xmm0);
@@ -2559,6 +2561,28 @@ _start:
                         }
                     }
                 }
+                let all_funcs: HashMap<String, &aether_frontend::ast::Function> = module
+                    .items
+                    .iter()
+                    .filter_map(|it| match it {
+                        Item::Function(f) => Some((f.name.clone(), f)),
+                        _ => None,
+                    })
+                    .collect();
+                // main goes through the general emitter when the whole module is
+                // plain functions and its body is fully supported; the legacy
+                // path below handles everything else.
+                let main_general = module.items.iter().all(|it| matches!(it, Item::Function(_)))
+                    && main_func
+                        .map(|mf| mf.params.is_empty() && linux_gen::can_compile(mf, &all_funcs))
+                        .unwrap_or(false);
+                let mut gen_main_rodata: Vec<(String, String)> = Vec::new();
+                if main_general {
+                    if let Some(mf) = main_func {
+                        gen_main_rodata =
+                            linux_gen::emit_main(mf, &all_funcs, &mut out, &mut label_counter);
+                    }
+                } else {
                 // Linux main stack frame and Vec prelude
                 if let Some(_fmain) = main_func {
                     let locals_size = main_local_offsets.values().copied().max().unwrap_or(0);
@@ -4703,10 +4727,11 @@ r#"        leaq .LC0(%rip), %rax
                     }
                     out.push_str("\n        .text\n");
                 }
-                
+                }
 
                 out.push_str("\n        .text\n");
                 let mut func_rodata: Vec<(String, String)> = Vec::new();
+                func_rodata.extend(gen_main_rodata);
                 let mut need_nl = bool::from(false);
                 let mut funcs_to_emit: Vec<&aether_frontend::ast::Function> = Vec::new();
                 if let Some(mf) = main_func {
@@ -4718,6 +4743,13 @@ r#"        leaq .LC0(%rip), %rax
                 for func in funcs_to_emit {
                     if func.name == "main" { continue; }
                     out.push_str("\n");
+                    // General in-source-order emitter: handles any function made of
+                    // supported statements/expressions. Legacy paths below cover the rest.
+                    if linux_gen::can_compile(func, &all_funcs) {
+                        let ro = linux_gen::emit(func, &all_funcs, &mut out, &mut label_counter);
+                        func_rodata.extend(ro);
+                        continue;
+                    }
                     // AST-based pattern matching for factorial-like functions
                     if let Some((fn_name, _param_name, base_val)) = is_factorial_like(func) {
                         out.push_str(&format!("{}:\n", fn_name));

@@ -30,7 +30,17 @@ See docs:
 
 Choose your OS and follow the steps to be ready to write and run Aether code in minutes.
 
-### Ubuntu (22.04/24.04)
+### Ubuntu (22.04/24.04) — One-line GUI install
+
+Installs the toolchain, builds the compiler, adds an "Aether Editor" entry to your app menu, and opens the editor:
+
+```
+curl -sSf https://raw.githubusercontent.com/ignaciosgithub/Aether/main/scripts/install.sh | bash
+```
+
+Afterwards, launch "Aether Editor" from your application menu (or `python3 ~/Aether/tools/aether_editor.py`) and use the Compile / Build & Run buttons — no terminal needed. If anything is missing later, run the setup wizard: `python3 ~/Aether/tools/aether_setup_gui.py`.
+
+### Ubuntu (manual steps)
 
 1) Install prerequisites
 - Rust toolchain:
@@ -116,7 +126,7 @@ To produce Linux/AArch64 artifacts from Windows, use WSL (below) or a Linux VM.
 
 ### Editor (GUI)
 
-A multi-tab Tkinter editor with Aether syntax highlighting and compiler error messages ships in tools/:
+A multi-tab Tkinter editor with Aether syntax highlighting and compiler error messages ships in tools/, plus a GUI setup wizard (tools/aether_setup_gui.py) that checks/installs the toolchain, builds the compiler with a live log, and adds an app-menu shortcut:
 
 - python3 tools/aether_editor.py [file.ae ...]
 - Tabs, open/save, syntax highlighting, Compile (Linux/Windows) and Build & Run (Linux) buttons; compiler errors appear in the output panel.

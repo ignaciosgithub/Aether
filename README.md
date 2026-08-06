@@ -374,4 +374,4 @@ PRs welcome. Please:
 - Avoid introducing secrets or platform‑specific paths
 - Update docs/examples if you change user‑visible behavior
 
-License: MIT
+License: MIT — see [LICENSE](LICENSE). Created by Ignacio Alfredo Savi Gualco.

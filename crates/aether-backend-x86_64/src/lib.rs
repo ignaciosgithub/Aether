@@ -4881,7 +4881,7 @@ r#"        push %rbx
                                         out.push_str(&format!("        movq ${}, -{}(%rbp)\n", v, off));
                                     }
                                     (Type::I32, Expr::Lit(Value::Int(v))) => {
-                                        out.push_str(&format!("        movl ${}, -{}(%rbp)\n", *v as i32, off));
+                                        out.push_str(&format!("        movq ${}, -{}(%rbp)\n", *v as i32, off));
                                     }
                                     (Type::I64, _) => {
                                         // Use generic expression emitter for non-literal init
@@ -4891,7 +4891,8 @@ r#"        push %rbx
                                     (Type::I32, _) => {
                                         // Use generic expression emitter for non-literal init
                                         linux_emit_expr_to_rax(init, &mut out, func, &local_offsets, &local_types, &mut let_init_counter);
-                                        out.push_str(&format!("        mov %eax, -{}(%rbp)\n", off));
+                                        out.push_str("        cltq\n");
+                                        out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
                                     }
                                     _ => {}
                                 }
@@ -5134,6 +5135,9 @@ r#"        push %rbx
                                                 linux_emit_expr_to_rax(value, &mut out, func, &local_offsets, &local_types, &mut fi);
                                                 // Store result to target variable
                                                 if let Some(off) = local_offsets.get(vn) {
+                                                    if matches!(local_types.get(vn), Some(Type::I32)) {
+                                                        out.push_str("        cltq\n");
+                                                    }
                                                     out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
                                                 }
                                             }
@@ -5537,6 +5541,29 @@ linux_emit_print_i64(&mut out);
                                         }
                                     }
                                     Expr::Var(name) => {
+                                        if let (Some(off), Some(ty)) = (local_offsets.get(name), local_types.get(name)) {
+                                            match ty {
+                                                Type::I64 => {
+                                                    out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                                    linux_emit_print_i64(&mut out);
+                                                    continue;
+                                                }
+                                                Type::I32 => {
+                                                    out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                                                    linux_emit_print_i64(&mut out);
+                                                    continue;
+                                                }
+                                                Type::F64 => {
+                                                    linux_emit_print_f64_value(&mut out, &format!("        movsd -{}(%rbp), %xmm0\n", off));
+                                                    continue;
+                                                }
+                                                Type::F32 => {
+                                                    linux_emit_print_f64_value(&mut out, &format!("        cvtss2sd -{}(%rbp), %xmm0\n", off));
+                                                    continue;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
                                         let regs = ["%rdi","%rsi","%rdx","%rcx","%r8","%r9"];
                                         let xmm_regs = ["%xmm0","%xmm1","%xmm2","%xmm3","%xmm4","%xmm5","%xmm6","%xmm7"];
                                         let mut slot = 0usize;
@@ -6431,6 +6458,17 @@ r#"        syscall
                                 out.push_str("        pop %rbp\n");
                                 out.push_str("        ret\n");
                             }
+                            Stmt::Assign { target: Expr::Var(vname), value } => {
+                                if let (Some(off), Some(ty)) = (local_offsets.get(vname), local_types.get(vname)) {
+                                    let off = *off;
+                                    let is_i32 = matches!(ty, Type::I32);
+                                    linux_emit_expr_to_rax(value, &mut out, func, &local_offsets, &local_types, &mut label_counter);
+                                    if is_i32 {
+                                        out.push_str("        cltq\n");
+                                    }
+                                    out.push_str(&format!("        mov %rax, -{}(%rbp)\n", off));
+                                }
+                            },
                             Stmt::Assign { .. } => {
                             },
                             _ => {}

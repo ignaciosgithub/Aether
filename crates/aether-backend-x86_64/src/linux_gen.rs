@@ -279,6 +279,75 @@ impl<'m> Emitter<'m> {
                 }
                 ret_cls.unwrap_or(Class::Int)
             }
+            Expr::MethodCall(recv, meth, args) => {
+                let (fname, rn, loc) =
+                    crate::gen_common::resolve_method(recv, meth, &self.env).unwrap();
+                let callee = self.env.funcs[fname.as_str()];
+                let ret_cls = if matches!(callee.ret, Type::String) {
+                    Some(Class::Str)
+                } else {
+                    class_of_type(&callee.ret)
+                };
+                let int_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+                let pad = self.depth % 2 == 1;
+                if pad {
+                    out.push_str("        sub $8, %rsp\n");
+                    self.depth += 1;
+                }
+                // Receiver address is the first (integer) argument.
+                match loc {
+                    crate::gen_common::ReceiverLoc::Static => {
+                        out.push_str(&format!("        leaq {}(%rip), %rax\n", rn));
+                    }
+                    crate::gen_common::ReceiverLoc::Local => {
+                        let off = self.env.offsets[&rn];
+                        out.push_str(&format!("        leaq -{}(%rbp), %rax\n", off));
+                    }
+                    crate::gen_common::ReceiverLoc::Ptr => {
+                        let off = self.env.offsets[&rn];
+                        out.push_str(&format!("        mov -{}(%rbp), %rax\n", off));
+                    }
+                }
+                out.push_str("        sub $8, %rsp\n");
+                self.depth += 1;
+                out.push_str("        mov %rax, (%rsp)\n");
+                let mut classes: Vec<Class> = vec![Class::Int];
+                for (p, a) in callee.params.iter().skip(1).zip(args) {
+                    let cls = class_of_type(&p.ty).unwrap();
+                    classes.push(cls);
+                    self.emit_expr(a, out);
+                    out.push_str("        sub $8, %rsp\n");
+                    self.depth += 1;
+                    match cls {
+                        Class::Str => unreachable!("string args rejected by can_compile"),
+                        Class::Int => out.push_str("        mov %rax, (%rsp)\n"),
+                        Class::Float => out.push_str("        movsd %xmm0, (%rsp)\n"),
+                    }
+                }
+                let mut int_i = classes.iter().filter(|c| **c == Class::Int).count();
+                let mut float_i = classes.iter().filter(|c| **c == Class::Float).count();
+                for cls in classes.iter().rev() {
+                    match cls {
+                        Class::Str => unreachable!("string args rejected by can_compile"),
+                        Class::Int => {
+                            int_i -= 1;
+                            out.push_str(&format!("        mov (%rsp), {}\n", int_regs[int_i]));
+                        }
+                        Class::Float => {
+                            float_i -= 1;
+                            out.push_str(&format!("        movsd (%rsp), %xmm{}\n", float_i));
+                        }
+                    }
+                    out.push_str("        add $8, %rsp\n");
+                    self.depth -= 1;
+                }
+                out.push_str(&format!("        call {}\n", fname));
+                if pad {
+                    out.push_str("        add $8, %rsp\n");
+                    self.depth -= 1;
+                }
+                ret_cls.unwrap_or(Class::Int)
+            }
             Expr::Cast(inner, ty) => {
                 let from = self.emit_expr(inner, out);
                 let to = class_of_type(ty).unwrap();
@@ -326,17 +395,24 @@ impl<'m> Emitter<'m> {
                 let Expr::Var(rn) = &**recv else {
                     unreachable!("field receiver rejected by can_compile")
                 };
-                let (off, fty) = match self.env.types.get(rn) {
-                    Some(Type::User(sname)) => {
-                        let info = self.env.statics.field_of_struct(sname, fname).unwrap();
-                        let base = self.env.offsets[rn];
-                        out.push_str(&format!("        leaq -{}(%rbp), %rax\n", base));
-                        info
-                    }
-                    _ => {
-                        let info = self.env.statics.field_of(rn, fname).unwrap();
-                        out.push_str(&format!("        leaq {}(%rip), %rax\n", rn));
-                        info
+                let (off, fty) = if let Some(sname) = self.env.ptr_structs.get(rn) {
+                    let info = self.env.statics.field_of_struct(sname, fname).unwrap();
+                    let base = self.env.offsets[rn];
+                    out.push_str(&format!("        mov -{}(%rbp), %rax\n", base));
+                    info
+                } else {
+                    match self.env.types.get(rn) {
+                        Some(Type::User(sname)) => {
+                            let info = self.env.statics.field_of_struct(sname, fname).unwrap();
+                            let base = self.env.offsets[rn];
+                            out.push_str(&format!("        leaq -{}(%rbp), %rax\n", base));
+                            info
+                        }
+                        _ => {
+                            let info = self.env.statics.field_of(rn, fname).unwrap();
+                            out.push_str(&format!("        leaq {}(%rip), %rax\n", rn));
+                            info
+                        }
                     }
                 };
                 match fty {
@@ -695,8 +771,10 @@ fn emit_inner(
         statics,
         types: HashMap::new(),
         offsets: HashMap::new(),
+        ptr_structs: HashMap::new(),
         limits: SYSV_LIMITS,
     };
+    let self_struct = crate::gen_common::self_struct_of(func, statics);
     let mut cur_off = 0usize;
 
     let int_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
@@ -705,8 +783,17 @@ fn emit_inner(
     let mut float_i = 0usize;
     for p in &func.params {
         cur_off += 8;
-        env.types.insert(p.name.clone(), p.ty.clone());
         env.offsets.insert(p.name.clone(), cur_off);
+        if p.name == "self" {
+            // The receiver arrives as the struct's address in an int register.
+            env.types.insert(p.name.clone(), Type::I64);
+            env.ptr_structs
+                .insert(p.name.clone(), self_struct.clone().unwrap());
+            spills.push((cur_off, int_regs[int_i].to_string()));
+            int_i += 1;
+            continue;
+        }
+        env.types.insert(p.name.clone(), p.ty.clone());
         match class_of_type(&p.ty).unwrap() {
             Class::Str => unreachable!("string params rejected by can_compile"),
             Class::Int => {

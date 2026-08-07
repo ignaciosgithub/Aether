@@ -112,11 +112,64 @@ fn struct_field_supported(ty: &Type) -> bool {
     matches!(ty, Type::I32 | Type::I64 | Type::F64 | Type::String)
 }
 
+/// Where a method-call receiver's struct lives.
+pub(crate) enum ReceiverLoc {
+    /// Module static: address is `name(%rip)`.
+    Static,
+    /// Stack-allocated struct local: address is `-offset(%rbp)`.
+    Local,
+    /// A variable already holding the struct's address (e.g. `self`).
+    Ptr,
+}
+
+/// If `func` is a mangled method (`{Struct}_{name}`) whose first parameter
+/// is `self`, the struct type the receiver points to.
+pub(crate) fn self_struct_of(func: &Function, statics: &StaticsInfo) -> Option<String> {
+    if func.params.first().map(|p| p.name.as_str()) != Some("self") {
+        return None;
+    }
+    statics
+        .struct_sizes
+        .keys()
+        .filter(|s| {
+            func.name.len() > s.len() + 1
+                && func.name.starts_with(s.as_str())
+                && func.name.as_bytes()[s.len()] == b'_'
+        })
+        .max_by_key(|s| s.len())
+        .cloned()
+}
+
+/// Resolve `recv.meth(...)` to the mangled method function name
+/// (`{Struct}_{meth}`) and the receiver's location. The receiver must be a
+/// plain variable naming a static or a struct-typed local.
+pub(crate) fn resolve_method<'e>(
+    recv: &Expr,
+    meth: &str,
+    env: &Env<'e>,
+) -> Option<(String, String, ReceiverLoc)> {
+    let Expr::Var(rn) = recv else { return None };
+    let (sname, loc) = if let Some(s) = env.ptr_structs.get(rn) {
+        (s.clone(), ReceiverLoc::Ptr)
+    } else {
+        match env.types.get(rn) {
+            Some(Type::User(s)) => (s.clone(), ReceiverLoc::Local),
+            Some(_) => return None,
+            None => (env.statics.types.get(rn)?.clone(), ReceiverLoc::Static),
+        }
+    };
+    let fname = format!("{}_{}", sname, meth);
+    env.funcs.contains_key(fname.as_str()).then_some(())?;
+    Some((fname, rn.clone(), loc))
+}
+
 pub(crate) struct Env<'m> {
     pub funcs: &'m HashMap<String, &'m Function>,
     pub statics: &'m StaticsInfo,
     pub types: HashMap<String, Type>,
     pub offsets: HashMap<String, usize>,
+    /// Variables holding a struct address (method receivers): var -> struct.
+    pub ptr_structs: HashMap<String, String>,
     pub limits: AbiLimits,
 }
 
@@ -182,13 +235,18 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
         Expr::Deref(inner) => pointee_class(inner, env),
         Expr::Field(recv, fname) => {
             let Expr::Var(rn) = &**recv else { return None };
-            let (_, fty) = match env.types.get(rn) {
-                // struct-typed local
-                Some(Type::User(sname)) => env.statics.field_of_struct(sname, fname)?,
-                // any other local shadows a same-named static
-                Some(_) => return None,
-                // module static
-                None => env.statics.field_of(rn, fname)?,
+            let (_, fty) = if let Some(sname) = env.ptr_structs.get(rn) {
+                // method receiver holding the struct's address
+                env.statics.field_of_struct(sname, fname)?
+            } else {
+                match env.types.get(rn) {
+                    // struct-typed local
+                    Some(Type::User(sname)) => env.statics.field_of_struct(sname, fname)?,
+                    // any other local shadows a same-named static
+                    Some(_) => return None,
+                    // module static
+                    None => env.statics.field_of(rn, fname)?,
+                }
             };
             match fty {
                 Type::String => Some(Class::Str),
@@ -206,6 +264,14 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
                 return None;
             }
             class_of_type(elem)
+        }
+        Expr::MethodCall(recv, meth, _) => {
+            let (fname, _, _) = resolve_method(recv, meth, env)?;
+            let callee = env.funcs.get(fname.as_str())?;
+            if matches!(callee.ret, Type::String) {
+                return Some(Class::Str);
+            }
+            class_of_type(&callee.ret)
         }
         Expr::IfElse {
             cond,
@@ -292,6 +358,46 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
         Expr::Deref(inner) => expr_supported(inner, env) && pointee_class(inner, env).is_some(),
         Expr::Field(_, _) => infer_class(expr, env).is_some(),
         Expr::Index(_, idx) => expr_supported(idx, env) && infer_class(expr, env).is_some(),
+        Expr::MethodCall(recv, meth, args) => {
+            let Some((fname, _, _)) = resolve_method(recv, meth, env) else {
+                return false;
+            };
+            let callee = env.funcs[fname.as_str()];
+            // The mangled method takes the receiver address as its first
+            // (integer) parameter.
+            if callee.params.len() != args.len() + 1 {
+                return false;
+            }
+            if class_of_type(&callee.ret).is_none()
+                && !matches!(callee.ret, Type::Void | Type::String)
+            {
+                return false;
+            }
+            if matches!(callee.ret, Type::F32) {
+                return false;
+            }
+            let mut ints = 1usize; // receiver address
+            let mut floats = 0usize;
+            for (p, a) in callee.params.iter().skip(1).zip(args) {
+                if matches!(p.ty, Type::F32) {
+                    return false;
+                }
+                let Some(pc) = class_of_type(&p.ty) else {
+                    return false;
+                };
+                match pc {
+                    Class::Str => return false,
+                    Class::Int => ints += 1,
+                    Class::Float => floats += 1,
+                }
+                if !expr_supported(a, env) || infer_class(a, env) != Some(pc) {
+                    return false;
+                }
+            }
+            ints <= env.limits.max_int_args
+                && floats <= env.limits.max_float_args
+                && callee.params.len() <= env.limits.max_total_args
+        }
         Expr::IfElse {
             cond,
             then_expr,
@@ -463,11 +569,23 @@ pub(crate) fn can_compile(
         statics,
         types: HashMap::new(),
         offsets: HashMap::new(),
+        ptr_structs: HashMap::new(),
         limits,
     };
+    let self_struct = self_struct_of(func, statics);
     let mut ints = 0usize;
     let mut floats = 0usize;
     for p in &func.params {
+        if p.name == "self" {
+            let Some(sname) = self_struct.clone() else {
+                return false;
+            };
+            // The receiver is passed as the struct's address.
+            ints += 1;
+            env.types.insert(p.name.clone(), Type::I64);
+            env.ptr_structs.insert(p.name.clone(), sname);
+            continue;
+        }
         if matches!(p.ty, Type::F32) {
             return false;
         }

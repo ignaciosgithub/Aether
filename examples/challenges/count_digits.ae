@@ -1,12 +1,22 @@
 // Challenge: Count digits
 // Count the number of digits in a number
 
+func count_digits(n: i64) -> i64 {
+    let count: i64 = 1;
+    let cur: i64 = n;
+    while (cur > 9) {
+        cur = cur / 10;
+        count = count + 1;
+    }
+    return count;
+}
+
 pub func main() -> i32 {
     println("count_digits(1) = 1:");
-    println(1);
+    println(count_digits(1));
     println("count_digits(123) = 3:");
-    println(3);
+    println(count_digits(123));
     println("count_digits(1000000) = 7:");
-    println(7);
+    println(count_digits(1000000));
     return 0;
 }

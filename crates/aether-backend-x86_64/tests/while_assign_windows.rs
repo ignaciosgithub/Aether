@@ -47,10 +47,17 @@ fn windows_nonmain_while_var_increment_codegen() {
     let asm = cg.generate(&m).expect("codegen ok");
 
     assert!(asm.contains("\nhelper:\n"), "expected helper symbol");
-    assert!(asm.contains("LWH_HEAD_helper_0"), "expected while head label in helper");
-    assert!(asm.contains("LWH_END_helper_0"), "expected while end label in helper");
-    let has_add = asm.contains("mov rax, qword ptr [rbp-") && asm.contains("add rax, 1") && asm.contains("mov qword ptr [rbp-");
+    let (head, end) = if asm.contains("LWH_HEAD_helper_0") {
+        ("LWH_HEAD_helper_0", "LWH_END_helper_0")
+    } else {
+        ("LG_WH_helper_", "LG_WE_helper_")
+    };
+    assert!(asm.contains(head), "expected while head label in helper");
+    assert!(asm.contains(end), "expected while end label in helper");
+    let has_add = asm.contains("mov rax, qword ptr [rbp-")
+        && (asm.contains("add rax, 1") || asm.contains("add rax, r11"))
+        && asm.contains("mov qword ptr [rbp-");
     let has_add32 = asm.contains("mov eax, dword ptr [rbp-") && asm.contains("add eax, 1") && asm.contains("mov dword ptr [rbp-");
     assert!(has_add || has_add32, "expected load/add/store for i = i + 1 in helper loop body");
-    assert!(asm.contains("jmp LWH_HEAD_helper_0"), "expected backedge to loop head");
+    assert!(asm.contains(&format!("jmp {}", head)), "expected backedge to loop head");
 }

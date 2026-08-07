@@ -74,19 +74,20 @@ def find_aetherc():
     return ["cargo", "run", "-q", "-p", "aetherc", "--"]
 
 
-def find_bash():
+MINGW_BIN = r"C:\msys64\mingw64\bin"
+
+
+def find_windows_linker():
     from shutil import which
 
-    bash = which("bash")
-    if bash:
-        return bash
-    for candidate in (
-        r"C:\msys64\usr\bin\bash.exe",
-        r"C:\Program Files\Git\bin\bash.exe",
-    ):
-        if os.path.isfile(candidate):
-            return candidate
-    return "bash"
+    for name in ("x86_64-w64-mingw32-gcc", "gcc", "clang"):
+        exe = os.path.join(MINGW_BIN, name + ".exe")
+        if os.path.isfile(exe):
+            return exe
+        found = which(name)
+        if found:
+            return found
+    return None
 
 
 class EditorTab(ttk.Frame):
@@ -394,20 +395,28 @@ class AetherEditor(tk.Tk):
             return
         base_path = os.path.splitext(asm_path)[0]
         bin_path = base_path + EXE
-        link = os.path.join(REPO_ROOT, "scripts", "assemble_link.sh")
         env = dict(os.environ)
         if IS_WINDOWS:
-            # Make the MinGW64 toolchain visible to the link script.
-            env["MSYSTEM"] = "MINGW64"
-            mingw_bin = r"C:\msys64\mingw64\bin"
-            if os.path.isdir(mingw_bin):
-                env["PATH"] = mingw_bin + os.pathsep + env.get("PATH", "")
-            link, asm_path = link.replace("\\", "/"), asm_path.replace("\\", "/")
-            # The link script appends .exe itself for the windows target.
-            bin_arg = base_path.replace("\\", "/")
+            # Link natively with the MinGW64 toolchain; no bash needed.
+            linker = find_windows_linker()
+            if linker is None:
+                self.log("No MinGW64 compiler found. Run the setup wizard "
+                         "(tools/aether_setup_gui.py) to install the toolchain.",
+                         "error")
+                return
+            if os.path.isdir(MINGW_BIN):
+                env["PATH"] = MINGW_BIN + os.pathsep + env.get("PATH", "")
+            if os.path.basename(linker).startswith("clang"):
+                cmd = [linker, "-no-integrated-as", "-nostartfiles",
+                       "-Wl,-e,main", "-Wl,--subsystem,console",
+                       "-o", bin_path, asm_path, "-lkernel32"]
+            else:
+                cmd = [linker, "-nostartfiles", "-Wl,-e,main",
+                       "-Wl,--subsystem,console",
+                       "-o", bin_path, asm_path, "-lkernel32"]
         else:
-            bin_arg = bin_path
-        cmd = [find_bash(), link, "x86_64-" + target_os, asm_path, bin_arg]
+            link = os.path.join(REPO_ROOT, "scripts", "assemble_link.sh")
+            cmd = ["bash", link, "x86_64-linux", asm_path, bin_path]
         self.log("$ " + " ".join(os.path.relpath(c, REPO_ROOT) if os.path.isabs(c) else c for c in cmd))
         proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=120, env=env)
         if proc.returncode != 0:

@@ -1,15 +1,20 @@
 // Challenge: Integer Square Root
 // Find the largest integer whose square is <= n
 
+func isqrt(n: i64) -> i64 {
+    let r: i64 = 0;
+    while ((r + 1) * (r + 1) <= n) {
+        r = r + 1;
+    }
+    return r;
+}
+
 pub func main() -> i32 {
-    // sqrt(16) = 4
     println("isqrt(16) = 4:");
-    println(4);
-    // sqrt(17) = 4 (4^2=16 <= 17 < 25=5^2)
+    println(isqrt(16));
     println("isqrt(17) = 4:");
-    println(4);
-    // sqrt(100) = 10
+    println(isqrt(17));
     println("isqrt(100) = 10:");
-    println(10);
+    println(isqrt(100));
     return 0;
 }

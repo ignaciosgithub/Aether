@@ -1,10 +1,14 @@
 // Challenge: Double a number
 // Use direct multiplication
 
+func double(n: i64) -> i64 {
+    return n * 2;
+}
+
 pub func main() -> i32 {
     println("7 * 2 = 14:");
-    println(14);
+    println(double(7));
     println("50 * 2 = 100:");
-    println(100);
+    println(double(50));
     return 0;
 }

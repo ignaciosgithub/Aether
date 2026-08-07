@@ -1,4 +1,6 @@
+mod gen_common;
 mod linux_gen;
+mod windows_gen;
 
 use anyhow::Result;
 use aether_codegen::{CodeGenerator, Target, TargetArch, TargetOs};
@@ -6599,7 +6601,29 @@ LSNL:
                 let mut win_need_lsnl: bool = false;
                 let mut win_emitted_main_in_order: bool = false;
 
-                if let Some(f) = main_func {
+                let win_all_funcs: HashMap<String, &aether_frontend::ast::Function> = module
+                    .items
+                    .iter()
+                    .filter_map(|it| match it {
+                        Item::Function(f) => Some((f.name.clone(), f)),
+                        _ => None,
+                    })
+                    .collect();
+                // main goes through the general emitter when the whole module is
+                // plain functions and its body is fully supported; the legacy
+                // path below handles everything else.
+                let win_main_general = module.items.iter().all(|it| matches!(it, Item::Function(_)))
+                    && main_func
+                        .map(|mf| mf.params.is_empty() && windows_gen::can_compile(mf, &win_all_funcs))
+                        .unwrap_or(false);
+                if win_main_general {
+                    if let Some(mf) = main_func {
+                        win_emitted_main_in_order = true;
+                        windows_gen::emit_main(mf, &win_all_funcs, &mut out, &mut label_counter);
+                    }
+                }
+
+                if let Some(f) = main_func { if !win_main_general {
                 let mut win_stdin_inited: bool = false;
                 let mut win_inbuf_emitted: bool = false;
 
@@ -7660,7 +7684,7 @@ r#"        xor r9d, r9d
                     out.push_str("\n        .text\n");
                 }
 
-                }
+                } }
                 let mut call_arg_data: Vec<(String, String)> = Vec::new();
                 if !prints.is_empty() {
                 }
@@ -8087,6 +8111,11 @@ r#"        xor r9d, r9d
                 for func in funcs_to_emit {
                     out.push_str("\n");
                     if func.name == "main" {
+                        continue;
+                    }
+
+                    if windows_gen::can_compile(func, &win_all_funcs) {
+                        windows_gen::emit(func, &win_all_funcs, &mut out, &mut label_counter);
                         continue;
                     }
 

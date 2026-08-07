@@ -1,10 +1,14 @@
 // Challenge: Cube Numbers
 // Calculate n cubed using direct multiplication
 
+func cube(n: i64) -> i64 {
+    return n * n * n;
+}
+
 pub func main() -> i32 {
     println("3 * 3 * 3 = 27:");
-    println(27);
+    println(cube(3));
     println("5 * 5 * 5 = 125:");
-    println(125);
+    println(cube(5));
     return 0;
 }

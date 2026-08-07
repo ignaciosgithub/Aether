@@ -1,9 +1,12 @@
 // Challenge: Sum of 1 to N
 // Calculate the sum of all integers from 1 to N using the formula n*(n+1)/2
 
+func sum_to(n: i64) -> i64 {
+    return n * (n + 1) / 2;
+}
+
 pub func main() -> i32 {
-    // Sum 1 to 100 = 100*101/2 = 5050
     println("Sum 1 to 100 = 5050:");
-    println(5050);
+    println(sum_to(100));
     return 0;
 }

@@ -1,14 +1,19 @@
 // Challenge: Check if a number is a perfect square
 
+func is_perfect_square(n: i64) -> i64 {
+    let r: i64 = 0;
+    while (r * r < n) {
+        r = r + 1;
+    }
+    return if (r * r == n) { 1 } else { 0 };
+}
+
 pub func main() -> i32 {
-    // 16 = 4^2, perfect square
     println("is_perfect_square(16) = 1:");
-    println(1);
-    // 15 is not a perfect square
+    println(is_perfect_square(16));
     println("is_perfect_square(15) = 0:");
-    println(0);
-    // 100 = 10^2, perfect square
+    println(is_perfect_square(15));
     println("is_perfect_square(100) = 1:");
-    println(1);
+    println(is_perfect_square(100));
     return 0;
 }

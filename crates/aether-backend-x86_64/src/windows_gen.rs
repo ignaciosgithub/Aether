@@ -15,13 +15,18 @@ use std::collections::HashMap;
 use aether_frontend::ast::{BinOpKind, Expr, Function, Stmt, Type, UnaryOpKind, Value};
 
 use crate::gen_common::{
-    class_of_type, collect_locals, infer_class, pointee_class, Class, Env, WIN64_LIMITS,
+    class_of_type, collect_locals, infer_class, pointee_class, Class, Env, StaticsInfo,
+    WIN64_LIMITS,
 };
 use crate::{win_emit_print_f64_value, win_emit_print_i64};
 
 /// Whether `func` can be fully compiled by this general emitter.
-pub(crate) fn can_compile(func: &Function, funcs: &HashMap<String, &Function>) -> bool {
-    crate::gen_common::can_compile(func, funcs, WIN64_LIMITS)
+pub(crate) fn can_compile(
+    func: &Function,
+    funcs: &HashMap<String, &Function>,
+    statics: &StaticsInfo,
+) -> bool {
+    crate::gen_common::can_compile(func, funcs, statics, WIN64_LIMITS)
 }
 
 struct Emitter<'m> {
@@ -105,9 +110,18 @@ impl<'m> Emitter<'m> {
                 out.push_str("        movq xmm0, rax\n");
                 Class::Float
             }
+            Expr::Lit(Value::String(s)) => {
+                let lbl = self.fresh("SLIT");
+                let len = s.as_bytes().len();
+                self.rodata.push((lbl.clone(), s.clone()));
+                out.push_str(&format!("        lea rax, [rip+{}]\n", lbl));
+                out.push_str(&format!("        mov rdx, {}\n", len));
+                Class::Str
+            }
             Expr::Var(name) => {
                 let off = self.env.offsets[name];
                 match self.env.class_of_var(name).unwrap() {
+                    Class::Str => unreachable!("string locals rejected by can_compile"),
                     Class::Int => {
                         out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", off));
                         Class::Int
@@ -126,6 +140,7 @@ impl<'m> Emitter<'m> {
             Expr::BinOp(a, op, b) => {
                 let cls = infer_class(a, &self.env).unwrap();
                 match cls {
+                    Class::Str => unreachable!("string operators rejected by can_compile"),
                     Class::Int => {
                         self.emit_expr(a, out);
                         out.push_str("        push rax\n");
@@ -222,7 +237,11 @@ impl<'m> Emitter<'m> {
             }
             Expr::Call(name, args) => {
                 let callee = self.env.funcs[name.as_str()];
-                let ret_cls = class_of_type(&callee.ret);
+                let ret_cls = if matches!(callee.ret, Type::String) {
+                    Some(Class::Str)
+                } else {
+                    class_of_type(&callee.ret)
+                };
                 // Evaluate all arguments left to right, parking each on the
                 // stack, then load them into their positional Win64 registers.
                 let int_regs = ["rcx", "rdx", "r8", "r9"];
@@ -234,6 +253,7 @@ impl<'m> Emitter<'m> {
                     out.push_str("        sub rsp, 8\n");
                     self.depth += 1;
                     match cls {
+                        Class::Str => unreachable!("string args rejected by can_compile"),
                         Class::Int => out.push_str("        mov qword ptr [rsp], rax\n"),
                         Class::Float => out.push_str("        movsd qword ptr [rsp], xmm0\n"),
                     }
@@ -242,6 +262,7 @@ impl<'m> Emitter<'m> {
                 // positional in the Win64 ABI.
                 for (i, cls) in classes.iter().enumerate().rev() {
                     match cls {
+                        Class::Str => unreachable!("string args rejected by can_compile"),
                         Class::Int => {
                             out.push_str(&format!(
                                 "        mov {}, qword ptr [rsp]\n",
@@ -280,6 +301,9 @@ impl<'m> Emitter<'m> {
                         }
                     }
                     (Class::Float, Class::Float) => {}
+                    (Class::Str, _) | (_, Class::Str) => {
+                        unreachable!("string casts rejected by can_compile")
+                    }
                 }
                 to
             }
@@ -291,10 +315,38 @@ impl<'m> Emitter<'m> {
                 out.push_str(&format!("        lea rax, [rbp-{}]\n", off));
                 Class::Int
             }
+            Expr::Field(recv, fname) => {
+                let Expr::Var(rn) = &**recv else {
+                    unreachable!("field receiver rejected by can_compile")
+                };
+                let (off, fty) = self.env.statics.field_of(rn, fname).unwrap();
+                out.push_str(&format!("        lea rax, [rip+{}]\n", rn));
+                return match fty {
+                    Type::I64 => {
+                        out.push_str(&format!("        mov rax, qword ptr [rax+{}]\n", off));
+                        Class::Int
+                    }
+                    Type::I32 => {
+                        out.push_str(&format!("        movsxd rax, dword ptr [rax+{}]\n", off));
+                        Class::Int
+                    }
+                    Type::F64 => {
+                        out.push_str(&format!("        movsd xmm0, qword ptr [rax+{}]\n", off));
+                        Class::Float
+                    }
+                    Type::String => {
+                        out.push_str(&format!("        mov rdx, qword ptr [rax+{}]\n", off + 8));
+                        out.push_str(&format!("        mov rax, qword ptr [rax+{}]\n", off));
+                        Class::Str
+                    }
+                    _ => unreachable!("field type rejected by can_compile"),
+                };
+            }
             Expr::Deref(inner) => {
                 let cls = pointee_class(inner, &self.env).unwrap();
                 self.emit_expr(inner, out);
                 match cls {
+                    Class::Str => unreachable!("string pointees rejected by can_compile"),
                     Class::Int => out.push_str("        mov rax, qword ptr [rax]\n"),
                     Class::Float => out.push_str("        movsd xmm0, qword ptr [rax]\n"),
                 }
@@ -490,13 +542,14 @@ impl<'m> Emitter<'m> {
                 out.push_str("        pop r11\n");
                 self.depth -= 1;
                 match cls {
+                    Class::Str => unreachable!("string stores rejected by can_compile"),
                     Class::Int => out.push_str("        mov qword ptr [r11], rax\n"),
                     Class::Float => out.push_str("        movsd qword ptr [r11], xmm0\n"),
                 }
             }
             Stmt::Return(e) => {
                 let cls = self.emit_expr(e, out);
-                if matches!(self.ret_ty, Type::I32) {
+                if matches!(self.ret_ty, Type::I32) && cls == Class::Int {
                     out.push_str("        cdqe\n");
                 }
                 if self.is_main && cls == Class::Float {
@@ -518,6 +571,7 @@ impl<'m> Emitter<'m> {
                 // level, depth 0) and the stdout handle in r12.
                 Class::Int => win_emit_print_i64(out),
                 Class::Float => win_emit_print_f64_value(out, ""),
+                Class::Str => self.emit_print_str_value(out),
             },
             Stmt::While { cond, body } => {
                 let head = self.fresh("WH");
@@ -582,6 +636,29 @@ impl<'m> Emitter<'m> {
         }
     }
 
+    /// Print the String value in rax (pointer) / rdx (length) with a
+    /// trailing newline. Statement level only (depth 0, r12 = stdout).
+    fn emit_print_str_value(&mut self, out: &mut String) {
+        out.push_str("        sub rsp, 40\n");
+        out.push_str("        mov r8, rdx\n");
+        out.push_str("        mov rdx, rax\n");
+        out.push_str("        mov rcx, r12\n");
+        out.push_str("        xor r9d, r9d\n");
+        out.push_str("        mov qword ptr [rsp+32], 0\n");
+        out.push_str("        call WriteFile\n");
+        out.push_str("        add rsp, 40\n");
+        let nl = self.fresh("NL");
+        self.rodata.push((nl.clone(), "\n".to_string()));
+        out.push_str("        sub rsp, 40\n");
+        out.push_str("        mov rcx, r12\n");
+        out.push_str(&format!("        lea rdx, [rip+{}]\n", nl));
+        out.push_str("        mov r8d, 1\n");
+        out.push_str("        xor r9d, r9d\n");
+        out.push_str("        mov qword ptr [rsp+32], 0\n");
+        out.push_str("        call WriteFile\n");
+        out.push_str("        add rsp, 40\n");
+    }
+
     fn emit_print_str(&mut self, s: &str, out: &mut String) {
         let lbl = self.fresh("STR");
         let mut text = s.to_string();
@@ -634,10 +711,11 @@ fn emit_rodata_inline(rodata: &[(String, String)], out: &mut String) {
 pub(crate) fn emit(
     func: &Function,
     funcs: &HashMap<String, &Function>,
+    statics: &StaticsInfo,
     out: &mut String,
     label_counter: &mut usize,
 ) {
-    emit_inner(func, funcs, out, label_counter, false);
+    emit_inner(func, funcs, statics, out, label_counter, false);
 }
 
 /// Emit the body of `main` (after the module prologue that set up rbp,
@@ -647,21 +725,24 @@ pub(crate) fn emit(
 pub(crate) fn emit_main(
     func: &Function,
     funcs: &HashMap<String, &Function>,
+    statics: &StaticsInfo,
     out: &mut String,
     label_counter: &mut usize,
 ) {
-    emit_inner(func, funcs, out, label_counter, true);
+    emit_inner(func, funcs, statics, out, label_counter, true);
 }
 
 fn emit_inner(
     func: &Function,
     funcs: &HashMap<String, &Function>,
+    statics: &StaticsInfo,
     out: &mut String,
     label_counter: &mut usize,
     is_main: bool,
 ) {
     let mut env = Env {
         funcs,
+        statics,
         types: HashMap::new(),
         offsets: HashMap::new(),
         limits: WIN64_LIMITS,
@@ -676,6 +757,7 @@ fn emit_inner(
         env.types.insert(p.name.clone(), p.ty.clone());
         env.offsets.insert(p.name.clone(), cur_off);
         match class_of_type(&p.ty).unwrap() {
+            Class::Str => unreachable!("string params rejected by can_compile"),
             Class::Int => spills.push((cur_off, int_regs[i].to_string())),
             Class::Float => spills.push((cur_off, format!("xmm{}", i))),
         }

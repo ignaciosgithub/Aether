@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use aether_frontend::ast::{BinOpKind, Expr, Function, Stmt, Type, UnaryOpKind, Value};
 
 use crate::gen_common::{
-    class_of_type, collect_locals, infer_class, Class, Env, SYSV_LIMITS,
+    class_of_type, collect_locals, infer_class, pointee_class, Class, Env, SYSV_LIMITS,
 };
 use crate::{linux_emit_print_f64_value, linux_emit_print_i64};
 
@@ -37,6 +37,14 @@ struct Emitter<'m> {
     /// (head_label, end_label) of enclosing while loops, innermost last.
     loop_stack: Vec<(String, String)>,
     rodata: Vec<(String, String)>,
+    /// Catch labels of enclosing try blocks, innermost last.
+    try_stack: Vec<String>,
+    /// Exception variable names of enclosing except handlers, innermost last.
+    exc_vars: Vec<String>,
+    /// Whether the per-function uncaught-exception exit path is referenced.
+    needs_uncaught: bool,
+    /// Whether the AE_EXC_PTR/AE_EXC_LEN globals are referenced.
+    uses_exc: bool,
     /// Number of live 8-byte temporaries currently parked on the stack,
     /// used to keep %rsp 16-byte aligned at every call.
     depth: usize,
@@ -118,8 +126,15 @@ impl<'m> Emitter<'m> {
                         match op {
                             BinOpKind::Add => out.push_str("        add %rbx, %rax\n"),
                             BinOpKind::Sub => out.push_str("        sub %rbx, %rax\n"),
-                            BinOpKind::Mul => out.push_str("        imul %rbx, %rax\n"),
+                            BinOpKind::Mul => {
+                                out.push_str("        imul %rbx, %rax\n");
+                            }
                             BinOpKind::Div => {
+                                let ok = self.fresh("DIVOK");
+                                out.push_str("        test %rbx, %rbx\n");
+                                out.push_str(&format!("        jnz {}\n", ok));
+                                self.emit_throw("division by zero", out);
+                                out.push_str(&format!("{}:\n", ok));
                                 out.push_str("        cqo\n");
                                 out.push_str("        idiv %rbx\n");
                             }
@@ -263,7 +278,28 @@ impl<'m> Emitter<'m> {
                 }
                 to
             }
-            Expr::IfElse { cond, then_expr, else_expr } => {
+            Expr::AddrOf(inner) => {
+                let Expr::Var(name) = &**inner else {
+                    unreachable!("addr-of target rejected by can_compile")
+                };
+                let off = self.env.offsets[name];
+                out.push_str(&format!("        leaq -{}(%rbp), %rax\n", off));
+                Class::Int
+            }
+            Expr::Deref(inner) => {
+                let cls = pointee_class(inner, &self.env).unwrap();
+                self.emit_expr(inner, out);
+                match cls {
+                    Class::Int => out.push_str("        mov (%rax), %rax\n"),
+                    Class::Float => out.push_str("        movsd (%rax), %xmm0\n"),
+                }
+                cls
+            }
+            Expr::IfElse {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 let cls = infer_class(expr, &self.env).unwrap();
                 let else_l = self.fresh("IFE");
                 let end_l = self.fresh("IFX");
@@ -279,6 +315,44 @@ impl<'m> Emitter<'m> {
             }
             _ => unreachable!("expr rejected by can_compile"),
         }
+    }
+
+    /// Record `msg` as the current exception and transfer control to the
+    /// innermost try handler, or to the function's uncaught-exception exit.
+    fn emit_throw(&mut self, msg: &str, out: &mut String) {
+        self.uses_exc = true;
+        let lbl = self.fresh("EXC");
+        let len = msg.as_bytes().len();
+        self.rodata.push((lbl.clone(), msg.to_string()));
+        out.push_str(&format!("        leaq {}(%rip), %r11\n", lbl));
+        out.push_str("        mov %r11, AE_EXC_PTR(%rip)\n");
+        out.push_str(&format!("        movq ${}, AE_EXC_LEN(%rip)\n", len));
+        let target = match self.try_stack.last() {
+            Some(catch) => catch.clone(),
+            None => {
+                self.needs_uncaught = true;
+                format!(".LG_UNC_{}", self.func_name)
+            }
+        };
+        out.push_str(&format!("        jmp {}\n", target));
+    }
+
+    /// Print the current exception message (from the AE_EXC globals) with a
+    /// trailing newline.
+    fn emit_print_exc(&mut self, out: &mut String) {
+        self.uses_exc = true;
+        out.push_str("        mov $1, %rax\n");
+        out.push_str("        mov $1, %rdi\n");
+        out.push_str("        mov AE_EXC_PTR(%rip), %rsi\n");
+        out.push_str("        mov AE_EXC_LEN(%rip), %rdx\n");
+        out.push_str("        syscall\n");
+        let nl = self.fresh("NL");
+        self.rodata.push((nl.clone(), "\n".to_string()));
+        out.push_str("        mov $1, %rax\n");
+        out.push_str("        mov $1, %rdi\n");
+        out.push_str(&format!("        leaq {}(%rip), %rsi\n", nl));
+        out.push_str("        mov $1, %rdx\n");
+        out.push_str("        syscall\n");
     }
 
     /// Store %rax/%xmm0 into the slot of `name`, wrapping i32 values.
@@ -303,9 +377,27 @@ impl<'m> Emitter<'m> {
                 self.emit_expr(init, out);
                 self.emit_store_var(name, out);
             }
-            Stmt::Assign { target: Expr::Var(name), value } => {
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
                 self.emit_expr(value, out);
                 self.emit_store_var(name, out);
+            }
+            Stmt::Assign {
+                target: Expr::Deref(inner),
+                value,
+            } => {
+                self.emit_expr(inner, out);
+                out.push_str("        push %rax\n");
+                self.depth += 1;
+                let cls = self.emit_expr(value, out);
+                out.push_str("        pop %rbx\n");
+                self.depth -= 1;
+                match cls {
+                    Class::Int => out.push_str("        mov %rax, (%rbx)\n"),
+                    Class::Float => out.push_str("        movsd %xmm0, (%rbx)\n"),
+                }
             }
             Stmt::Return(e) => {
                 let cls = self.emit_expr(e, out);
@@ -323,6 +415,9 @@ impl<'m> Emitter<'m> {
             }
             Stmt::Println(s) => self.emit_print_str(s, out),
             Stmt::PrintExpr(Expr::Lit(Value::String(s))) => self.emit_print_str(s, out),
+            Stmt::PrintExpr(Expr::Var(n)) if self.exc_vars.iter().any(|v| v == n) => {
+                self.emit_print_exc(out);
+            }
             Stmt::PrintExpr(e) => match self.emit_expr(e, out) {
                 Class::Int => linux_emit_print_i64(out),
                 Class::Float => linux_emit_print_f64_value(out, ""),
@@ -351,6 +446,37 @@ impl<'m> Emitter<'m> {
                 if let Some((head, _)) = self.loop_stack.last() {
                     out.push_str(&format!("        jmp {}\n", head));
                 }
+            }
+            Stmt::Throw(Expr::Lit(Value::String(msg))) => {
+                let msg = msg.clone();
+                self.emit_throw(&msg, out);
+            }
+            Stmt::Try {
+                body,
+                err_name,
+                handler,
+            } => {
+                let catch = self.fresh("CAT");
+                let end = self.fresh("TRE");
+                self.try_stack.push(catch.clone());
+                for s in body {
+                    self.emit_stmt(s, out);
+                }
+                self.try_stack.pop();
+                out.push_str(&format!("        jmp {}\n", end));
+                out.push_str(&format!("{}:\n", catch));
+                // A throw may fire mid-expression with temporaries parked on
+                // the stack; restore the statement-level stack pointer.
+                out.push_str("        mov %rbp, %rsp\n");
+                if self.locals_size > 0 {
+                    out.push_str(&format!("        sub ${}, %rsp\n", self.locals_size));
+                }
+                self.exc_vars.push(err_name.clone());
+                for s in handler {
+                    self.emit_stmt(s, out);
+                }
+                self.exc_vars.pop();
+                out.push_str(&format!("{}:\n", end));
             }
             _ => unreachable!("stmt rejected by can_compile"),
         }
@@ -398,8 +524,12 @@ fn emit_inner(
     label_counter: &mut usize,
     is_main: bool,
 ) -> Vec<(String, String)> {
-    let mut env =
-        Env { funcs, types: HashMap::new(), offsets: HashMap::new(), limits: SYSV_LIMITS };
+    let mut env = Env {
+        funcs,
+        types: HashMap::new(),
+        offsets: HashMap::new(),
+        limits: SYSV_LIMITS,
+    };
     let mut cur_off = 0usize;
 
     let int_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
@@ -453,6 +583,10 @@ fn emit_inner(
         label_counter: *label_counter,
         loop_stack: Vec::new(),
         rodata: Vec::new(),
+        try_stack: Vec::new(),
+        exc_vars: Vec::new(),
+        needs_uncaught: false,
+        uses_exc: false,
         depth: 0,
     };
     for stmt in &func.body {
@@ -461,6 +595,26 @@ fn emit_inner(
     // Implicit return 0 if control falls off the end.
     out.push_str("        xor %eax, %eax\n");
     em.emit_epilogue(out);
+
+    if em.needs_uncaught {
+        let prefix = em.fresh("EXCPFX");
+        em.rodata.push((prefix.clone(), "Exception: ".to_string()));
+        out.push_str(&format!(".LG_UNC_{}:\n", em.func_name));
+        out.push_str("        mov $1, %rax\n");
+        out.push_str("        mov $1, %rdi\n");
+        out.push_str(&format!("        leaq {}(%rip), %rsi\n", prefix));
+        out.push_str("        mov $11, %rdx\n");
+        out.push_str("        syscall\n");
+        em.emit_print_exc(out);
+        out.push_str("        mov $60, %rax\n");
+        out.push_str("        mov $1, %rdi\n");
+        out.push_str("        syscall\n");
+    }
+    if em.uses_exc {
+        // Common symbols merge across functions and modules.
+        out.push_str("        .comm AE_EXC_PTR,8\n");
+        out.push_str("        .comm AE_EXC_LEN,8\n");
+    }
 
     *label_counter = em.label_counter;
     em.rodata

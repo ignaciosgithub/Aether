@@ -89,6 +89,7 @@ the setup wizard (`tools/aether_setup_gui.py`) are described in the README.
 | `[T; N]`  | fixed-size array of `N` elements of type `T`            |
 | `vec[T]`  | growable vector (heap allocated, explicit free)         |
 | `HList`   | heterogeneous list of tagged values                     |
+| `&T`      | pointer/reference to a value of type `T`                |
 | user types| `struct` definitions, single inheritance                |
 
 There is no dedicated boolean type in the surface syntax yet (**WIP**);
@@ -404,6 +405,48 @@ enter number:
 42
 ```
 
+# Pointers and references
+
+`&T` is a pointer to a value of type `T`. `&x` takes the address of a local
+variable, `*p` reads through a pointer, and `*p = value;` writes through it.
+Pointers are plain machine addresses on the stack: taking one allocates no
+heap memory, so there is nothing to free.
+
+```aether
+func add_one(p: &i64) -> i64 {
+    *p = *p + 1;
+    return *p;
+}
+
+pub func main() -> i32 {
+    let x: i64 = 10;
+    let p: &i64 = &x;
+    println(*p);
+    *p = 42;
+    println(x);
+    println(add_one(&x));
+    println(x);
+    let f: f64 = 2.5;
+    let q: &f64 = &f;
+    *q = *q * 2.0;
+    println(f);
+    return 0;
+}
+```
+
+Output (identical on Linux and Windows):
+
+```text
+10
+42
+43
+43
+5.000000
+```
+
+`&` currently takes the address of local variables only; pointers to array
+elements and struct fields are **WIP**.
+
 # Error handling: `try` / `except` / `throw`
 
 `throw "message";` raises an exception carrying a `String` explaining why.
@@ -437,6 +480,37 @@ after try
 ```
 
 Supported on x86_64 Linux and Windows.
+
+Integer division by zero throws a catchable `"division by zero"` exception:
+
+```aether
+pub func main() -> i32 {
+    try {
+        let a: i64 = 10;
+        let b: i64 = 0;
+        let c: i64 = a / b;
+        println(c);
+    } except (e: String) {
+        println("caught");
+        println(e);
+    }
+    println("after");
+    return 0;
+}
+```
+
+Output:
+
+```text
+caught
+division by zero
+after
+```
+
+Outside a `try`, division by zero prints `Exception: division by zero` and
+exits with code 1. Exceptions do not yet propagate across function calls
+(**WIP**): a throw is caught by a `try` in the same function, otherwise it
+ends the process.
 
 # Structs and inheritance
 
@@ -608,7 +682,10 @@ pub func main() -> i32 {
 Prints `map_reduce` and exits with status 303 (note: Linux exit statuses are
 truncated to 8 bits by the OS, so the observed code is `303 & 255 = 47`).
 
-**WIP:** on Windows, `join` result values have known gaps.
+This works identically on Windows: `spawn` maps to `CreateThread`, `join`
+waits with `WaitForSingleObject`, returns the worker's exit code from
+`GetExitCodeThread`, and closes the handle; `destroy` terminates the thread
+and closes its handle. No thread handles are leaked.
 
 # Imports
 
@@ -658,8 +735,7 @@ Also available and verified: `abs_i32`, `min_i32`, `max_i32`.
 incorrect output. `sqrt_f64` / `sqrt_f32` and `str_len` exist in the backend but
 printing their results currently produces incorrect output; treat them as
 work in progress. File I/O builtins (`file_open`, `file_read`, `file_write`,
-`file_close`) are designed but not yet usable from surface syntax (they
-require pointer arguments, and pointer syntax is WIP).
+`file_close`) are designed but not yet usable from surface syntax.
 
 # Targets, ABI and runtime behavior
 
@@ -679,8 +755,6 @@ require pointer arguments, and pointer syntax is WIP).
 The following are designed but not yet complete. They may parse, be
 partially functional, or be platform-limited:
 
-- **Pointers and references** (`&T`, `*p`): type syntax parses, but
-  address-of/dereference expressions are not yet accepted.
 - **Statement-level `if`** (without `else`/value): use `if` expressions.
 - **`%` modulo, `!=`, logical `&&`/`||`/`!`**: use the workarounds shown in
   the Operators chapter.
@@ -689,8 +763,10 @@ partially functional, or be platform-limited:
   fields**: prints an empty line today.
 - **`sqrt_f64`/`sqrt_f32`, `str_len`**: results print incorrectly.
 - **Array element printing** (`println(xs[i])`): prints nothing today.
-- **File I/O builtins**: blocked on pointer syntax.
-- **Windows:** `vec_*`/`hlist_*` builtins and thread `join` result values.
+- **File I/O builtins**: not yet usable from surface syntax.
+- **Pointers to non-locals**: `&` currently takes the address of local
+  variables only (not array elements or struct fields).
+- **Windows:** `vec_*`/`hlist_*` builtins.
 - **AArch64 Linux backend**: builds for a subset of the language; x86_64 is
   the reference target. RISC-V is planned.
 

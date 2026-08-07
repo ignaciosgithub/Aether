@@ -14,7 +14,9 @@ use std::collections::HashMap;
 
 use aether_frontend::ast::{BinOpKind, Expr, Function, Stmt, Type, UnaryOpKind, Value};
 
-use crate::gen_common::{class_of_type, collect_locals, infer_class, Class, Env, WIN64_LIMITS};
+use crate::gen_common::{
+    class_of_type, collect_locals, infer_class, pointee_class, Class, Env, WIN64_LIMITS,
+};
 use crate::{win_emit_print_f64_value, win_emit_print_i64};
 
 /// Whether `func` can be fully compiled by this general emitter.
@@ -33,6 +35,17 @@ struct Emitter<'m> {
     /// (head_label, end_label) of enclosing while loops, innermost last.
     loop_stack: Vec<(String, String)>,
     rodata: Vec<(String, String)>,
+    /// (thunk_label, worker_name) pairs for spawn sites; thunks are emitted
+    /// after the function body.
+    thunks: Vec<(String, String)>,
+    /// Catch labels of enclosing try blocks, innermost last.
+    try_stack: Vec<String>,
+    /// Exception variable names of enclosing except handlers, innermost last.
+    exc_vars: Vec<String>,
+    /// Whether the per-function uncaught-exception exit path is referenced.
+    needs_uncaught: bool,
+    /// Whether the AE_EXC_PTR/AE_EXC_LEN globals are referenced.
+    uses_exc: bool,
     /// Number of live 8-byte temporaries currently parked on the stack.
     /// At depth 0 the stack is 8 modulo 16 (odd number of pushed qwords
     /// since the 16-aligned call boundary), so calls pad to realign.
@@ -48,7 +61,11 @@ impl<'m> Emitter<'m> {
 
     /// Shadow-space allocation that leaves rsp 16-aligned at the call.
     fn shadow_bytes(&self) -> usize {
-        if self.depth % 2 == 0 { 40 } else { 32 }
+        if self.depth % 2 == 0 {
+            40
+        } else {
+            32
+        }
     }
 
     fn emit_epilogue(&self, out: &mut String) {
@@ -122,6 +139,11 @@ impl<'m> Emitter<'m> {
                             BinOpKind::Sub => out.push_str("        sub rax, r11\n"),
                             BinOpKind::Mul => out.push_str("        imul rax, r11\n"),
                             BinOpKind::Div => {
+                                let ok = self.fresh("DIVOK");
+                                out.push_str("        test r11, r11\n");
+                                out.push_str(&format!("        jnz {}\n", ok));
+                                self.emit_throw("division by zero", out);
+                                out.push_str(&format!("{}:\n", ok));
                                 out.push_str("        cqo\n");
                                 out.push_str("        idiv r11\n");
                             }
@@ -195,6 +217,9 @@ impl<'m> Emitter<'m> {
                     }
                 }
             }
+            Expr::Call(name, args) if crate::gen_common::is_thread_builtin(name) => {
+                self.emit_thread_builtin(name, args, out)
+            }
             Expr::Call(name, args) => {
                 let callee = self.env.funcs[name.as_str()];
                 let ret_cls = class_of_type(&callee.ret);
@@ -258,7 +283,28 @@ impl<'m> Emitter<'m> {
                 }
                 to
             }
-            Expr::IfElse { cond, then_expr, else_expr } => {
+            Expr::AddrOf(inner) => {
+                let Expr::Var(name) = &**inner else {
+                    unreachable!("addr-of target rejected by can_compile")
+                };
+                let off = self.env.offsets[name];
+                out.push_str(&format!("        lea rax, [rbp-{}]\n", off));
+                Class::Int
+            }
+            Expr::Deref(inner) => {
+                let cls = pointee_class(inner, &self.env).unwrap();
+                self.emit_expr(inner, out);
+                match cls {
+                    Class::Int => out.push_str("        mov rax, qword ptr [rax]\n"),
+                    Class::Float => out.push_str("        movsd xmm0, qword ptr [rax]\n"),
+                }
+                cls
+            }
+            Expr::IfElse {
+                cond,
+                then_expr,
+                else_expr,
+            } => {
                 let cls = infer_class(expr, &self.env).unwrap();
                 let else_l = self.fresh("IFE");
                 let end_l = self.fresh("IFX");
@@ -273,6 +319,134 @@ impl<'m> Emitter<'m> {
                 cls
             }
             _ => unreachable!("expr rejected by can_compile"),
+        }
+    }
+
+    /// Record `msg` as the current exception and transfer control to the
+    /// innermost try handler, or to the function's uncaught-exception exit.
+    fn emit_throw(&mut self, msg: &str, out: &mut String) {
+        self.uses_exc = true;
+        let lbl = self.fresh("EXC");
+        let len = msg.as_bytes().len();
+        self.rodata.push((lbl.clone(), msg.to_string()));
+        out.push_str(&format!("        lea r10, [rip+{}]\n", lbl));
+        out.push_str("        mov qword ptr [rip+AE_EXC_PTR], r10\n");
+        out.push_str(&format!(
+            "        mov qword ptr [rip+AE_EXC_LEN], {}\n",
+            len
+        ));
+        let target = match self.try_stack.last() {
+            Some(catch) => catch.clone(),
+            None => {
+                self.needs_uncaught = true;
+                format!("LG_UNC_{}", self.func_name)
+            }
+        };
+        out.push_str(&format!("        jmp {}\n", target));
+    }
+
+    /// Print the current exception message (from the AE_EXC globals) with a
+    /// trailing newline. Only used at statement level (depth 0).
+    fn emit_print_exc(&mut self, out: &mut String) {
+        self.uses_exc = true;
+        out.push_str("        sub rsp, 40\n");
+        out.push_str("        mov rcx, r12\n");
+        out.push_str("        mov rdx, qword ptr [rip+AE_EXC_PTR]\n");
+        out.push_str("        mov r8, qword ptr [rip+AE_EXC_LEN]\n");
+        out.push_str("        xor r9d, r9d\n");
+        out.push_str("        mov qword ptr [rsp+32], 0\n");
+        out.push_str("        call WriteFile\n");
+        out.push_str("        add rsp, 40\n");
+        let nl = self.fresh("NL");
+        self.rodata.push((nl.clone(), "\n".to_string()));
+        out.push_str("        sub rsp, 40\n");
+        out.push_str("        mov rcx, r12\n");
+        out.push_str(&format!("        lea rdx, [rip+{}]\n", nl));
+        out.push_str("        mov r8d, 1\n");
+        out.push_str("        xor r9d, r9d\n");
+        out.push_str("        mov qword ptr [rsp+32], 0\n");
+        out.push_str("        call WriteFile\n");
+        out.push_str("        add rsp, 40\n");
+    }
+
+    /// spawn/join/destroy via kernel32. Handles are ordinary i64 values in
+    /// rax; no global state is used, so any number of threads and any
+    /// source order work. join closes the handle after reading the exit
+    /// code and destroy closes it after terminating, so no handles leak.
+    fn emit_thread_builtin(&mut self, name: &str, args: &[Expr], out: &mut String) -> Class {
+        match name {
+            "spawn" => {
+                let (Expr::Lit(Value::String(worker)), arg) = (&args[0], &args[1]) else {
+                    unreachable!("spawn args rejected by can_compile")
+                };
+                let thunk = self.fresh("THK");
+                self.thunks.push((thunk.clone(), worker.clone()));
+                self.emit_expr(arg, out);
+                out.push_str("        mov r9, rax\n");
+                out.push_str("        xor ecx, ecx\n");
+                out.push_str("        xor edx, edx\n");
+                out.push_str(&format!("        lea r8, [rip+{}]\n", thunk));
+                // CreateThread takes six arguments: the fifth and sixth go
+                // on the stack above the 32-byte shadow space.
+                let frame = if self.depth % 2 == 0 { 56 } else { 48 };
+                out.push_str(&format!("        sub rsp, {}\n", frame));
+                out.push_str("        mov qword ptr [rsp+32], 0\n");
+                out.push_str("        mov qword ptr [rsp+40], 0\n");
+                out.push_str("        call CreateThread\n");
+                out.push_str(&format!("        add rsp, {}\n", frame));
+                Class::Int
+            }
+            "join" => {
+                self.emit_expr(&args[0], out);
+                // Scratch: [rsp] = handle, [rsp+8] = exit code.
+                out.push_str("        sub rsp, 16\n");
+                out.push_str("        mov qword ptr [rsp], rax\n");
+                self.depth += 2;
+                let shadow = self.shadow_bytes();
+                out.push_str("        mov rcx, rax\n");
+                out.push_str("        mov rdx, -1\n");
+                out.push_str(&format!("        sub rsp, {}\n", shadow));
+                out.push_str("        call WaitForSingleObject\n");
+                out.push_str(&format!("        add rsp, {}\n", shadow));
+                out.push_str("        mov rcx, qword ptr [rsp]\n");
+                out.push_str("        lea rdx, [rsp+8]\n");
+                out.push_str(&format!("        sub rsp, {}\n", shadow));
+                out.push_str("        call GetExitCodeThread\n");
+                out.push_str(&format!("        add rsp, {}\n", shadow));
+                out.push_str("        mov rcx, qword ptr [rsp]\n");
+                out.push_str(&format!("        sub rsp, {}\n", shadow));
+                out.push_str("        call CloseHandle\n");
+                out.push_str(&format!("        add rsp, {}\n", shadow));
+                out.push_str("        movsxd rax, dword ptr [rsp+8]\n");
+                out.push_str("        add rsp, 16\n");
+                self.depth -= 2;
+                Class::Int
+            }
+            "destroy" => {
+                self.emit_expr(&args[0], out);
+                // Scratch: [rsp] = handle, [rsp+8] = TerminateThread result.
+                out.push_str("        sub rsp, 16\n");
+                out.push_str("        mov qword ptr [rsp], rax\n");
+                self.depth += 2;
+                let shadow = self.shadow_bytes();
+                out.push_str("        mov rcx, rax\n");
+                out.push_str("        mov edx, 1\n");
+                out.push_str(&format!("        sub rsp, {}\n", shadow));
+                out.push_str("        call TerminateThread\n");
+                out.push_str(&format!("        add rsp, {}\n", shadow));
+                out.push_str("        mov dword ptr [rsp+8], eax\n");
+                out.push_str("        mov rcx, qword ptr [rsp]\n");
+                out.push_str(&format!("        sub rsp, {}\n", shadow));
+                out.push_str("        call CloseHandle\n");
+                out.push_str(&format!("        add rsp, {}\n", shadow));
+                out.push_str("        xor eax, eax\n");
+                out.push_str("        cmp dword ptr [rsp+8], 0\n");
+                out.push_str("        setne al\n");
+                out.push_str("        add rsp, 16\n");
+                self.depth -= 2;
+                Class::Int
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -298,9 +472,27 @@ impl<'m> Emitter<'m> {
                 self.emit_expr(init, out);
                 self.emit_store_var(name, out);
             }
-            Stmt::Assign { target: Expr::Var(name), value } => {
+            Stmt::Assign {
+                target: Expr::Var(name),
+                value,
+            } => {
                 self.emit_expr(value, out);
                 self.emit_store_var(name, out);
+            }
+            Stmt::Assign {
+                target: Expr::Deref(inner),
+                value,
+            } => {
+                self.emit_expr(inner, out);
+                out.push_str("        push rax\n");
+                self.depth += 1;
+                let cls = self.emit_expr(value, out);
+                out.push_str("        pop r11\n");
+                self.depth -= 1;
+                match cls {
+                    Class::Int => out.push_str("        mov qword ptr [r11], rax\n"),
+                    Class::Float => out.push_str("        movsd qword ptr [r11], xmm0\n"),
+                }
             }
             Stmt::Return(e) => {
                 let cls = self.emit_expr(e, out);
@@ -318,6 +510,9 @@ impl<'m> Emitter<'m> {
             }
             Stmt::Println(s) => self.emit_print_str(s, out),
             Stmt::PrintExpr(Expr::Lit(Value::String(s))) => self.emit_print_str(s, out),
+            Stmt::PrintExpr(Expr::Var(n)) if self.exc_vars.iter().any(|v| v == n) => {
+                self.emit_print_exc(out);
+            }
             Stmt::PrintExpr(e) => match self.emit_expr(e, out) {
                 // The shared print helpers expect rsp = 8 mod 16 (statement
                 // level, depth 0) and the stdout handle in r12.
@@ -348,6 +543,40 @@ impl<'m> Emitter<'m> {
                 if let Some((head, _)) = self.loop_stack.last() {
                     out.push_str(&format!("        jmp {}\n", head));
                 }
+            }
+            Stmt::Throw(Expr::Lit(Value::String(msg))) => {
+                let msg = msg.clone();
+                self.emit_throw(&msg, out);
+            }
+            Stmt::Try {
+                body,
+                err_name,
+                handler,
+            } => {
+                let catch = self.fresh("CAT");
+                let end = self.fresh("TRE");
+                self.try_stack.push(catch.clone());
+                for s in body {
+                    self.emit_stmt(s, out);
+                }
+                self.try_stack.pop();
+                out.push_str(&format!("        jmp {}\n", end));
+                out.push_str(&format!("{}:\n", catch));
+                // A throw may fire mid-expression with temporaries parked on
+                // the stack; restore the statement-level stack pointer.
+                out.push_str("        mov rsp, rbp\n");
+                // In main, rbx/r12/r13 saved by the module prologue sit
+                // between rbp and the locals.
+                let frame = self.locals_size + if self.is_main { 24 } else { 0 };
+                if frame > 0 {
+                    out.push_str(&format!("        sub rsp, {}\n", frame));
+                }
+                self.exc_vars.push(err_name.clone());
+                for s in handler {
+                    self.emit_stmt(s, out);
+                }
+                self.exc_vars.pop();
+                out.push_str(&format!("{}:\n", end));
             }
             _ => unreachable!("stmt rejected by can_compile"),
         }
@@ -392,7 +621,11 @@ fn emit_rodata_inline(rodata: &[(String, String)], out: &mut String) {
     }
     out.push_str("\n        .data\n");
     for (lbl, s) in rodata {
-        out.push_str(&format!("{}:\n        .ascii \"{}\"\n", lbl, escape_ascii(s)));
+        out.push_str(&format!(
+            "{}:\n        .ascii \"{}\"\n",
+            lbl,
+            escape_ascii(s)
+        ));
     }
     out.push_str("        .text\n");
 }
@@ -427,8 +660,12 @@ fn emit_inner(
     label_counter: &mut usize,
     is_main: bool,
 ) {
-    let mut env =
-        Env { funcs, types: HashMap::new(), offsets: HashMap::new(), limits: WIN64_LIMITS };
+    let mut env = Env {
+        funcs,
+        types: HashMap::new(),
+        offsets: HashMap::new(),
+        limits: WIN64_LIMITS,
+    };
     // In main, rbx/r12/r13 saved by the module prologue occupy [rbp-8..-24].
     let mut cur_off = if is_main { 24usize } else { 0usize };
 
@@ -479,6 +716,11 @@ fn emit_inner(
         label_counter: *label_counter,
         loop_stack: Vec::new(),
         rodata: Vec::new(),
+        thunks: Vec::new(),
+        try_stack: Vec::new(),
+        exc_vars: Vec::new(),
+        needs_uncaught: false,
+        uses_exc: false,
         depth: 0,
     };
     for stmt in &func.body {
@@ -487,6 +729,49 @@ fn emit_inner(
     // Implicit return 0 if control falls off the end.
     out.push_str("        xor eax, eax\n");
     em.emit_epilogue(out);
+
+    if em.needs_uncaught {
+        let prefix = em.fresh("EXCPFX");
+        em.rodata.push((prefix.clone(), "Exception: ".to_string()));
+        out.push_str(&format!("LG_UNC_{}:\n", em.func_name));
+        out.push_str("        sub rsp, 40\n");
+        out.push_str("        mov rcx, r12\n");
+        out.push_str(&format!("        lea rdx, [rip+{}]\n", prefix));
+        out.push_str("        mov r8d, 11\n");
+        out.push_str("        xor r9d, r9d\n");
+        out.push_str("        mov qword ptr [rsp+32], 0\n");
+        out.push_str("        call WriteFile\n");
+        out.push_str("        add rsp, 40\n");
+        em.emit_print_exc(out);
+        out.push_str("        mov ecx, 1\n");
+        out.push_str("        sub rsp, 40\n");
+        out.push_str("        call ExitProcess\n");
+    }
+    if em.uses_exc {
+        // Common symbols merge across functions.
+        out.push_str("        .comm AE_EXC_PTR, 8\n");
+        out.push_str("        .comm AE_EXC_LEN, 8\n");
+    }
+
+    // Thread entry thunks: CreateThread passes the argument in rcx, which
+    // matches the worker's own Win64 signature, so the thunk only has to
+    // set up r12 (the stdout handle the print helpers rely on) for this
+    // thread before calling into the worker.
+    for (thunk, worker) in &em.thunks {
+        out.push_str(&format!("{}:\n", thunk));
+        out.push_str("        push rcx\n");
+        out.push_str("        push r12\n");
+        out.push_str("        sub rsp, 40\n");
+        out.push_str("        mov ecx, -11\n");
+        out.push_str("        call GetStdHandle\n");
+        out.push_str("        mov r12, rax\n");
+        out.push_str("        mov rcx, qword ptr [rsp+48]\n");
+        out.push_str(&format!("        call {}\n", worker));
+        out.push_str("        add rsp, 40\n");
+        out.push_str("        pop r12\n");
+        out.push_str("        add rsp, 8\n");
+        out.push_str("        ret\n");
+    }
 
     *label_counter = em.label_counter;
     emit_rodata_inline(&em.rodata, out);

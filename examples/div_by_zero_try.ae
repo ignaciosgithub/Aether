@@ -1,0 +1,13 @@
+pub func main() -> i32 {
+    try {
+        let a: i64 = 10;
+        let b: i64 = 0;
+        let c: i64 = a / b;
+        println(c);
+    } except (e: String) {
+        println("caught");
+        println(e);
+    }
+    println("after");
+    return 0;
+}

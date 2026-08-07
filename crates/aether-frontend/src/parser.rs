@@ -94,14 +94,21 @@ impl<'a> Parser<'a> {
                 };
                 self.expect(&TokenKind::Colon)?;
                 let fty = self.parse_type()?;
-                fields.push(StructField { name: fname, ty: fty });
+                fields.push(StructField {
+                    name: fname,
+                    ty: fty,
+                });
                 if self.eat_kind(&TokenKind::RBrace) {
                     break;
                 }
                 self.expect(&TokenKind::Comma)?;
             }
         }
-        Ok(StructDef { name, fields, parent })
+        Ok(StructDef {
+            name,
+            fields,
+            parent,
+        })
     }
 
     fn parse_static_var(&mut self) -> Result<StaticVar> {
@@ -163,7 +170,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<Type> {
-        let kind = self.peek().ok_or_else(|| anyhow!("unexpected eof"))?.kind.clone();
+        let kind = self
+            .peek()
+            .ok_or_else(|| anyhow!("unexpected eof"))?
+            .kind
+            .clone();
 
         if let TokenKind::Ampersand = kind {
             self.pos += 1;
@@ -177,7 +188,8 @@ impl<'a> Parser<'a> {
             self.expect(&TokenKind::Semicolon)?;
             let n = if let Some(TokenKind::Int(s)) = self.peek().map(|t| t.kind.clone()) {
                 self.pos += 1;
-                s.parse::<usize>().map_err(|_| anyhow!("invalid array size"))?
+                s.parse::<usize>()
+                    .map_err(|_| anyhow!("invalid array size"))?
             } else {
                 return Err(anyhow!("expected array size"));
             };
@@ -284,7 +296,11 @@ impl<'a> Parser<'a> {
             while !self.eat_kind(&TokenKind::RBrace) {
                 handler.push(self.parse_stmt()?);
             }
-            return Ok(Stmt::Try { body, err_name, handler });
+            return Ok(Stmt::Try {
+                body,
+                err_name,
+                handler,
+            });
         }
         if self.eat_kind(&TokenKind::Throw) {
             let expr = self.parse_expr()?;
@@ -305,13 +321,23 @@ impl<'a> Parser<'a> {
             return Ok(Stmt::Return(expr));
         }
         let save = self.pos;
-        let lval = self.parse_postfix()?;
-        if self.eat_kind(&TokenKind::Assign) {
-            let value = self.parse_expr()?;
-            self.expect(&TokenKind::Semicolon)?;
-            return Ok(Stmt::Assign { target: lval, value });
+        let lval = if self.eat_kind(&TokenKind::Star) {
+            self.parse_unary().map(|e| Expr::Deref(Box::new(e)))
         } else {
-            self.pos = save;
+            self.parse_postfix()
+        };
+        match lval {
+            Ok(lval) if self.eat_kind(&TokenKind::Assign) => {
+                let value = self.parse_expr()?;
+                self.expect(&TokenKind::Semicolon)?;
+                return Ok(Stmt::Assign {
+                    target: lval,
+                    value,
+                });
+            }
+            _ => {
+                self.pos = save;
+            }
         }
         let expr = self.parse_expr()?;
         self.expect(&TokenKind::Semicolon)?;
@@ -430,7 +456,11 @@ impl<'a> Parser<'a> {
                 Expr::Lit(Value::Int(v)) => Expr::Lit(Value::Int(v.wrapping_neg())),
                 Expr::Lit(Value::Float64(v)) => Expr::Lit(Value::Float64(-v)),
                 Expr::Lit(Value::Float32(v)) => Expr::Lit(Value::Float32(-v)),
-                other => Expr::BinOp(Box::new(Expr::Lit(Value::Int(0))), BinOpKind::Sub, Box::new(other)),
+                other => Expr::BinOp(
+                    Box::new(Expr::Lit(Value::Int(0))),
+                    BinOpKind::Sub,
+                    Box::new(other),
+                ),
             });
         }
         if self.eat_kind(&TokenKind::Plus) {
@@ -525,7 +555,11 @@ impl<'a> Parser<'a> {
             self.expect(&TokenKind::LBrace)?;
             let else_e = self.parse_expr()?;
             self.expect(&TokenKind::RBrace)?;
-            return Ok(Expr::IfElse { cond: Box::new(cond), then_expr: Box::new(then_e), else_expr: Box::new(else_e) });
+            return Ok(Expr::IfElse {
+                cond: Box::new(cond),
+                then_expr: Box::new(then_e),
+                else_expr: Box::new(else_e),
+            });
         }
         if self.eat_kind(&TokenKind::LParen) {
             let e = self.parse_expr()?;
@@ -567,12 +601,20 @@ impl<'a> Parser<'a> {
                     }
                 }
                 return Ok(Expr::Call(name, args));
-            } else if self.toks.get(self.pos + 1).map(|t| t.kind.clone()) == Some(TokenKind::LBrace) && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            } else if self.toks.get(self.pos + 1).map(|t| t.kind.clone()) == Some(TokenKind::LBrace)
+                && name
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+            {
                 self.pos += 2;
                 let mut fields = Vec::new();
                 if !self.eat_kind(&TokenKind::RBrace) {
                     loop {
-                        let fname = if let Some(TokenKind::Ident(s)) = self.peek().map(|t| t.kind.clone()) {
+                        let fname = if let Some(TokenKind::Ident(s)) =
+                            self.peek().map(|t| t.kind.clone())
+                        {
                             self.pos += 1;
                             s
                         } else {
@@ -599,7 +641,11 @@ impl<'a> Parser<'a> {
                 return Ok(Expr::Var(name));
             }
         }
-        let kind = self.peek().ok_or_else(|| anyhow!("unexpected eof"))?.kind.clone();
+        let kind = self
+            .peek()
+            .ok_or_else(|| anyhow!("unexpected eof"))?
+            .kind
+            .clone();
         match kind {
             TokenKind::Int(s) => {
                 self.pos += 1;

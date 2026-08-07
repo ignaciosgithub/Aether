@@ -1,0 +1,19 @@
+func add_one(p: &i64) -> i64 {
+    *p = *p + 1;
+    return *p;
+}
+
+pub func main() -> i32 {
+    let x: i64 = 10;
+    let p: &i64 = &x;
+    println(*p);
+    *p = 42;
+    println(x);
+    println(add_one(&x));
+    println(x);
+    let f: f64 = 2.5;
+    let q: &f64 = &f;
+    *q = *q * 2.0;
+    println(f);
+    return 0;
+}

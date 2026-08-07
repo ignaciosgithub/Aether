@@ -7840,6 +7840,15 @@ r#"        mov r11, rcx
 "#, idx, len));
                     }
                 }
+                if let Some(fv) = f64_ret {
+                    let bits = fv.to_bits();
+                    let lo = bits as u32;
+                    let hi = (bits >> 32) as u32;
+                    out.push_str("\n        .data\nLC0:\n");
+                    out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
+                    out.push_str("\n        .text\n");
+                }
+                if !win_main_general {
                 if main_ret_call.is_some() {
                     out.push_str(
 r#"        ret
@@ -7865,14 +7874,7 @@ r#"        xor eax, eax
                     }
                 }
 
-                if let Some(fv) = f64_ret {
-                    let bits = fv.to_bits();
-                    let lo = bits as u32;
-                    let hi = (bits >> 32) as u32;
-                    out.push_str("\n        .data\nLC0:\n");
-                    out.push_str(&format!("        .long {}\n        .long {}\n", lo, hi));
-                    out.push_str("\n        .text\n");
-                } else {
+                if f64_ret.is_none() {
                 if !spawn_sites.is_empty() || !join_sites.is_empty() || !destroy_sites.is_empty() {
                     out.push_str("\n        .data\n");
                     for (sidx, _) in spawn_sites.iter().enumerate() {
@@ -7971,7 +7973,7 @@ r#"        call CloseHandle
                         }
                     }
                 }
-
+                }
                 }
                 out.push_str("\n        .text\n");
                 let mut while_data: Vec<(String, String)> = Vec::new();

@@ -21,17 +21,29 @@ pub(crate) struct AbiLimits {
     pub max_float_args: usize,
     /// Maximum total register arguments (positional ABIs like Win64).
     pub max_total_args: usize,
+    /// Whether this emitter handles the spawn/join/destroy thread builtins.
+    pub threads: bool,
 }
 
-pub(crate) const SYSV_LIMITS: AbiLimits =
-    AbiLimits { max_int_args: 6, max_float_args: 8, max_total_args: usize::MAX };
-pub(crate) const WIN64_LIMITS: AbiLimits =
-    AbiLimits { max_int_args: 4, max_float_args: 4, max_total_args: 4 };
+pub(crate) const SYSV_LIMITS: AbiLimits = AbiLimits {
+    max_int_args: 6,
+    max_float_args: 8,
+    max_total_args: usize::MAX,
+    threads: false,
+};
+pub(crate) const WIN64_LIMITS: AbiLimits = AbiLimits {
+    max_int_args: 4,
+    max_float_args: 4,
+    max_total_args: 4,
+    threads: true,
+};
 
 pub(crate) fn class_of_type(ty: &Type) -> Option<Class> {
     match ty {
         Type::Bool | Type::I32 | Type::I64 => Some(Class::Int),
         Type::F32 | Type::F64 => Some(Class::Float),
+        // Pointers are machine words; the pointee class is resolved on deref.
+        Type::Ptr(inner) => class_of_type(inner).map(|_| Class::Int),
         _ => None,
     }
 }
@@ -46,6 +58,19 @@ pub(crate) struct Env<'m> {
 impl<'m> Env<'m> {
     pub fn class_of_var(&self, name: &str) -> Option<Class> {
         self.types.get(name).and_then(class_of_type)
+    }
+}
+
+/// Class of the value obtained by dereferencing `expr`, when `expr` is a
+/// pointer whose pointee type is statically known.
+pub(crate) fn pointee_class(expr: &Expr, env: &Env) -> Option<Class> {
+    match expr {
+        Expr::Var(name) => match env.types.get(name)? {
+            Type::Ptr(inner) => class_of_type(inner),
+            _ => None,
+        },
+        Expr::AddrOf(inner) => infer_class(inner, env),
+        _ => None,
     }
 }
 
@@ -64,11 +89,9 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
                 return None;
             }
             match op {
-                BinOpKind::Eq
-                | BinOpKind::Lt
-                | BinOpKind::Le
-                | BinOpKind::Gt
-                | BinOpKind::Ge => Some(Class::Int),
+                BinOpKind::Eq | BinOpKind::Lt | BinOpKind::Le | BinOpKind::Gt | BinOpKind::Ge => {
+                    Some(Class::Int)
+                }
                 BinOpKind::BitAnd
                 | BinOpKind::BitOr
                 | BinOpKind::BitXor
@@ -77,12 +100,22 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
                 BinOpKind::Add | BinOpKind::Sub | BinOpKind::Mul | BinOpKind::Div => Some(ca),
             }
         }
+        Expr::Call(name, _) if env.limits.threads && is_thread_builtin(name) => Some(Class::Int),
         Expr::Call(name, _) => {
             let callee = env.funcs.get(name)?;
             class_of_type(&callee.ret)
         }
         Expr::Cast(_, ty) => class_of_type(ty),
-        Expr::IfElse { cond, then_expr, else_expr } => {
+        Expr::AddrOf(inner) => match &**inner {
+            Expr::Var(name) => env.class_of_var(name).map(|_| Class::Int),
+            _ => None,
+        },
+        Expr::Deref(inner) => pointee_class(inner, env),
+        Expr::IfElse {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             if infer_class(cond, env)? != Class::Int {
                 return None;
             }
@@ -107,8 +140,13 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
         Expr::BinOp(a, _, b) => {
             expr_supported(a, env) && expr_supported(b, env) && infer_class(expr, env).is_some()
         }
+        Expr::Call(name, args) if env.limits.threads && is_thread_builtin(name) => {
+            thread_builtin_supported(name, args, env)
+        }
         Expr::Call(name, args) => {
-            let Some(callee) = env.funcs.get(name) else { return false };
+            let Some(callee) = env.funcs.get(name) else {
+                return false;
+            };
             if callee.params.len() != args.len() {
                 return false;
             }
@@ -126,7 +164,9 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
                 if matches!(p.ty, Type::F32) {
                     return false;
                 }
-                let Some(pc) = class_of_type(&p.ty) else { return false };
+                let Some(pc) = class_of_type(&p.ty) else {
+                    return false;
+                };
                 match pc {
                     Class::Int => ints += 1,
                     Class::Float => floats += 1,
@@ -144,11 +184,44 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
                 && expr_supported(inner, env)
                 && infer_class(inner, env).is_some()
         }
-        Expr::IfElse { cond, then_expr, else_expr } => {
+        Expr::AddrOf(inner) => {
+            matches!(&**inner, Expr::Var(name) if env.class_of_var(name).is_some())
+        }
+        Expr::Deref(inner) => expr_supported(inner, env) && pointee_class(inner, env).is_some(),
+        Expr::IfElse {
+            cond,
+            then_expr,
+            else_expr,
+        } => {
             expr_supported(cond, env)
                 && expr_supported(then_expr, env)
                 && expr_supported(else_expr, env)
                 && infer_class(expr, env).is_some()
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_thread_builtin(name: &str) -> bool {
+    matches!(name, "spawn" | "join" | "destroy")
+}
+
+/// Worker functions started by `spawn` must have the fixed signature
+/// `func name(arg: i64) -> i32`.
+fn thread_builtin_supported(name: &str, args: &[Expr], env: &Env) -> bool {
+    match (name, args) {
+        ("spawn", [Expr::Lit(Value::String(worker)), arg]) => {
+            let Some(w) = env.funcs.get(worker) else {
+                return false;
+            };
+            w.params.len() == 1
+                && matches!(w.params[0].ty, Type::I64)
+                && matches!(w.ret, Type::I32)
+                && expr_supported(arg, env)
+                && infer_class(arg, env) == Some(Class::Int)
+        }
+        ("join", [h]) | ("destroy", [h]) => {
+            expr_supported(h, env) && infer_class(h, env) == Some(Class::Int)
         }
         _ => false,
     }
@@ -168,7 +241,9 @@ pub(crate) fn stmt_supported(stmt: &Stmt, env: &mut Env) -> bool {
         }
         Stmt::Break | Stmt::Continue => true,
         Stmt::Let { name, ty, init } => {
-            let Some(cls) = class_of_type(ty) else { return false };
+            let Some(cls) = class_of_type(ty) else {
+                return false;
+            };
             if !expr_supported(init, env) || infer_class(init, env) != Some(cls) {
                 return false;
             }
@@ -176,9 +251,39 @@ pub(crate) fn stmt_supported(stmt: &Stmt, env: &mut Env) -> bool {
             env.types.insert(name.clone(), ty.clone());
             true
         }
-        Stmt::Assign { target: Expr::Var(name), value } => {
-            let Some(cls) = env.class_of_var(name) else { return false };
+        Stmt::Assign {
+            target: Expr::Var(name),
+            value,
+        } => {
+            let Some(cls) = env.class_of_var(name) else {
+                return false;
+            };
             expr_supported(value, env) && infer_class(value, env) == Some(cls)
+        }
+        Stmt::Assign {
+            target: Expr::Deref(inner),
+            value,
+        } => {
+            let Some(cls) = pointee_class(inner, env) else {
+                return false;
+            };
+            expr_supported(inner, env)
+                && expr_supported(value, env)
+                && infer_class(value, env) == Some(cls)
+        }
+        Stmt::Throw(Expr::Lit(Value::String(_))) => true,
+        Stmt::Try {
+            body,
+            err_name,
+            handler,
+        } => {
+            body.iter().all(|s| stmt_supported(s, env))
+                && handler.iter().all(|s| {
+                    // The exception variable is a String printable only via
+                    // println(err) inside the handler.
+                    matches!(s, Stmt::PrintExpr(Expr::Var(n)) if n == err_name)
+                        || stmt_supported(s, env)
+                })
         }
         _ => false,
     }
@@ -192,17 +297,27 @@ pub(crate) fn can_compile(
 ) -> bool {
     // f32 in the function's own signature is excluded for ABI compatibility
     // with the legacy emitter (floats are modeled as f64 here).
-    if !matches!(func.ret, Type::Void | Type::Bool | Type::I32 | Type::I64 | Type::F64) {
+    if !matches!(
+        func.ret,
+        Type::Void | Type::Bool | Type::I32 | Type::I64 | Type::F64
+    ) {
         return false;
     }
-    let mut env = Env { funcs, types: HashMap::new(), offsets: HashMap::new(), limits };
+    let mut env = Env {
+        funcs,
+        types: HashMap::new(),
+        offsets: HashMap::new(),
+        limits,
+    };
     let mut ints = 0usize;
     let mut floats = 0usize;
     for p in &func.params {
         if matches!(p.ty, Type::F32) {
             return false;
         }
-        let Some(cls) = class_of_type(&p.ty) else { return false };
+        let Some(cls) = class_of_type(&p.ty) else {
+            return false;
+        };
         match cls {
             Class::Int => ints += 1,
             Class::Float => floats += 1,

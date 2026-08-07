@@ -24,8 +24,10 @@ fn linux_codegen_emits_gt_in_while() {
     let mut cg = X86_64LinuxCodegen::new_linux();
     let asm = cg.generate(&m).expect("codegen ok");
 
-    assert!(asm.contains("jle .LWH_END_main_") || asm.contains("jle\t"),
-            "expected greater-than condition to use jle to leave loop when false");
+    // Legacy scheme jumps out with the inverted condition (jle); the general
+    // emitter materializes the comparison with setg and tests it.
+    assert!(asm.contains("jle .LWH_END_main_") || asm.contains("setg"),
+            "expected greater-than condition codegen (jle-to-end or setg)");
 }
 
 #[test]
@@ -50,6 +52,6 @@ fn linux_codegen_emits_ge_in_while() {
     let mut cg = X86_64LinuxCodegen::new_linux();
     let asm = cg.generate(&m).expect("codegen ok");
 
-    assert!(asm.contains("jl .LWH_END_main_") || asm.contains("jl\t") || asm.contains("jl .LWH_END_"),
-            "expected greater-equal condition to use jl to leave loop when false");
+    assert!(asm.contains("jl .LWH_END_main_") || asm.contains("setge"),
+            "expected greater-equal condition codegen (jl-to-end or setge)");
 }

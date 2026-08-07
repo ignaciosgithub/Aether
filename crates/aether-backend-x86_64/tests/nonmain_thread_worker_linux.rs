@@ -38,6 +38,6 @@ fn nonmain_worker_like_fn_with_while_and_print_linux() {
 
     assert!(asm.contains("\nworker_body:\n") || asm.contains("\nworker_body:\r\n"), "expects non-main function label 'worker_body:'");
     assert!(asm.contains(".rodata"), "expects rodata for \"tick\" string");
-    assert!(asm.contains("LWH_HEAD_") || asm.contains(".LWH_HEAD_"), "expects while head label");
+    assert!(asm.contains("LWH_HEAD_") || asm.contains(".LG_WH_"), "expects while head label");
     assert!(asm.contains("syscall"), "expects write syscall usage for println inside worker-like body");
 }

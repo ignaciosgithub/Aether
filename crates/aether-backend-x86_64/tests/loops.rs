@@ -28,9 +28,18 @@ fn linux_while_emits_labels_and_branches() {
     let module = Module { items: vec![Item::Function(func)] };
     let mut cg = X86_64LinuxCodegen::new_linux();
     let asm = cg.generate(&module).expect("codegen ok");
-    assert!(asm.contains(".LWH_HEAD_main_0:"));
-    assert!(asm.contains(".LWH_END_main_0:"));
-    assert!(asm.contains("cmp %r11, %r10"));
-    assert!(asm.contains("jge .LWH_END_main_0") || asm.contains("jg .LWH_END_main_0") || asm.contains("jl .LWH_HEAD_main_0"));
-    assert!(asm.contains("jmp .LWH_HEAD_main_0"));
+    // Accept both the legacy (.LWH_*) and general emitter (.LG_WH_/.LG_WE_)
+    // while-loop schemes: labels, an exit branch, and a back-edge jump.
+    let legacy = asm.contains(".LWH_HEAD_main_0:");
+    if legacy {
+        assert!(asm.contains(".LWH_END_main_0:"));
+        assert!(asm.contains("cmp %r11, %r10"));
+        assert!(asm.contains("jge .LWH_END_main_0") || asm.contains("jg .LWH_END_main_0") || asm.contains("jl .LWH_HEAD_main_0"));
+        assert!(asm.contains("jmp .LWH_HEAD_main_0"));
+    } else {
+        assert!(asm.contains(".LG_WH_main_"), "missing while head label");
+        assert!(asm.contains(".LG_WE_main_"), "missing while end label");
+        assert!(asm.contains("jz .LG_WE_main_"), "missing loop exit branch");
+        assert!(asm.contains("jmp .LG_WH_main_"), "missing loop back-edge");
+    }
 }

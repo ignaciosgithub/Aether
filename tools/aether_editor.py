@@ -62,12 +62,31 @@ EDITOR_FG = "#d4d4d4"
 EDITOR_CARET = "#ffffff"
 
 
+IS_WINDOWS = os.name == "nt"
+EXE = ".exe" if IS_WINDOWS else ""
+
+
 def find_aetherc():
-    for sub in ("target/release/aetherc", "target/debug/aetherc"):
+    for sub in ("target/release/aetherc" + EXE, "target/debug/aetherc" + EXE):
         p = os.path.join(REPO_ROOT, sub)
         if os.path.isfile(p) and os.access(p, os.X_OK):
             return [p]
     return ["cargo", "run", "-q", "-p", "aetherc", "--"]
+
+
+def find_bash():
+    from shutil import which
+
+    bash = which("bash")
+    if bash:
+        return bash
+    for candidate in (
+        r"C:\msys64\usr\bin\bash.exe",
+        r"C:\Program Files\Git\bin\bash.exe",
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return "bash"
 
 
 class EditorTab(ttk.Frame):
@@ -369,12 +388,13 @@ class AetherEditor(tk.Tk):
         return asm_path
 
     def run_current(self):
-        asm_path = self.compile_current("linux")
+        target_os = "windows" if IS_WINDOWS else "linux"
+        asm_path = self.compile_current(target_os)
         if asm_path is None:
             return
-        bin_path = os.path.splitext(asm_path)[0]
+        bin_path = os.path.splitext(asm_path)[0] + EXE
         link = os.path.join(REPO_ROOT, "scripts", "assemble_link.sh")
-        cmd = ["bash", link, "x86_64-linux", asm_path, bin_path]
+        cmd = [find_bash(), link, "x86_64-" + target_os, asm_path, bin_path]
         self.log("$ " + " ".join(os.path.relpath(c, REPO_ROOT) if os.path.isabs(c) else c for c in cmd))
         proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:

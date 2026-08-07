@@ -40,6 +40,20 @@ curl -sSf https://raw.githubusercontent.com/ignaciosgithub/Aether/main/scripts/i
 
 Afterwards, launch "Aether Editor" from your application menu (or `python3 ~/Aether/tools/aether_editor.py`) and use the Compile / Build & Run buttons — no terminal needed. If anything is missing later, run the setup wizard: `python3 ~/Aether/tools/aether_setup_gui.py`.
 
+### Windows 10/11 — One-line install (no WSL)
+
+Open PowerShell and run:
+
+```
+irm https://raw.githubusercontent.com/ignaciosgithub/Aether/main/scripts/install.ps1 | iex
+```
+
+Installs Git, Python 3 (Tkinter), MSYS2 with the MinGW64 toolchain (clang, lld, gcc, NASM), and Rust (windows-gnu); clones and builds Aether into `%USERPROFILE%\Aether`; adds an "Aether Editor" shortcut to the Start menu and opens the editor. From the editor, Build & Run compiles and executes native Windows .exe files — no WSL and no terminal needed. Requires `winget` (preinstalled on Windows 11 and recent Windows 10; otherwise install "App Installer" from the Microsoft Store). To install elsewhere, set `$env:AETHER_HOME` first.
+
+If any dependency is missing later, open the setup wizard and click "Install everything missing": `python %USERPROFILE%\Aether\tools\aether_setup_gui.py`.
+
+Prefer WSL? Run `$env:AETHER_USE_WSL = 1` first and the same one-liner installs Aether inside your WSL distro using the Linux installer instead.
+
 ### Ubuntu (manual steps)
 
 1) Install prerequisites

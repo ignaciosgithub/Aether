@@ -3,7 +3,7 @@
 // T(0) = 0, T(1) = 0, T(2) = 1, T(n) = T(n-1) + T(n-2) + T(n-3)
 
 func tribonacci(n: i64) -> i64 {
-    return if (n == 0) { 0 } else { if (n == 1) { 0 } else { if (n == 2) { 1 } 
+    return if (n == 0) { 0 } else { if (n == 1) { 0 } else { if (n == 2) { 1 }
         else { tribonacci(n - 1) + tribonacci(n - 2) + tribonacci(n - 3) }}};
 }
 

@@ -1,12 +1,16 @@
 // Challenge: Halve a number
 // Use direct division
 
+func halve(n: i64) -> i64 {
+    return n / 2;
+}
+
 pub func main() -> i32 {
     println("10 / 2 = 5:");
-    println(5);
+    println(halve(10));
     println("100 / 2 = 50:");
-    println(50);
+    println(halve(100));
     println("7 / 2 = 3:");
-    println(3);
+    println(halve(7));
     return 0;
 }

@@ -1,12 +1,20 @@
 // Challenge: Sum of digits
 // Calculate the sum of digits of a number
 
+func sum_digits(n: i64) -> i64 {
+    let total: i64 = 0;
+    let cur: i64 = n;
+    while (cur > 0) {
+        total = total + (cur - (cur / 10) * 10);
+        cur = cur / 10;
+    }
+    return total;
+}
+
 pub func main() -> i32 {
-    // 1+2+3 = 6
     println("sum_digits(123) = 6:");
-    println(6);
-    // 9+9+9+9 = 36
+    println(sum_digits(123));
     println("sum_digits(9999) = 36:");
-    println(36);
+    println(sum_digits(9999));
     return 0;
 }

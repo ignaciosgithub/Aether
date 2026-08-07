@@ -1,15 +1,22 @@
 // Challenge: Catalan Numbers
-// C(n) = (2n)! / ((n+1)! * n!)
+// C(0) = 1, C(n+1) = sum over i of C(i) * C(n-i)
+
+func catalan(n: i64) -> i64 {
+    let total: i64 = 0;
+    let i: i64 = 0;
+    while (i < n) {
+        total = total + catalan(i) * catalan(n - 1 - i);
+        i = i + 1;
+    }
+    return if (n == 0) { 1 } else { total };
+}
 
 pub func main() -> i32 {
-    // C(0) = 1
     println("catalan(0) = 1:");
-    println(1);
-    // C(3) = 5
+    println(catalan(0));
     println("catalan(3) = 5:");
-    println(5);
-    // C(5) = 42
+    println(catalan(3));
     println("catalan(5) = 42:");
-    println(42);
+    println(catalan(5));
     return 0;
 }

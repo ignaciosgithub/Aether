@@ -1,15 +1,22 @@
 // Challenge: Count set bits (population count)
 // Count the number of 1 bits in a number
 
+func popcount(n: i64) -> i64 {
+    let count: i64 = 0;
+    let cur: i64 = n;
+    while (cur > 0) {
+        count = count + (cur & 1);
+        cur = cur >> 1;
+    }
+    return count;
+}
+
 pub func main() -> i32 {
-    // 7 = 0b111 = 3 bits
     println("popcount(7) = 3:");
-    println(3);
-    // 255 = 0b11111111 = 8 bits
+    println(popcount(7));
     println("popcount(255) = 8:");
-    println(8);
-    // 16 = 0b10000 = 1 bit
+    println(popcount(255));
     println("popcount(16) = 1:");
-    println(1);
+    println(popcount(16));
     return 0;
 }

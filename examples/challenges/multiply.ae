@@ -1,10 +1,14 @@
 // Challenge: Multiply using direct multiplication
 // Demonstrate multiplication
 
+func multiply(a: i64, b: i64) -> i64 {
+    return a * b;
+}
+
 pub func main() -> i32 {
     println("3 * 4 = 12:");
-    println(12);
+    println(multiply(3, 4));
     println("7 * 8 = 56:");
-    println(56);
+    println(multiply(7, 8));
     return 0;
 }

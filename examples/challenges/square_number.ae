@@ -1,10 +1,14 @@
 // Challenge: Square Numbers
 // Calculate n squared using multiplication (n * n)
 
+func square(n: i64) -> i64 {
+    return n * n;
+}
+
 pub func main() -> i32 {
     println("5 * 5 = 25:");
-    println(25);
+    println(square(5));
     println("12 * 12 = 144:");
-    println(144);
+    println(square(12));
     return 0;
 }

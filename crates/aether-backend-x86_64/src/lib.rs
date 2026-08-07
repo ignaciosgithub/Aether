@@ -126,6 +126,96 @@ fn compute_struct_layouts<'m>(module: &'m Module) -> (HashMap<String, usize>, Ha
     (struct_sizes, field_offsets, flattened_fields)
 }
 
+/// GAS Intel-syntax reserved words and register names. A user symbol (function
+/// or static) with one of these names would be mis-parsed by the assembler
+/// (e.g. `call word` reads `word` as an operand-size keyword), so such
+/// symbols are renamed with a `$ae` suffix throughout the Windows assembly.
+/// `$` cannot appear in Aether identifiers, so the mangled name cannot clash.
+fn is_win_asm_reserved(name: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "byte", "word", "dword", "qword", "tbyte", "fword", "oword", "xmmword", "ymmword",
+        "zmmword", "ptr", "offset", "short", "near", "far", "flat", "rip",
+    ];
+    const REGS: &[&str] = &[
+        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "eax", "ebx", "ecx", "edx",
+        "esi", "edi", "ebp", "esp", "ax", "bx", "cx", "dx", "si", "di", "bp", "sp", "al", "bl",
+        "cl", "dl", "ah", "bh", "ch", "dh", "sil", "dil", "bpl", "spl",
+    ];
+    if KEYWORDS.contains(&name) || REGS.contains(&name) {
+        return true;
+    }
+    if let Some(rest) = name.strip_prefix('r') {
+        if let Ok(n) = rest.trim_end_matches(['b', 'w', 'd']).parse::<u32>() {
+            return (8..=15).contains(&n);
+        }
+    }
+    if let Some(rest) = name.strip_prefix("xmm").or_else(|| name.strip_prefix("ymm")) {
+        return rest.parse::<u32>().map(|n| n <= 15).unwrap_or(false);
+    }
+    false
+}
+
+/// Rename user symbols that collide with Intel-syntax assembler keywords or
+/// register names by appending `$ae`, everywhere outside string literals.
+fn sanitize_win_reserved_symbols(out: &str, module: &Module) -> String {
+    let mut colliding: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in &module.items {
+        let name = match item {
+            Item::Function(f) => &f.name,
+            Item::Static(s) => &s.name,
+            _ => continue,
+        };
+        if is_win_asm_reserved(name) {
+            colliding.insert(name.clone());
+        }
+    }
+    if colliding.is_empty() {
+        return out.to_string();
+    }
+    // Only rename in symbol positions: label definitions (`name:`), call
+    // targets (`call name`), rip-relative references (`rip+name`,
+    // `name(%rip)` never appears on Windows), and `.global`/`.extern`
+    // directives. Register/keyword uses of the same spelling are untouched.
+    let mut result = String::with_capacity(out.len());
+    for line in out.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let mut handled = false;
+        for prefix in ["call ", ".global ", ".globl ", ".extern "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                let name = rest.trim_end();
+                if colliding.contains(name) {
+                    let nl = if line.ends_with('\n') { "\n" } else { "" };
+                    let indent = &line[..line.len() - trimmed.len()];
+                    result.push_str(&format!("{}{}{}$ae{}", indent, prefix, name, nl));
+                    handled = true;
+                }
+                break;
+            }
+        }
+        if handled {
+            continue;
+        }
+        // Label definition at line start.
+        if let Some(name) = trimmed.strip_suffix(":\n").or_else(|| trimmed.strip_suffix(':')) {
+            if colliding.contains(name) {
+                let nl = if line.ends_with('\n') { "\n" } else { "" };
+                result.push_str(&format!("{}$ae:{}", name, nl));
+                continue;
+            }
+        }
+        // rip-relative references anywhere in the line.
+        let mut rewritten = line.to_string();
+        for name in &colliding {
+            let pat = format!("rip+{}]", name);
+            if rewritten.contains(&pat) {
+                rewritten = rewritten.replace(&pat, &format!("rip+{}$ae]", name));
+            }
+        }
+        result.push_str(&rewritten);
+    }
+    result
+}
+
 fn get_field_info(struct_name: &str, field_name: &str, field_offsets: &HashMap<(String, String), (usize, Type)>) -> Option<(usize, Type)> {
     field_offsets.get(&(struct_name.to_string(), field_name.to_string())).cloned()
 }
@@ -2282,6 +2372,10 @@ impl CodeGenerator for X86_64LinuxCodegen {
             }
         }
         let static_names: HashSet<String> = static_types.keys().cloned().collect();
+        let gen_statics = gen_common::StaticsInfo {
+            types: static_types.clone(),
+            field_offsets: field_offsets.clone(),
+        };
         let mut local_strings: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut label_counter: usize = 0;
         for item in &module.items {
@@ -2574,15 +2668,22 @@ _start:
                 // main goes through the general emitter when the whole module is
                 // plain functions and its body is fully supported; the legacy
                 // path below handles everything else.
-                let main_general = module.items.iter().all(|it| matches!(it, Item::Function(_)))
+                let main_general = module
+                    .items
+                    .iter()
+                    .all(|it| matches!(it, Item::Function(_) | Item::Struct(_) | Item::Static(_)))
                     && main_func
-                        .map(|mf| mf.params.is_empty() && linux_gen::can_compile(mf, &all_funcs))
+                        .map(|mf| {
+                            mf.params.is_empty()
+                                && linux_gen::can_compile(mf, &all_funcs, &gen_statics)
+                        })
                         .unwrap_or(false);
                 let mut gen_main_rodata: Vec<(String, String)> = Vec::new();
+                let mut static_rodata: Vec<(String, String)> = Vec::new();
                 if main_general {
                     if let Some(mf) = main_func {
                         gen_main_rodata =
-                            linux_gen::emit_main(mf, &all_funcs, &mut out, &mut label_counter);
+                            linux_gen::emit_main(mf, &all_funcs, &gen_statics, &mut out, &mut label_counter);
                     }
                 } else {
                 // Linux main stack frame and Vec prelude
@@ -3800,7 +3901,6 @@ _start:
                     }
                 }
                 let mut while_rodata: Vec<(String, String)> = Vec::new();
-                let mut static_rodata: Vec<(String, String)> = Vec::new();
                 for (widx, cond, body) in &main_while_blocks {
                     out.push_str(&format!(".LWH_HEAD_main_{}:\n", widx));
                     match cond {
@@ -4509,6 +4609,7 @@ r#"        leaq .LC0(%rip), %rax
                         }
                     }
                 }
+                }
                 if !static_types.is_empty() {
                     out.push_str("\n        .data\n");
                     for (sname, ty) in &static_types {
@@ -4729,7 +4830,6 @@ r#"        leaq .LC0(%rip), %rax
                     }
                     out.push_str("\n        .text\n");
                 }
-                }
 
                 out.push_str("\n        .text\n");
                 let mut func_rodata: Vec<(String, String)> = Vec::new();
@@ -4747,8 +4847,8 @@ r#"        leaq .LC0(%rip), %rax
                     out.push_str("\n");
                     // General in-source-order emitter: handles any function made of
                     // supported statements/expressions. Legacy paths below cover the rest.
-                    if linux_gen::can_compile(func, &all_funcs) {
-                        let ro = linux_gen::emit(func, &all_funcs, &mut out, &mut label_counter);
+                    if linux_gen::can_compile(func, &all_funcs, &gen_statics) {
+                        let ro = linux_gen::emit(func, &all_funcs, &gen_statics, &mut out, &mut label_counter);
                         func_rodata.extend(ro);
                         continue;
                     }
@@ -6612,14 +6712,20 @@ LSNL:
                 // main goes through the general emitter when the whole module is
                 // plain functions and its body is fully supported; the legacy
                 // path below handles everything else.
-                let win_main_general = module.items.iter().all(|it| matches!(it, Item::Function(_)))
+                let win_main_general = module
+                    .items
+                    .iter()
+                    .all(|it| matches!(it, Item::Function(_) | Item::Struct(_) | Item::Static(_)))
                     && main_func
-                        .map(|mf| mf.params.is_empty() && windows_gen::can_compile(mf, &win_all_funcs))
+                        .map(|mf| {
+                            mf.params.is_empty()
+                                && windows_gen::can_compile(mf, &win_all_funcs, &gen_statics)
+                        })
                         .unwrap_or(false);
                 if win_main_general {
                     if let Some(mf) = main_func {
                         win_emitted_main_in_order = true;
-                        windows_gen::emit_main(mf, &win_all_funcs, &mut out, &mut label_counter);
+                        windows_gen::emit_main(mf, &win_all_funcs, &gen_statics, &mut out, &mut label_counter);
                     }
                 }
 
@@ -7481,6 +7587,8 @@ r#"        xor r9d, r9d
                         }
                         out.push_str("\n        .text\n");
                     }
+
+                } }
                 if !static_types.is_empty() {
                     out.push_str("\n        .data\n");
                     let mut win_static_strs: Vec<(String, String)> = Vec::new();
@@ -7683,8 +7791,6 @@ r#"        xor r9d, r9d
                     }
                     out.push_str("\n        .text\n");
                 }
-
-                } }
                 let mut call_arg_data: Vec<(String, String)> = Vec::new();
                 if !prints.is_empty() {
                 }
@@ -8116,8 +8222,8 @@ r#"        xor r9d, r9d
                         continue;
                     }
 
-                    if windows_gen::can_compile(func, &win_all_funcs) {
-                        windows_gen::emit(func, &win_all_funcs, &mut out, &mut label_counter);
+                    if windows_gen::can_compile(func, &win_all_funcs, &gen_statics) {
+                        windows_gen::emit(func, &win_all_funcs, &gen_statics, &mut out, &mut label_counter);
                         continue;
                     }
 
@@ -9192,6 +9298,7 @@ r#"        pop r12
                     }
                 }
 
+                let out = sanitize_win_reserved_symbols(&out, module);
                 Ok(out.trim_start().to_string())
             }
             _ => Ok(String::from("; unsupported OS placeholder")),

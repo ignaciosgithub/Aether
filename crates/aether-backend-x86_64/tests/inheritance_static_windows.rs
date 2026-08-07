@@ -41,9 +41,16 @@ fn windows_inheritance_static_init_and_print_parent_field() {
     assert!(asm.contains("Inherit!"));
 
     assert!(asm.contains("call WriteFile"));
-    assert!(asm.contains("lea r10, [rip+C]") || asm.contains("leaq C(%rip), %r10"));
+    assert!(
+        asm.contains("lea r10, [rip+C]")
+            || asm.contains("leaq C(%rip), %r10")
+            || asm.contains("lea rax, [rip+C]")
+    );
 
-    let pos_print = asm.find("lea r10, [rip+C]").or_else(|| asm.find("leaq C(%rip), %r10"));
+    let pos_print = asm
+        .find("lea r10, [rip+C]")
+        .or_else(|| asm.find("leaq C(%rip), %r10"))
+        .or_else(|| asm.find("lea rax, [rip+C]"));
     let pos_epilog = asm.find("\nWMAIN_EPILOG:\n")
         .or_else(|| asm.find("\r\nWMAIN_EPILOG:\r\n"))
         .or_else(|| asm.find("WMAIN_EPILOG:"));

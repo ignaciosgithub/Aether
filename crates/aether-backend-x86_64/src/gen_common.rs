@@ -12,6 +12,9 @@ use aether_frontend::ast::{BinOpKind, Expr, Function, Stmt, Type, UnaryOpKind, V
 pub(crate) enum Class {
     Int,
     Float,
+    /// A `String` value: pointer in the primary integer register, length in
+    /// the secondary one (rax/rdx on both ABIs, matching the legacy emitter).
+    Str,
 }
 
 /// Per-ABI argument-register limits.
@@ -48,8 +51,29 @@ pub(crate) fn class_of_type(ty: &Type) -> Option<Class> {
     }
 }
 
+/// Module-level static struct data: which statics exist and the byte
+/// offset/type of every (struct, field) pair, inherited fields included.
+#[derive(Default)]
+pub(crate) struct StaticsInfo {
+    /// static variable name -> struct type name
+    pub types: HashMap<String, String>,
+    /// (struct name, field name) -> (byte offset, field type)
+    pub field_offsets: HashMap<(String, String), (usize, Type)>,
+}
+
+impl StaticsInfo {
+    /// Field (offset, type) for `recv.field` when `recv` names a static.
+    pub fn field_of(&self, recv: &str, field: &str) -> Option<(usize, Type)> {
+        let sname = self.types.get(recv)?;
+        self.field_offsets
+            .get(&(sname.clone(), field.to_string()))
+            .cloned()
+    }
+}
+
 pub(crate) struct Env<'m> {
     pub funcs: &'m HashMap<String, &'m Function>,
+    pub statics: &'m StaticsInfo,
     pub types: HashMap<String, Type>,
     pub offsets: HashMap<String, usize>,
     pub limits: AbiLimits,
@@ -78,6 +102,7 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
     match expr {
         Expr::Lit(Value::Int(_)) | Expr::Lit(Value::Bool(_)) => Some(Class::Int),
         Expr::Lit(Value::Float64(_)) | Expr::Lit(Value::Float32(_)) => Some(Class::Float),
+        Expr::Lit(Value::String(_)) => Some(Class::Str),
         Expr::Var(name) => env.class_of_var(name),
         Expr::UnaryOp(UnaryOpKind::BitNot, inner) => {
             (infer_class(inner, env)? == Class::Int).then_some(Class::Int)
@@ -85,7 +110,7 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
         Expr::BinOp(a, op, b) => {
             let ca = infer_class(a, env)?;
             let cb = infer_class(b, env)?;
-            if ca != cb {
+            if ca != cb || ca == Class::Str {
                 return None;
             }
             match op {
@@ -103,6 +128,9 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
         Expr::Call(name, _) if env.limits.threads && is_thread_builtin(name) => Some(Class::Int),
         Expr::Call(name, _) => {
             let callee = env.funcs.get(name)?;
+            if matches!(callee.ret, Type::String) {
+                return Some(Class::Str);
+            }
             class_of_type(&callee.ret)
         }
         Expr::Cast(_, ty) => class_of_type(ty),
@@ -111,6 +139,19 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
             _ => None,
         },
         Expr::Deref(inner) => pointee_class(inner, env),
+        Expr::Field(recv, fname) => {
+            let Expr::Var(rn) = &**recv else { return None };
+            // Only statics; struct-typed locals are handled by the legacy path.
+            if env.types.contains_key(rn) {
+                return None;
+            }
+            let (_, fty) = env.statics.field_of(rn, fname)?;
+            match fty {
+                Type::String => Some(Class::Str),
+                Type::I32 | Type::I64 | Type::F64 => class_of_type(&fty),
+                _ => None,
+            }
+        }
         Expr::IfElse {
             cond,
             then_expr,
@@ -132,7 +173,8 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
         Expr::Lit(Value::Int(_))
         | Expr::Lit(Value::Bool(_))
         | Expr::Lit(Value::Float64(_))
-        | Expr::Lit(Value::Float32(_)) => true,
+        | Expr::Lit(Value::Float32(_))
+        | Expr::Lit(Value::String(_)) => true,
         Expr::Var(name) => env.class_of_var(name).is_some(),
         Expr::UnaryOp(UnaryOpKind::BitNot, inner) => {
             expr_supported(inner, env) && infer_class(inner, env) == Some(Class::Int)
@@ -150,7 +192,9 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
             if callee.params.len() != args.len() {
                 return false;
             }
-            if class_of_type(&callee.ret).is_none() && !matches!(callee.ret, Type::Void) {
+            if class_of_type(&callee.ret).is_none()
+                && !matches!(callee.ret, Type::Void | Type::String)
+            {
                 return false;
             }
             // f32 in call signatures is excluded: the general emitters model
@@ -168,6 +212,9 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
                     return false;
                 };
                 match pc {
+                    // String parameters are not supported by the general
+                    // emitters yet.
+                    Class::Str => return false,
                     Class::Int => ints += 1,
                     Class::Float => floats += 1,
                 }
@@ -182,12 +229,13 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
         Expr::Cast(inner, ty) => {
             class_of_type(ty).is_some()
                 && expr_supported(inner, env)
-                && infer_class(inner, env).is_some()
+                && matches!(infer_class(inner, env), Some(Class::Int | Class::Float))
         }
         Expr::AddrOf(inner) => {
             matches!(&**inner, Expr::Var(name) if env.class_of_var(name).is_some())
         }
         Expr::Deref(inner) => expr_supported(inner, env) && pointee_class(inner, env).is_some(),
+        Expr::Field(_, _) => infer_class(expr, env).is_some(),
         Expr::IfElse {
             cond,
             then_expr,
@@ -293,18 +341,20 @@ pub(crate) fn stmt_supported(stmt: &Stmt, env: &mut Env) -> bool {
 pub(crate) fn can_compile(
     func: &Function,
     funcs: &HashMap<String, &Function>,
+    statics: &StaticsInfo,
     limits: AbiLimits,
 ) -> bool {
     // f32 in the function's own signature is excluded for ABI compatibility
     // with the legacy emitter (floats are modeled as f64 here).
     if !matches!(
         func.ret,
-        Type::Void | Type::Bool | Type::I32 | Type::I64 | Type::F64
+        Type::Void | Type::Bool | Type::I32 | Type::I64 | Type::F64 | Type::String
     ) {
         return false;
     }
     let mut env = Env {
         funcs,
+        statics,
         types: HashMap::new(),
         offsets: HashMap::new(),
         limits,
@@ -319,6 +369,7 @@ pub(crate) fn can_compile(
             return false;
         };
         match cls {
+            Class::Str => return false,
             Class::Int => ints += 1,
             Class::Float => floats += 1,
         }

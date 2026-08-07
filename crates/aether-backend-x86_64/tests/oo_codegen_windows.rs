@@ -56,5 +56,10 @@ fn windows_static_string_field_prints_at_entry() {
     assert!(asm.contains("WriteFile"), "should call WriteFile to print");
     assert!(asm.contains("[rip+G]"), "should take base address of G");
     assert!(asm.contains("qword ptr [r") && asm.contains("+") && asm.contains("]"), "should load ptr from struct field");
-    assert!(asm.contains("dword ptr [r") && asm.contains("+") && asm.contains("]"), "should load len from struct field");
+    assert!(
+        (asm.contains("dword ptr [r") || asm.contains("qword ptr [r"))
+            && asm.contains("+")
+            && asm.contains("]"),
+        "should load len from struct field"
+    );
 }

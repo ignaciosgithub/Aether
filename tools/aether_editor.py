@@ -5,7 +5,7 @@ Features:
 - Multiple tabs with new/open/save/save-as/close
 - Aether syntax highlighting (keywords, types, builtins, strings, numbers, comments)
 - Compile (Linux/Windows x86_64) via aetherc with error messages shown in the output panel
-- Build & Run on Linux (assemble, link, execute) with program output/exit code
+- Build & Run on the current OS (assemble, link, execute) with program output/exit code
 
 Usage: python3 tools/aether_editor.py [file.ae ...]
 """
@@ -237,7 +237,7 @@ class AetherEditor(tk.Tk):
             ("Close Tab", self.close_tab),
             ("Compile (Linux)", lambda: self.compile_current("linux")),
             ("Compile (Windows)", lambda: self.compile_current("windows")),
-            ("Build && Run (Linux)", self.run_current),
+            ("Build && Run (%s)" % ("Windows" if IS_WINDOWS else "Linux"), self.run_current),
         ]
         for label, cmd in buttons:
             ttk.Button(bar, text=label, command=cmd).pack(side="left", padx=2, pady=2)
@@ -392,11 +392,24 @@ class AetherEditor(tk.Tk):
         asm_path = self.compile_current(target_os)
         if asm_path is None:
             return
-        bin_path = os.path.splitext(asm_path)[0] + EXE
+        base_path = os.path.splitext(asm_path)[0]
+        bin_path = base_path + EXE
         link = os.path.join(REPO_ROOT, "scripts", "assemble_link.sh")
-        cmd = [find_bash(), link, "x86_64-" + target_os, asm_path, bin_path]
+        env = dict(os.environ)
+        if IS_WINDOWS:
+            # Make the MinGW64 toolchain visible to the link script.
+            env["MSYSTEM"] = "MINGW64"
+            mingw_bin = r"C:\msys64\mingw64\bin"
+            if os.path.isdir(mingw_bin):
+                env["PATH"] = mingw_bin + os.pathsep + env.get("PATH", "")
+            link, asm_path = link.replace("\\", "/"), asm_path.replace("\\", "/")
+            # The link script appends .exe itself for the windows target.
+            bin_arg = base_path.replace("\\", "/")
+        else:
+            bin_arg = bin_path
+        cmd = [find_bash(), link, "x86_64-" + target_os, asm_path, bin_arg]
         self.log("$ " + " ".join(os.path.relpath(c, REPO_ROOT) if os.path.isabs(c) else c for c in cmd))
-        proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=120, env=env)
         if proc.returncode != 0:
             self._report_errors(self.current_tab(), proc.stderr or proc.stdout)
             return

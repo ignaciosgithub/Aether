@@ -48,6 +48,8 @@ struct Emitter<'m> {
     exc_vars: Vec<String>,
     /// Whether the per-function uncaught-exception exit path is referenced.
     needs_uncaught: bool,
+    /// Whether the per-function out-of-bounds exit path is referenced.
+    needs_oob: bool,
     /// Whether the AE_EXC_PTR/AE_EXC_LEN globals are referenced.
     uses_exc: bool,
     /// Number of live 8-byte temporaries currently parked on the stack,
@@ -324,8 +326,19 @@ impl<'m> Emitter<'m> {
                 let Expr::Var(rn) = &**recv else {
                     unreachable!("field receiver rejected by can_compile")
                 };
-                let (off, fty) = self.env.statics.field_of(rn, fname).unwrap();
-                out.push_str(&format!("        leaq {}(%rip), %rax\n", rn));
+                let (off, fty) = match self.env.types.get(rn) {
+                    Some(Type::User(sname)) => {
+                        let info = self.env.statics.field_of_struct(sname, fname).unwrap();
+                        let base = self.env.offsets[rn];
+                        out.push_str(&format!("        leaq -{}(%rbp), %rax\n", base));
+                        info
+                    }
+                    _ => {
+                        let info = self.env.statics.field_of(rn, fname).unwrap();
+                        out.push_str(&format!("        leaq {}(%rip), %rax\n", rn));
+                        info
+                    }
+                };
                 match fty {
                     Type::I64 => {
                         out.push_str(&format!("        mov {}(%rax), %rax\n", off));
@@ -345,6 +358,36 @@ impl<'m> Emitter<'m> {
                         Class::Str
                     }
                     _ => unreachable!("field type rejected by can_compile"),
+                }
+            }
+            Expr::Index(base, idx) => {
+                let Expr::Var(bn) = &**base else {
+                    unreachable!("index base rejected by can_compile")
+                };
+                let Some(Type::Array(elem, n)) = self.env.types.get(bn).cloned() else {
+                    unreachable!("index base type rejected by can_compile")
+                };
+                let esize = crate::gen_common::array_elem_size(&elem).unwrap();
+                let boff = self.env.offsets[bn];
+                self.emit_expr(idx, out);
+                out.push_str(&format!("        cmp ${}, %rax\n", n));
+                self.needs_oob = true;
+                out.push_str(&format!("        jae .LG_OOB_{}\n", self.func_name));
+                out.push_str(&format!("        leaq -{}(%rbp), %rbx\n", boff));
+                match *elem {
+                    Type::I64 => {
+                        out.push_str("        mov (%rbx,%rax,8), %rax\n");
+                        Class::Int
+                    }
+                    Type::I32 => {
+                        out.push_str("        movslq (%rbx,%rax,4), %rax\n");
+                        Class::Int
+                    }
+                    Type::F64 => {
+                        out.push_str("        movsd (%rbx,%rax,8), %xmm0\n");
+                        Class::Float
+                    }
+                    _ => unreachable!("array element type rejected by can_compile: {:?}", esize),
                 }
             }
             Expr::IfElse {
@@ -439,9 +482,59 @@ impl<'m> Emitter<'m> {
         }
     }
 
+    /// Store the struct-literal/array-literal `init` into the aggregate
+    /// local `name`. Returns false when `init` is not an aggregate literal.
+    fn emit_aggregate_let(&mut self, name: &str, init: &Expr, out: &mut String) -> bool {
+        let base = match self.env.types.get(name) {
+            Some(Type::User(_)) | Some(Type::Array(_, _)) => self.env.offsets[name],
+            _ => return false,
+        };
+        match (self.env.types.get(name).cloned(), init) {
+            (Some(Type::User(sname)), Expr::StructLit(_, fields)) => {
+                let flat = self.env.statics.flattened_fields[&sname].clone();
+                for (fname, fty, foff) in flat {
+                    let (_, fexpr) = fields.iter().find(|(n, _)| *n == fname).unwrap();
+                    self.emit_expr(fexpr, out);
+                    let addr = |extra: usize| {
+                        format!("-{}+{}(%rbp)", base, foff + extra)
+                    };
+                    match fty {
+                        Type::I64 => out.push_str(&format!("        mov %rax, {}\n", addr(0))),
+                        Type::I32 => out.push_str(&format!("        mov %eax, {}\n", addr(0))),
+                        Type::F64 => out.push_str(&format!("        movsd %xmm0, {}\n", addr(0))),
+                        Type::String => {
+                            out.push_str(&format!("        mov %rax, {}\n", addr(0)));
+                            out.push_str(&format!("        mov %rdx, {}\n", addr(8)));
+                        }
+                        _ => unreachable!("field type rejected by can_compile"),
+                    }
+                }
+                true
+            }
+            (Some(Type::Array(elem, _)), Expr::ArrayLit(items)) => {
+                let esize = crate::gen_common::array_elem_size(&elem).unwrap();
+                for (i, item) in items.iter().enumerate() {
+                    self.emit_expr(item, out);
+                    let addr = format!("-{}+{}(%rbp)", base, i * esize);
+                    match *elem {
+                        Type::I64 => out.push_str(&format!("        mov %rax, {}\n", addr)),
+                        Type::I32 => out.push_str(&format!("        mov %eax, {}\n", addr)),
+                        Type::F64 => out.push_str(&format!("        movsd %xmm0, {}\n", addr)),
+                        _ => unreachable!("array element type rejected by can_compile"),
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn emit_stmt(&mut self, stmt: &Stmt, out: &mut String) {
         match stmt {
             Stmt::Let { name, init, .. } => {
+                if self.emit_aggregate_let(name, init, out) {
+                    return;
+                }
                 self.emit_expr(init, out);
                 self.emit_store_var(name, out);
             }
@@ -661,6 +754,7 @@ fn emit_inner(
         try_stack: Vec::new(),
         exc_vars: Vec::new(),
         needs_uncaught: false,
+        needs_oob: false,
         uses_exc: false,
         depth: 0,
     };
@@ -681,6 +775,20 @@ fn emit_inner(
         out.push_str("        mov $11, %rdx\n");
         out.push_str("        syscall\n");
         em.emit_print_exc(out);
+        out.push_str("        mov $60, %rax\n");
+        out.push_str("        mov $1, %rdi\n");
+        out.push_str("        syscall\n");
+    }
+    if em.needs_oob {
+        let msg = "index out of bounds\n";
+        let lbl = em.fresh("OOBMSG");
+        em.rodata.push((lbl.clone(), msg.to_string()));
+        out.push_str(&format!(".LG_OOB_{}:\n", em.func_name));
+        out.push_str("        mov $1, %rax\n");
+        out.push_str("        mov $2, %rdi\n");
+        out.push_str(&format!("        leaq {}(%rip), %rsi\n", lbl));
+        out.push_str(&format!("        mov ${}, %rdx\n", msg.len()));
+        out.push_str("        syscall\n");
         out.push_str("        mov $60, %rax\n");
         out.push_str("        mov $1, %rdi\n");
         out.push_str("        syscall\n");

@@ -51,24 +51,65 @@ pub(crate) fn class_of_type(ty: &Type) -> Option<Class> {
     }
 }
 
-/// Module-level static struct data: which statics exist and the byte
-/// offset/type of every (struct, field) pair, inherited fields included.
+/// Module-level layout data: which statics exist, the byte offset/type of
+/// every (struct, field) pair (inherited fields included), and struct sizes
+/// for stack-allocating struct locals.
 #[derive(Default)]
 pub(crate) struct StaticsInfo {
     /// static variable name -> struct type name
     pub types: HashMap<String, String>,
     /// (struct name, field name) -> (byte offset, field type)
     pub field_offsets: HashMap<(String, String), (usize, Type)>,
+    /// struct name -> total size in bytes (8-aligned)
+    pub struct_sizes: HashMap<String, usize>,
+    /// struct name -> flattened fields in layout order (name, type, offset)
+    pub flattened_fields: HashMap<String, Vec<(String, Type, usize)>>,
 }
 
 impl StaticsInfo {
     /// Field (offset, type) for `recv.field` when `recv` names a static.
     pub fn field_of(&self, recv: &str, field: &str) -> Option<(usize, Type)> {
         let sname = self.types.get(recv)?;
+        self.field_of_struct(sname, field)
+    }
+
+    /// Field (offset, type) within a struct type by name.
+    pub fn field_of_struct(&self, sname: &str, field: &str) -> Option<(usize, Type)> {
         self.field_offsets
-            .get(&(sname.clone(), field.to_string()))
+            .get(&(sname.to_string(), field.to_string()))
             .cloned()
     }
+}
+
+/// Element size in bytes for array element types the general emitters
+/// support.
+pub(crate) fn array_elem_size(ty: &Type) -> Option<usize> {
+    match ty {
+        Type::I32 => Some(4),
+        Type::I64 | Type::F64 => Some(8),
+        _ => None,
+    }
+}
+
+/// Stack size for an aggregate (struct or fixed array) local, 8-aligned.
+pub(crate) fn agg_size(ty: &Type, statics: &StaticsInfo) -> Option<usize> {
+    match ty {
+        Type::User(sname) => statics.struct_sizes.get(sname).copied(),
+        Type::Array(elem, n) => {
+            let mut sz = array_elem_size(elem)? * n;
+            if sz % 8 != 0 {
+                sz += 8 - sz % 8;
+            }
+            Some(sz.max(8))
+        }
+        _ => None,
+    }
+}
+
+/// Whether the general emitters support this type as a struct field of a
+/// stack-allocated struct local.
+fn struct_field_supported(ty: &Type) -> bool {
+    matches!(ty, Type::I32 | Type::I64 | Type::F64 | Type::String)
 }
 
 pub(crate) struct Env<'m> {
@@ -141,16 +182,30 @@ pub(crate) fn infer_class(expr: &Expr, env: &Env) -> Option<Class> {
         Expr::Deref(inner) => pointee_class(inner, env),
         Expr::Field(recv, fname) => {
             let Expr::Var(rn) = &**recv else { return None };
-            // Only statics; struct-typed locals are handled by the legacy path.
-            if env.types.contains_key(rn) {
-                return None;
-            }
-            let (_, fty) = env.statics.field_of(rn, fname)?;
+            let (_, fty) = match env.types.get(rn) {
+                // struct-typed local
+                Some(Type::User(sname)) => env.statics.field_of_struct(sname, fname)?,
+                // any other local shadows a same-named static
+                Some(_) => return None,
+                // module static
+                None => env.statics.field_of(rn, fname)?,
+            };
             match fty {
                 Type::String => Some(Class::Str),
                 Type::I32 | Type::I64 | Type::F64 => class_of_type(&fty),
                 _ => None,
             }
+        }
+        Expr::Index(base, idx) => {
+            let Expr::Var(bn) = &**base else { return None };
+            let Some(Type::Array(elem, _)) = env.types.get(bn) else {
+                return None;
+            };
+            array_elem_size(elem)?;
+            if infer_class(idx, env)? != Class::Int {
+                return None;
+            }
+            class_of_type(elem)
         }
         Expr::IfElse {
             cond,
@@ -236,6 +291,7 @@ pub(crate) fn expr_supported(expr: &Expr, env: &Env) -> bool {
         }
         Expr::Deref(inner) => expr_supported(inner, env) && pointee_class(inner, env).is_some(),
         Expr::Field(_, _) => infer_class(expr, env).is_some(),
+        Expr::Index(_, idx) => expr_supported(idx, env) && infer_class(expr, env).is_some(),
         Expr::IfElse {
             cond,
             then_expr,
@@ -289,6 +345,56 @@ pub(crate) fn stmt_supported(stmt: &Stmt, env: &mut Env) -> bool {
         }
         Stmt::Break | Stmt::Continue => true,
         Stmt::Let { name, ty, init } => {
+            // Aggregate locals: struct literals and fixed-array literals
+            // stack-allocated with every field/element initialized.
+            match (ty, init) {
+                (Type::User(sname), Expr::StructLit(lit_ty, fields)) if lit_ty == sname => {
+                    let Some(flat) = env.statics.flattened_fields.get(sname) else {
+                        return false;
+                    };
+                    if agg_size(ty, env.statics).is_none() {
+                        return false;
+                    }
+                    // every flattened field must be present, supported, and
+                    // class-compatible
+                    for (fname, fty, _) in flat.clone() {
+                        if !struct_field_supported(&fty) {
+                            return false;
+                        }
+                        let Some((_, fexpr)) = fields.iter().find(|(n, _)| *n == fname) else {
+                            return false;
+                        };
+                        let want = match fty {
+                            Type::String => Class::Str,
+                            _ => match class_of_type(&fty) {
+                                Some(c) => c,
+                                None => return false,
+                            },
+                        };
+                        if !expr_supported(fexpr, env) || infer_class(fexpr, env) != Some(want) {
+                            return false;
+                        }
+                    }
+                    env.types.insert(name.clone(), ty.clone());
+                    return true;
+                }
+                (Type::Array(elem, n), Expr::ArrayLit(items)) => {
+                    if array_elem_size(elem).is_none() || items.len() != *n || *n == 0 {
+                        return false;
+                    }
+                    let Some(want) = class_of_type(elem) else {
+                        return false;
+                    };
+                    for it in items {
+                        if !expr_supported(it, env) || infer_class(it, env) != Some(want) {
+                            return false;
+                        }
+                    }
+                    env.types.insert(name.clone(), ty.clone());
+                    return true;
+                }
+                _ => {}
+            }
             let Some(cls) = class_of_type(ty) else {
                 return false;
             };
@@ -388,7 +494,7 @@ pub(crate) fn collect_locals(body: &[Stmt], env: &mut Env, cur_off: &mut usize) 
     for stmt in body {
         match stmt {
             Stmt::Let { name, ty, .. } => {
-                *cur_off += 8;
+                *cur_off += agg_size(ty, env.statics).unwrap_or(8);
                 env.types.insert(name.clone(), ty.clone());
                 env.offsets.insert(name.clone(), *cur_off);
             }

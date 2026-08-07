@@ -2375,6 +2375,8 @@ impl CodeGenerator for X86_64LinuxCodegen {
         let gen_statics = gen_common::StaticsInfo {
             types: static_types.clone(),
             field_offsets: field_offsets.clone(),
+            struct_sizes: struct_sizes.clone(),
+            flattened_fields: flattened_fields.clone(),
         };
         let mut local_strings: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut label_counter: usize = 0;

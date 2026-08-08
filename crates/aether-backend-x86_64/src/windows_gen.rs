@@ -284,6 +284,68 @@ impl<'m> Emitter<'m> {
                 out.push_str(&format!("        add rsp, {}\n", shadow));
                 ret_cls.unwrap_or(Class::Int)
             }
+            Expr::MethodCall(recv, meth, args) => {
+                let (fname, rn, loc) =
+                    crate::gen_common::resolve_method(recv, meth, &self.env).unwrap();
+                let callee = self.env.funcs[fname.as_str()];
+                let ret_cls = if matches!(callee.ret, Type::String) {
+                    Some(Class::Str)
+                } else {
+                    class_of_type(&callee.ret)
+                };
+                let int_regs = ["rcx", "rdx", "r8", "r9"];
+                // Receiver address is the first (integer) argument.
+                match loc {
+                    crate::gen_common::ReceiverLoc::Static => {
+                        out.push_str(&format!("        lea rax, [rip+{}]\n", rn));
+                    }
+                    crate::gen_common::ReceiverLoc::Local => {
+                        let off = self.env.offsets[&rn];
+                        out.push_str(&format!("        lea rax, [rbp-{}]\n", off));
+                    }
+                    crate::gen_common::ReceiverLoc::Ptr => {
+                        let off = self.env.offsets[&rn];
+                        out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", off));
+                    }
+                }
+                out.push_str("        sub rsp, 8\n");
+                self.depth += 1;
+                out.push_str("        mov qword ptr [rsp], rax\n");
+                let mut classes: Vec<Class> = vec![Class::Int];
+                for (p, a) in callee.params.iter().skip(1).zip(args) {
+                    let cls = class_of_type(&p.ty).unwrap();
+                    classes.push(cls);
+                    self.emit_expr(a, out);
+                    out.push_str("        sub rsp, 8\n");
+                    self.depth += 1;
+                    match cls {
+                        Class::Str => unreachable!("string args rejected by can_compile"),
+                        Class::Int => out.push_str("        mov qword ptr [rsp], rax\n"),
+                        Class::Float => out.push_str("        movsd qword ptr [rsp], xmm0\n"),
+                    }
+                }
+                for (i, cls) in classes.iter().enumerate().rev() {
+                    match cls {
+                        Class::Str => unreachable!("string args rejected by can_compile"),
+                        Class::Int => {
+                            out.push_str(&format!(
+                                "        mov {}, qword ptr [rsp]\n",
+                                int_regs[i]
+                            ));
+                        }
+                        Class::Float => {
+                            out.push_str(&format!("        movsd xmm{}, qword ptr [rsp]\n", i));
+                        }
+                    }
+                    out.push_str("        add rsp, 8\n");
+                    self.depth -= 1;
+                }
+                let shadow = self.shadow_bytes();
+                out.push_str(&format!("        sub rsp, {}\n", shadow));
+                out.push_str(&format!("        call {}\n", fname));
+                out.push_str(&format!("        add rsp, {}\n", shadow));
+                ret_cls.unwrap_or(Class::Int)
+            }
             Expr::Cast(inner, ty) => {
                 let from = self.emit_expr(inner, out);
                 let to = class_of_type(ty).unwrap();
@@ -321,17 +383,24 @@ impl<'m> Emitter<'m> {
                 let Expr::Var(rn) = &**recv else {
                     unreachable!("field receiver rejected by can_compile")
                 };
-                let (off, fty) = match self.env.types.get(rn) {
-                    Some(Type::User(sname)) => {
-                        let info = self.env.statics.field_of_struct(sname, fname).unwrap();
-                        let base = self.env.offsets[rn];
-                        out.push_str(&format!("        lea rax, [rbp-{}]\n", base));
-                        info
-                    }
-                    _ => {
-                        let info = self.env.statics.field_of(rn, fname).unwrap();
-                        out.push_str(&format!("        lea rax, [rip+{}]\n", rn));
-                        info
+                let (off, fty) = if let Some(sname) = self.env.ptr_structs.get(rn) {
+                    let info = self.env.statics.field_of_struct(sname, fname).unwrap();
+                    let base = self.env.offsets[rn];
+                    out.push_str(&format!("        mov rax, qword ptr [rbp-{}]\n", base));
+                    info
+                } else {
+                    match self.env.types.get(rn) {
+                        Some(Type::User(sname)) => {
+                            let info = self.env.statics.field_of_struct(sname, fname).unwrap();
+                            let base = self.env.offsets[rn];
+                            out.push_str(&format!("        lea rax, [rbp-{}]\n", base));
+                            info
+                        }
+                        _ => {
+                            let info = self.env.statics.field_of(rn, fname).unwrap();
+                            out.push_str(&format!("        lea rax, [rip+{}]\n", rn));
+                            info
+                        }
                     }
                 };
                 return match fty {
@@ -847,8 +916,10 @@ fn emit_inner(
         statics,
         types: HashMap::new(),
         offsets: HashMap::new(),
+        ptr_structs: HashMap::new(),
         limits: WIN64_LIMITS,
     };
+    let self_struct = crate::gen_common::self_struct_of(func, statics);
     // In main, rbx/r12/r13 saved by the module prologue occupy [rbp-8..-24].
     let mut cur_off = if is_main { 24usize } else { 0usize };
 
@@ -856,8 +927,16 @@ fn emit_inner(
     let mut spills: Vec<(usize, String)> = Vec::new();
     for (i, p) in func.params.iter().enumerate() {
         cur_off += 8;
-        env.types.insert(p.name.clone(), p.ty.clone());
         env.offsets.insert(p.name.clone(), cur_off);
+        if p.name == "self" {
+            // The receiver arrives as the struct's address in an int register.
+            env.types.insert(p.name.clone(), Type::I64);
+            env.ptr_structs
+                .insert(p.name.clone(), self_struct.clone().unwrap());
+            spills.push((cur_off, int_regs[i].to_string()));
+            continue;
+        }
+        env.types.insert(p.name.clone(), p.ty.clone());
         match class_of_type(&p.ty).unwrap() {
             Class::Str => unreachable!("string params rejected by can_compile"),
             Class::Int => spills.push((cur_off, int_regs[i].to_string())),

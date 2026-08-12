@@ -71,6 +71,59 @@ fn windows_pointer_codegen() {
     );
 }
 
+const NESTED_SRC: &str = r#"
+pub func main() -> i32 {
+    let x: i64 = 1;
+    let p: &i64 = &x;
+    let pp: &&i64 = &p;
+    **pp = 7;
+    println(**pp);
+    let f: f64 = 2.5;
+    let fp: &f64 = &f;
+    let fpp: &&f64 = &fp;
+    println(**fpp);
+    return 0;
+}
+"#;
+
+#[test]
+fn linux_nested_deref_codegen() {
+    let module = parse_source(NESTED_SRC).expect("parse");
+    let mut cg = X86_64LinuxCodegen::new_linux();
+    let asm = cg.generate(&module).expect("codegen");
+    assert!(
+        asm.contains("mov (%rax), %rax\n        mov (%rax), %rax"),
+        "expected chained int deref loads"
+    );
+    assert!(
+        asm.contains("movsd (%rax), %xmm0"),
+        "expected float load at final deref level"
+    );
+    assert!(
+        asm.contains("mov %rax, (%rbx)"),
+        "expected store through nested pointer"
+    );
+}
+
+#[test]
+fn windows_nested_deref_codegen() {
+    let module = parse_source(NESTED_SRC).expect("parse");
+    let mut cg = X86_64LinuxCodegen::new_windows();
+    let asm = cg.generate(&module).expect("codegen");
+    assert!(
+        asm.contains("mov rax, qword ptr [rax]\n        mov rax, qword ptr [rax]"),
+        "expected chained int deref loads"
+    );
+    assert!(
+        asm.contains("movsd xmm0, qword ptr [rax]"),
+        "expected float load at final deref level"
+    );
+    assert!(
+        asm.contains("mov qword ptr [r11], rax"),
+        "expected store through nested pointer"
+    );
+}
+
 #[test]
 fn windows_threads_general_codegen() {
     let src = r#"

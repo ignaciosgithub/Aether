@@ -183,11 +183,23 @@ impl<'m> Env<'m> {
 /// pointer whose pointee type is statically known.
 pub(crate) fn pointee_class(expr: &Expr, env: &Env) -> Option<Class> {
     match expr {
+        Expr::AddrOf(inner) => infer_class(inner, env),
+        _ => class_of_type(&pointee_type(expr, env)?),
+    }
+}
+
+/// Static type of `*expr`, when `expr` is a pointer-typed variable or a
+/// (possibly nested) dereference of one.
+pub(crate) fn pointee_type(expr: &Expr, env: &Env) -> Option<Type> {
+    match expr {
         Expr::Var(name) => match env.types.get(name)? {
-            Type::Ptr(inner) => class_of_type(inner),
+            Type::Ptr(inner) => Some((**inner).clone()),
             _ => None,
         },
-        Expr::AddrOf(inner) => infer_class(inner, env),
+        Expr::Deref(inner) => match pointee_type(inner, env)? {
+            Type::Ptr(inner) => Some(*inner),
+            _ => None,
+        },
         _ => None,
     }
 }
